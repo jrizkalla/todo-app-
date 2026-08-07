@@ -2,31 +2,37 @@
 //  TODOApp.swift
 //  TODO
 //
-//  Created by John Rizkalla on 8/7/26.
-//
 
 import SwiftUI
 import SwiftData
 
 @main
 struct TODOApp: App {
-    var sharedModelContainer: ModelContainer = {
-        let schema = Schema([
-            Item.self,
-        ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+    /// Built once and shared by every scene. CloudKit mirroring is configured
+    /// here; see `ModelContainer.appContainerWithFallback`.
+    ///
+    /// Resolved lazily through a static so the store is not opened while the
+    /// test host is launching.
+    var modelContainer: ModelContainer { Self.sharedContainer }
 
-        do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
-        } catch {
-            fatalError("Could not create ModelContainer: \(error)")
-        }
-    }()
+    private static let sharedContainer: ModelContainer = .appContainerWithFallback()
+
+    @State private var settings = AppSettings.shared
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootView()
+                .environment(settings)
         }
-        .modelContainer(sharedModelContainer)
+        .modelContainer(modelContainer)
+        .commands { AppCommands() }
+
+        #if os(macOS)
+        Settings {
+            SettingsView()
+                .environment(settings)
+                .modelContainer(modelContainer)
+        }
+        #endif
     }
 }
