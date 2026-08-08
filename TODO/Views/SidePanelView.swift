@@ -46,6 +46,7 @@ struct SidePanelView: View {
             }
         }
         .listStyle(.sidebar)
+        .scrollDismissesKeyboard(.interactively)
         .frame(minWidth: 240, idealWidth: Theme.Metrics.sidePanelWidth)
     }
 

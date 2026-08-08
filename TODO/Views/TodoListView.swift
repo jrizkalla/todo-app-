@@ -156,6 +156,9 @@ struct TodoListView: View {
                 Color.clear.frame(height: 72).listRowSeparator(.hidden)
             }
             .listStyle(.plain)
+            // Swiping down over the list dismisses the keyboard raised by
+            // inline title editing.
+            .scrollDismissesKeyboard(.interactively)
             .animation(Theme.Animation.listChange, value: visibleTodos.map(\.uuid))
         }
     }

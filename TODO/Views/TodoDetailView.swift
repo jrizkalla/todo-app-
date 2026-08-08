@@ -70,7 +70,7 @@ struct TodoDetailView: View {
                 }
                 .pickerStyle(.menu)
 
-                Toggle("Is a Project", isOn: Binding(
+                Toggle("Project", isOn: Binding(
                     get: { todo.isProject },
                     set: { store.setIsProject(todo, $0) }
                 ))
@@ -112,6 +112,9 @@ struct TodoDetailView: View {
             RemindersSection(todo: todo)
         }
         .formStyle(.grouped)
+        // Swiping down over the form dismisses the keyboard, tracking the
+        // gesture rather than snapping shut.
+        .scrollDismissesKeyboard(.interactively)
         .navigationTitle(todo.title.isEmpty ? "New To-Do" : todo.title)
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
@@ -134,15 +137,25 @@ struct TodoDetailView: View {
             HStack {
                 Text("Notes").font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Button(isEditingNotes ? "Preview" : "Edit") {
-                    withAnimation(Theme.Animation.panel) { isEditingNotes.toggle() }
+                Button(isEditingNotes ? "Done" : "Edit") {
+                    if isEditingNotes {
+                        isEditingNotes = false
+                        focusedField = nil
+                    } else {
+                        beginEditingNotes()
+                    }
                 }
                 .font(.caption)
                 .buttonStyle(.plain)
                 .foregroundStyle(Color.accentColor)
             }
 
-            if isEditingNotes || todo.notes.isEmpty {
+            // `isEditingNotes` alone decides which is shown. It deliberately
+            // does not also test `todo.notes.isEmpty`: with empty notes that
+            // condition is true, and typing the first character flips it,
+            // swapping the editor for the preview and destroying the field the
+            // user is typing in.
+            if isEditingNotes {
                 MarkdownSourceEditor(
                     text: $todo.notes,
                     vimBindingsEnabled: settings.vimBindingsEnabled
@@ -151,14 +164,28 @@ struct TodoDetailView: View {
                 .focused($focusedField, equals: .notes)
                 .onChange(of: todo.notes) { _, _ in store.save() }
             } else {
-                BlockMarkdownText(markdown: todo.notes)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        withAnimation(Theme.Animation.panel) { isEditingNotes = true }
+                Group {
+                    if todo.notes.isEmpty {
+                        Text("Add notes…")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        BlockMarkdownText(markdown: todo.notes)
                     }
+                }
+                .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+                .contentShape(Rectangle())
+                .onTapGesture { beginEditingNotes() }
             }
         }
+    }
+
+    /// Show the notes editor and put the cursor in it.
+    ///
+    /// Focus is set after the field exists in the hierarchy; setting it in the
+    /// same pass that creates the field is a no-op.
+    private func beginEditingNotes() {
+        isEditingNotes = true
+        DispatchQueue.main.async { focusedField = .notes }
     }
 
     // MARK: Subtasks
