@@ -26,6 +26,13 @@ struct TodoRow: View {
     /// for the status picker, and the two would otherwise compete.
     var menu: () -> AnyView = { AnyView(EmptyView()) }
 
+    /// Called when the row is tapped while its title already holds focus.
+    ///
+    /// The first tap focuses the title for a quick rename; a second tap on a
+    /// row that is already focused means the user wants more than the title,
+    /// so it opens the detail view.
+    var onTapWhileFocused: () -> Void = {}
+
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: Theme.Metrics.rowSpacing) {
             TodoCheckbox(
@@ -39,6 +46,15 @@ struct TodoRow: View {
 
             VStack(alignment: .leading, spacing: 3) {
                 titleLine
+                
+                if !todo.notes.isEmpty {
+                    HStack {
+                        badge(for: .init(
+                            text: todo.notesSummary,
+                            symbol: "text.alignleft",
+                            color: .secondary))
+                    }
+                }
 
                 if !metadata.isEmpty {
                     metadataLine
@@ -49,6 +65,15 @@ struct TodoRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
             .contextMenu { menu() }
+            // Runs alongside the text field's own tap handling, so the caret
+            // still moves; it only acts when this row already had focus.
+            .simultaneousGesture(
+                TapGesture().onEnded {
+                    if focusedTodoID == todo.uuid {
+                        onTapWhileFocused()
+                    }
+                }
+            )
         }
         .padding(.vertical, Theme.Metrics.rowVerticalPadding)
         .padding(.horizontal, Theme.Metrics.rowHorizontalPadding)
@@ -81,18 +106,23 @@ struct TodoRow: View {
 
             // Always a live field: typing saves as it goes, and `axis:
             // .vertical` lets a long title wrap instead of running off the edge.
-            TextField("New To-Do", text: $todo.title, axis: .vertical)
-                .textFieldStyle(.plain)
-                .lineLimit(1...6)
-                .focused($focusedTodoID, equals: todo.uuid)
-                .strikethrough(todo.state == .completed)
-                .foregroundStyle(todo.state.isResolved ? .secondary : .primary)
-                .onChange(of: todo.title) { _, newValue in
-                    onTitleChange(newValue)
+            // workaround for https://stackoverflow.com/questions/77388314/swiftui-textfield-with-vertical-axis-does-not-align-to-firsttextbaseline-when-te
+            TextField("New TODO", text: .constant("New TODO"), axis: .vertical)
+                .opacity(0)
+                .overlay {
+                    TextField("New To-Do", text: $todo.title, axis: .vertical)
+                        .textFieldStyle(.plain)
+                        .lineLimit(1...6)
+                        .focused($focusedTodoID, equals: todo.uuid)
+                        .strikethrough(todo.state == .completed)
+                        .foregroundStyle(todo.state.isResolved ? .secondary : .primary)
+                        .onChange(of: todo.title) { _, newValue in
+                            onTitleChange(newValue)
+                        }
+                    // Return commits rather than inserting a newline; titles are
+                    // single-paragraph and notes are where longer text belongs.
+                        .onSubmit { focusedTodoID = nil }
                 }
-                // Return commits rather than inserting a newline; titles are
-                // single-paragraph and notes are where longer text belongs.
-                .onSubmit { focusedTodoID = nil }
 
             // Marks a todo pulled in from the system Reminders app.
             if todo.importedFromReminders {
@@ -103,15 +133,17 @@ struct TodoRow: View {
             }
         }
     }
+    
+    private func badge(for badge: Badge) -> some View {
+        Label(badge.text, systemImage: badge.symbol)
+            .font(.caption2)
+            .labelStyle(.titleAndIcon)
+            .foregroundStyle(badge.color)
+    }
 
     private var metadataLine: some View {
         HStack(spacing: 8) {
-            ForEach(metadata) { badge in
-                Label(badge.text, systemImage: badge.symbol)
-                    .font(.caption2)
-                    .labelStyle(.titleAndIcon)
-                    .foregroundStyle(badge.color)
-            }
+            ForEach(metadata, content: badge(for:))
         }
     }
 
@@ -176,10 +208,6 @@ struct TodoRow: View {
             ))
         }
 
-        if !todo.notes.isEmpty {
-            badges.append(Badge(text: "", symbol: "text.alignleft", color: .secondary))
-        }
-
         if showsSpace, let space = todo.space {
             badges.append(Badge(text: space.name, symbol: space.symbolName, color: Color(hex: space.colorHex)))
         }
@@ -233,8 +261,10 @@ private struct TodoRowPreviewHost: View {
             PreviewData.todo(titled: "Standup"),
             PreviewData.todo(titled: "Pay the"),
             PreviewData.todo(titled: "Renew passport"),
+            
             PreviewData.project,
             PreviewData.imported,
+            Todo(title: "")
         ],
         showsSpace: true
     )

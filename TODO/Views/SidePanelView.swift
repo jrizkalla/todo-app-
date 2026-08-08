@@ -8,6 +8,7 @@ import SwiftData
 struct SidePanelView: View {
     @Binding var selectedTodo: Todo?
 
+    @Environment(AppSettings.self) private var settings
     @Environment(\.modelContext) private var context
     @Query private var todos: [Todo]
 
@@ -31,7 +32,7 @@ struct SidePanelView: View {
             }
 
             Section {
-                let inbox = TodoQueries.inbox(todos)
+                let inbox = TodoQueries.inbox(todos, includeResolved: settings.showResolved)
                 if inbox.isEmpty {
                     Text("Inbox is empty")
                         .font(.callout)

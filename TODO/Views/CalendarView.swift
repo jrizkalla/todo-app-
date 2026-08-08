@@ -132,7 +132,7 @@ struct CalendarView: View {
             HStack(alignment: .top, spacing: 0) {
                 ForEach(visibleDays, id: \.self) { day in
                     VStack(spacing: 4) {
-                        ForEach(TodoQueries.untimed(todos, on: day, calendar: calendar)) { todo in
+                        ForEach(TodoQueries.untimed(todos, on: day, calendar: calendar, includeResolved: settings.showResolved)) { todo in
                             chip(for: todo)
                         }
                         ForEach(allDayEvents(on: day)) { event in
@@ -214,7 +214,7 @@ struct CalendarView: View {
                 currentTimeIndicator
             }
 
-            ForEach(TodoQueries.timed(todos, on: day, calendar: calendar)) { todo in
+            ForEach(TodoQueries.timed(todos, on: day, calendar: calendar, includeResolved: settings.showResolved)) { todo in
                 eventBlock(for: todo, on: day)
             }
         }

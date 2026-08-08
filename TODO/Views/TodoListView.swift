@@ -6,6 +6,7 @@ struct TodoListView: View {
     let destination: ListDestination
 
     @Environment(\.modelContext) private var context
+    @Environment(AppSettings.self) private var settings
     @Query private var todos: [Todo]
     @Query private var spaces: [Space]
 
@@ -136,12 +137,15 @@ struct TodoListView: View {
                             onSelectState: { handleSetState(todo, to: $0) },
                             onTitleChange: { handleTitleChange($0, for: todo) },
                             focusedTodoID: $focusedTodoID,
-                            menu: { AnyView(rowMenu(for: todo)) }
+                            menu: { AnyView(rowMenu(for: todo)) },
+                            onTapWhileFocused: { showDetail(for: todo) }
                         )
 
                         // Subtasks nest under their parent rather than
-                        // appearing as separate top-level rows.
-                        ForEach(todo.orderedSubtasks) { subtask in
+                        // appearing as separate top-level rows — except in the
+                        // Logbook, which lists finished work flat, so nesting
+                        // would show a completed subtask twice.
+                        ForEach(nestedSubtasks(of: todo)) { subtask in
                             TodoRow(
                                 todo: subtask,
                                 isSelected: selectedTodo?.uuid == subtask.uuid,
@@ -149,7 +153,8 @@ struct TodoListView: View {
                                 onSelectState: { handleSetState(subtask, to: $0) },
                                 onTitleChange: { handleTitleChange($0, for: subtask) },
                                 focusedTodoID: $focusedTodoID,
-                                menu: { AnyView(rowMenu(for: subtask)) }
+                                menu: { AnyView(rowMenu(for: subtask)) },
+                                onTapWhileFocused: { showDetail(for: subtask) }
                             )
                             .padding(.leading, 28)
                         }
@@ -218,13 +223,18 @@ struct TodoListView: View {
         .keyboardShortcut("n", modifiers: .command)
     }
 
+    /// Open the detail view, dropping focus so the keyboard does not follow.
+    private func showDetail(for todo: Todo) {
+        focusedTodoID = nil
+        selectedTodo = todo
+    }
+
     @ViewBuilder
     private func rowMenu(for todo: Todo) -> some View {
-        // Tapping a row edits its title in place, so the full editor lives
-        // here.
+        // A first tap edits the title in place; the full editor is here and on
+        // a second tap of an already-focused row.
         Button {
-            focusedTodoID = nil
-            selectedTodo = todo
+            showDetail(for: todo)
         } label: {
             Label("Show Details", systemImage: "info.circle")
         }
@@ -286,6 +296,11 @@ struct TodoListView: View {
     }
 
     // MARK: Viewed tracking
+
+    /// Subtasks to draw beneath a row, empty where the list is already flat.
+    private func nestedSubtasks(of todo: Todo) -> [Todo] {
+        destination == .logbook ? [] : todo.orderedSubtasks
+    }
 
     /// Clear the new flag on everything this list is showing, including the
     /// nested subtasks, which are on screen too.
@@ -376,13 +391,13 @@ struct TodoListView: View {
 
     private var filteredTodos: [Todo] {
         switch destination {
-        case .inbox: TodoQueries.inbox(todos)
-        case .today: TodoQueries.today(todos, calendar: AppSettings.shared.calendar)
-        case .thisWeek: TodoQueries.thisWeek(todos, calendar: AppSettings.shared.calendar)
-        case .anytime: TodoQueries.anytime(todos)
+        case .inbox: TodoQueries.inbox(todos, includeResolved: settings.showResolved)
+        case .today: TodoQueries.today(todos, calendar: AppSettings.shared.calendar, includeResolved: settings.showResolved)
+        case .thisWeek: TodoQueries.thisWeek(todos, calendar: AppSettings.shared.calendar, includeResolved: settings.showResolved)
+        case .anytime: TodoQueries.anytime(todos, includeResolved: settings.showResolved)
         case .logbook: TodoQueries.logbook(todos)
-        case .space(let id): TodoQueries.inSpace(todos, spaceID: id)
-        case .project(let id): TodoQueries.inProject(todos, projectID: id)
+        case .space(let id): TodoQueries.inSpace(todos, spaceID: id, includeResolved: settings.showResolved)
+        case .project(let id): TodoQueries.inProject(todos, projectID: id, includeResolved: settings.showResolved)
         }
     }
 

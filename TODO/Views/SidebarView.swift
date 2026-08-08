@@ -242,10 +242,10 @@ struct SidebarView: View {
 
     private func badgeCount(for destination: ListDestination) -> Int {
         switch destination {
-        case .inbox: TodoQueries.inbox(todos).count
-        case .today: TodoQueries.today(todos).count
-        case .thisWeek: TodoQueries.thisWeek(todos).count
-        case .anytime: TodoQueries.anytime(todos).count
+        case .inbox: TodoQueries.inbox(todos, includeResolved: false).count
+        case .today: TodoQueries.today(todos, includeResolved: false).count
+        case .thisWeek: TodoQueries.thisWeek(todos, includeResolved: false).count
+        case .anytime: TodoQueries.anytime(todos, includeResolved: false).count
         default: 0
         }
     }

@@ -24,6 +24,7 @@ final class AppSettings {
         static let weekStartsOnMonday = "weekStartsOnMonday"
         static let showCalendarEvents = "showCalendarEvents"
         static let visibleCalendars = "visibleCalendars"
+        static let showResolved = "showResolved"
     }
 
     /// Whether system calendar events appear in the calendar view.
@@ -83,5 +84,10 @@ final class AppSettings {
         var calendar = Calendar.current
         calendar.firstWeekday = weekStartsOnMonday ? 2 : 1
         return calendar
+    }
+    
+    var showResolved: Bool {
+        get { defaults.object(forKey: Key.showResolved) as? Bool ?? true }
+        set { defaults.set(newValue, forKey: Key.showResolved) }
     }
 }

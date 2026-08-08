@@ -124,6 +124,11 @@ struct TodoDetailView: View {
             refreshSuggestions(for: todo.title)
             if todo.title.isEmpty { focusedField = .title }
         }
+        .onDisappear {
+            Task {
+                await todo.summarizeNotes()
+            }
+        }
     }
 
     // MARK: Notes

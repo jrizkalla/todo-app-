@@ -20,6 +20,9 @@ struct SettingsView: View {
         @Bindable var settings = settings
 
         Form {
+            Section("TODOs") {
+                Toggle("Show completed TODOs", isOn: $settings.showResolved)
+            }
             Section("Calendar") {
                 Picker("Default duration", selection: Binding(
                     get: { settings.defaultEventDuration },

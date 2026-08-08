@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import FoundationModels
 
 /// A single task, a project, or a subtask — all three are the same entity.
 ///
@@ -19,6 +20,7 @@ final class Todo {
     var title: String = ""
     /// Markdown source supporting block constructs (headings, code fences).
     var notes: String = ""
+    var notesSummary: String = ""
 
     /// Backing storage for `state`. Raw values keep the column primitive.
     var stateRaw: String = CompletionState.open.rawValue
@@ -375,5 +377,39 @@ extension Todo {
         subtask.sortIndex = (subtaskList.map(\.sortIndex).max() ?? -1) + 1
         subtask.move(toParent: self)
         return subtask
+    }
+}
+
+
+extension Todo {
+    func summarizeNotes() async {
+        let title = title
+        let notes = notes
+        guard notes.trimmingCharacters(in: .whitespacesAndNewlines).count > 0 else {
+            self.notesSummary = ""
+            return
+        }
+        notesSummary = "summarizing notes..."
+        do {
+            let session = LanguageModelSession()
+            let response = try await session.respond(to: """
+                                    Summarize the notes of this task in a very short sentence suitable for display inside a small list view.
+                                    The summary should be no more than a 10 word sentence.
+                                    The title is visible in the row so don't include information in the summary about the title.
+                                    Title: \(title)
+                                    Notes: \(notes)
+                                    """)
+            let responseText = String(response.content.trimmingPrefix(/\s*-\s*/))
+            print("Response: \(responseText)")
+            Task { @MainActor in
+                notesSummary = responseText
+            }
+        } catch {
+            print(error)
+            Task { @MainActor in
+                notesSummary = notes.substring(to: notes.index(notes.startIndex, offsetBy: 100, limitedBy: notes.endIndex)!)
+            }
+        }
+        
     }
 }
