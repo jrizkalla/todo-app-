@@ -15,6 +15,7 @@ struct SidebarView: View {
     @State private var isCreatingSpace = false
     @State private var newSpaceName = ""
     @State private var isShowingSettings = false
+    @State private var editingSpace: Space?
 
     private var store: TodoStore { TodoStore(context: context) }
 
@@ -89,6 +90,12 @@ struct SidebarView: View {
                     }
                 }
                 .contextMenu {
+                    Button {
+                        editingSpace = space
+                    } label: {
+                        Label("Edit Space…", systemImage: "paintpalette")
+                    }
+
                     Button(role: .destructive) {
                         store.delete(space)
                     } label: {
@@ -141,6 +148,11 @@ struct SidebarView: View {
             }
         }
         #endif
+        .sheet(item: $editingSpace) { space in
+            NavigationStack {
+                SpaceEditorView(space: space)
+            }
+        }
         .alert("New Space", isPresented: $isCreatingSpace) {
             TextField("Name", text: $newSpaceName)
             Button("Cancel", role: .cancel) { newSpaceName = "" }
@@ -173,7 +185,7 @@ struct SidebarView: View {
                 }
             } icon: {
                 Image(systemName: "list.bullet")
-                    .foregroundStyle(project.space.map { Color(hex: $0.colorHex) } ?? .secondary)
+                    .foregroundStyle(project.resolvedColorHex.map { Color(hex: $0) } ?? .secondary)
             }
         }
     }

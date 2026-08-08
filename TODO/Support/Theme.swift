@@ -30,6 +30,8 @@ enum Theme {
         static let overdue = Color.red
         static let started = Color.orange
         static let cancelled = Color.secondary
+        /// Dot marking a to-do the user has not seen in its current list.
+        static let unviewed = Color.yellow
 
         /// Default colors offered when creating a space.
         static let spaceColors: [String] = [

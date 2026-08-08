@@ -276,8 +276,9 @@ struct CalendarView: View {
         return max(CGFloat(seconds / 3600) * hourHeight, 18)
     }
 
+    /// Same resolution as the list rows, so a color change shows up in both.
     private func tint(for todo: Todo) -> Color {
-        todo.space.map { Color(hex: $0.colorHex) } ?? .accentColor
+        todo.resolvedColorHex.map { Color(hex: $0) } ?? .accentColor
     }
 
     // MARK: System calendar events

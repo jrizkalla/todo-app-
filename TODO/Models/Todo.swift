@@ -43,6 +43,12 @@ final class Todo {
     /// True when this todo is promoted to a project and appears in the sidebar.
     var isProject: Bool = false
 
+    /// Optional per-project color, as `#RRGGBB`.
+    ///
+    /// Only meaningful on a project. Nil means the project inherits its space's
+    /// color, so setting a space color is enough for the common case.
+    var colorHex: String?
+
     /// Set when the todo originated in the system Reminders app; drives the
     /// import badge in the Inbox.
     var importedFromReminders: Bool = false
@@ -52,6 +58,20 @@ final class Todo {
 
     /// Manual ordering within a list. Sidebar and list reordering write here.
     var sortIndex: Int = 0
+
+    /// Whether this todo is unseen in the list it currently belongs to.
+    ///
+    /// Set when a todo arrives somewhere the user has not looked yet — imported
+    /// from Reminders, newly given a date, or moved to another space or project
+    /// — and cleared once they visit the list showing it. Drives the yellow dot.
+    var isNew: Bool = false
+
+    /// Fingerprint of the placement this todo was last viewed in.
+    ///
+    /// Comparing the current placement against this is what makes "moved to a
+    /// new section" mean the same thing as "newly arrived": if the fingerprint
+    /// differs, the todo is somewhere the user has not seen it.
+    var lastViewedPlacement: String?
 
     var createdAt: Date = Date()
     var modifiedAt: Date = Date()
@@ -107,6 +127,9 @@ final class Todo {
         self.modifiedAt = Date()
         // A todo created with a date or a home is already scheduled.
         refileForCurrentScheduling()
+        // A to-do the user just created is not "new" to them; importers and
+        // other automated sources call `markAsNew()` explicitly.
+        markAsViewed()
     }
 }
 
@@ -182,6 +205,82 @@ extension Todo {
     }
 }
 
+// MARK: - Color
+
+extension Todo {
+    /// The color this todo is displayed in, as `#RRGGBB`, or nil to use the
+    /// app accent.
+    ///
+    /// Resolution runs nearest-first: the todo's own project color, then its
+    /// parent project's, then its space's. Every surface — checkbox tint,
+    /// calendar block, sidebar icon — reads this one property so a color change
+    /// shows up everywhere at once.
+    var resolvedColorHex: String? {
+        if isProject, let colorHex { return colorHex }
+        if let parentColor = parent?.colorHex { return parentColor }
+        if let spaceColor = space?.colorHex { return spaceColor }
+        return nil
+    }
+}
+
+// MARK: - New / unviewed tracking
+
+extension Todo {
+    /// Identity of where this todo currently lives.
+    ///
+    /// Built from the bucket plus its container and scheduled day, so any move
+    /// that puts the todo in front of the user somewhere new — a different
+    /// space or project, or a newly assigned date — produces a different
+    /// string. Scheduling uses day granularity so editing a time does not
+    /// re-flag the item.
+    var placementFingerprint: String {
+        var parts: [String] = [bucketRaw]
+
+        if let space { parts.append("space:\(space.uuid.uuidString)") }
+        if let parent { parts.append("parent:\(parent.uuid.uuidString)") }
+
+        if let assignedDate {
+            let day = Calendar.current.startOfDay(for: assignedDate)
+            parts.append("day:\(Int(day.timeIntervalSince1970))")
+        }
+        if let dueDate {
+            let day = Calendar.current.startOfDay(for: dueDate)
+            parts.append("due:\(Int(day.timeIntervalSince1970))")
+        }
+
+        return parts.joined(separator: "|")
+    }
+
+    /// Flag this todo as unseen in its current placement.
+    func markAsNew() {
+        isNew = true
+        lastViewedPlacement = nil
+    }
+
+    /// Mark as seen where it now sits.
+    func markAsViewed() {
+        isNew = false
+        lastViewedPlacement = placementFingerprint
+    }
+
+    /// Re-flag as new if the todo has moved since it was last viewed.
+    ///
+    /// Called after any edit that could change placement, which is how "moved
+    /// to a new section" becomes new again without every caller remembering to
+    /// set the flag.
+    func refreshNewFlagAfterPlacementChange() {
+        guard let lastViewedPlacement else {
+            // Never viewed anywhere: stays new until the user sees it.
+            isNew = true
+            return
+        }
+        if lastViewedPlacement != placementFingerprint {
+            isNew = true
+            self.lastViewedPlacement = nil
+        }
+    }
+}
+
 // MARK: - Completion rules
 
 extension Todo {
@@ -241,6 +340,7 @@ extension Todo {
         space = newSpace
         if newSpace != nil { parent = nil }
         refileForCurrentScheduling()
+        refreshNewFlagAfterPlacementChange()
         touch()
     }
 
@@ -253,6 +353,7 @@ extension Todo {
             space = newParent.space
         }
         refileForCurrentScheduling()
+        refreshNewFlagAfterPlacementChange()
         touch()
     }
 

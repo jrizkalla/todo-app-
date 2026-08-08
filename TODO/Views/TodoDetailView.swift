@@ -76,6 +76,24 @@ struct TodoDetailView: View {
                 ))
             }
 
+            // Only projects carry their own color; a plain to-do takes the
+            // color of whatever contains it.
+            if todo.isProject {
+                Section {
+                    ColorSwatchPicker(
+                        selection: Binding(
+                            get: { todo.colorHex },
+                            set: { todo.colorHex = $0; store.save() }
+                        ),
+                        allowsNoColor: true
+                    )
+                } header: {
+                    Text("Color")
+                } footer: {
+                    Text("Used for checkboxes and calendar blocks. Without one, the project uses its space's color.")
+                }
+            }
+
             Section("Place") {
                 Picker("Space", selection: Binding(
                     get: { todo.space?.uuid },

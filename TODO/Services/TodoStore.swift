@@ -103,10 +103,25 @@ struct TodoStore {
     // MARK: Editing
 
     /// Apply an edit and refile, since dates and placement affect the bucket.
+    ///
+    /// An edit that moves the todo somewhere the user has not looked — giving
+    /// it a date, or filing it elsewhere — re-flags it as new.
     func update(_ todo: Todo, _ mutate: (Todo) -> Void) {
         mutate(todo)
         todo.refileForCurrentScheduling()
+        todo.refreshNewFlagAfterPlacementChange()
         todo.touch()
+        save()
+    }
+
+    /// Mark every todo shown in a list as viewed, clearing their dots.
+    func markAsViewed(_ todos: [Todo]) {
+        let unseen = todos.filter(\.isNew)
+        guard !unseen.isEmpty else { return }
+
+        for todo in unseen {
+            todo.markAsViewed()
+        }
         save()
     }
 

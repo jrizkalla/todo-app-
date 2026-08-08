@@ -8,7 +8,7 @@ struct SettingsView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(\.modelContext) private var context
 
-    @State private var importer = RemindersImporter()
+    @State private var importer = RemindersImporter.shared
     @State private var availableLists: [EKCalendar] = []
     @State private var isImporting = false
     @State private var statusMessage: String?
@@ -47,7 +47,7 @@ struct SettingsView: View {
             Section {
                 Toggle("Scan Reminders on launch", isOn: $settings.remindersImportEnabled)
 
-                Text("Imported reminders appear in your Inbox and are removed from the Reminders app.")
+                Text("Reminders from these lists appear in your Inbox, where you can import them one at a time or all at once. A reminder is removed from the Reminders app only when you import it.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -91,8 +91,8 @@ struct SettingsView: View {
                             ))
                         }
 
-                        Button(isImporting ? "Importing…" : "Import Now") {
-                            runImport()
+                        Button(isImporting ? "Checking…" : "Check Now") {
+                            runScan()
                         }
                         .disabled(isImporting)
                     }
@@ -203,14 +203,18 @@ struct SettingsView: View {
         }
     }
 
-    private func runImport() {
+    /// Refresh the pending list. Read-only — importing happens in the Inbox.
+    private func runScan() {
         isImporting = true
         Task {
-            let result = await importer.importReminders(
-                from: settings.importReminderLists,
-                into: context
+            await importer.scan(
+                listIdentifiers: settings.importReminderLists,
+                context: context
             )
-            statusMessage = "Imported \(result.imported), skipped \(result.skipped) already-imported."
+            let count = importer.pending.count
+            statusMessage = count == 0
+                ? "No new reminders waiting."
+                : "\(count) reminder\(count == 1 ? "" : "s") waiting in your Inbox."
             isImporting = false
         }
     }

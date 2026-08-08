@@ -15,7 +15,13 @@ struct RootView: View {
     /// `-startInCalendar` opens straight into the calendar, for UI verification.
     @State private var showsCalendar = ProcessInfo.processInfo.arguments.contains("-startInCalendar")
     @State private var didRunLaunchTasks = false
-    @State private var importMessage: String?
+    @State private var importer = RemindersImporter.shared
+
+    @Environment(\.scenePhase) private var scenePhase
+
+    /// Shortest gap between foreground rescans, so flicking in and out of the
+    /// app does not re-query EventKit repeatedly.
+    private let rescanDebounce: TimeInterval = 30
 
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -56,13 +62,17 @@ struct RootView: View {
             didRunLaunchTasks = true
             await runLaunchTasks()
         }
-        .alert(
-            "Reminders Imported",
-            isPresented: .init(get: { importMessage != nil }, set: { if !$0 { importMessage = nil } })
-        ) {
-            Button("OK") { importMessage = nil }
-        } message: {
-            Text(importMessage ?? "")
+        // Returning to the app re-scans, so reminders added elsewhere while it
+        // was backgrounded show up without a relaunch.
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active, didRunLaunchTasks else { return }
+
+            if let last = importer.lastScanDate,
+               Date().timeIntervalSince(last) < rescanDebounce {
+                return
+            }
+
+            Task { await scanReminders() }
         }
     }
 
@@ -117,6 +127,9 @@ struct RootView: View {
         if ProcessInfo.processInfo.arguments.contains("-seedCalendarEvents") {
             await DebugCalendarSeeder.seed()
         }
+        if ProcessInfo.processInfo.arguments.contains("-seedReminders") {
+            await DebugCalendarSeeder.seedReminders()
+        }
         #endif
 
         // Scheduling itself prompts for authorization, so both steps are gated.
@@ -127,27 +140,26 @@ struct RootView: View {
             await NotificationScheduler.shared.syncAll(reminders: reminders)
         }
 
-        // The scan is opt-in, since it deletes from the Reminders app.
+        await scanReminders(skipsPrompts: skipsPrompts)
+    }
+
+    /// Refresh the pending-reminder list.
+    ///
+    /// Read-only — it only populates the Inbox's pending section, and nothing
+    /// is copied or deleted until the user taps Import. That is what makes it
+    /// safe to run on every foreground.
+    private func scanReminders(skipsPrompts: Bool = false) async {
         guard settings.remindersImportEnabled, !skipsPrompts else { return }
 
-        let importer = RemindersImporter()
         var hasAccess = importer.hasAccess
         if !hasAccess {
             hasAccess = await importer.requestAccess()
         }
         guard hasAccess else { return }
 
-        let result = await importer.importReminders(
-            from: settings.importReminderLists,
-            into: context
+        await importer.scan(
+            listIdentifiers: settings.importReminderLists,
+            context: context
         )
-
-        if result.imported > 0 {
-            var message = "Imported \(result.imported) reminder\(result.imported == 1 ? "" : "s") into your Inbox."
-            if result.failedDeletions > 0 {
-                message += " \(result.failedDeletions) could not be removed from the Reminders app."
-            }
-            importMessage = message
-        }
     }
 }

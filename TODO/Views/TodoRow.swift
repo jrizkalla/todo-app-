@@ -53,6 +53,15 @@ struct TodoRow: View {
 
     private var titleLine: some View {
         HStack(spacing: 6) {
+            // Marks a to-do the user has not yet seen in this list.
+            if todo.isNew {
+                Circle()
+                    .fill(Theme.Palette.unviewed)
+                    .frame(width: 7, height: 7)
+                    .transition(.scale.combined(with: .opacity))
+                    .accessibilityLabel("New")
+            }
+
             if todo.isProject {
                 Image(systemName: "list.bullet")
                     .font(.caption2)
@@ -99,8 +108,9 @@ struct TodoRow: View {
         }
     }
 
+    /// Checkbox and accent color, from the todo's project or space.
     private var tint: Color {
-        todo.space.map { Color(hex: $0.colorHex) } ?? Theme.Palette.accent
+        todo.resolvedColorHex.map { Color(hex: $0) } ?? Theme.Palette.accent
     }
 
     // MARK: Badges

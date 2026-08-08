@@ -62,6 +62,61 @@ enum DebugCalendarSeeder {
         }
     }
 
+    /// Add sample reminders to the Reminders app, for exercising the import
+    /// flow. Runs with `-seedReminders`.
+    static func seedReminders() async {
+        let store = EKEventStore()
+
+        guard (try? await store.requestFullAccessToReminders()) == true else {
+            AppLog.importer.error("Debug seeder: no reminders access")
+            return
+        }
+
+        guard let list = store.defaultCalendarForNewReminders() else {
+            AppLog.importer.error("Debug seeder: no default reminders list")
+            return
+        }
+
+        // Don't pile up duplicates across launches.
+        let existing: [EKReminder] = await withCheckedContinuation { continuation in
+            store.fetchReminders(matching: store.predicateForReminders(in: [list])) {
+                continuation.resume(returning: $0 ?? [])
+            }
+        }
+        guard existing.isEmpty else {
+            AppLog.importer.info("Debug seeder: reminders already present")
+            return
+        }
+
+        let samples: [(String, Int?)] = [
+            ("Pick up dry cleaning", 1),
+            ("Call the plumber", nil),
+            ("Renew car registration", 5),
+        ]
+
+        for (title, dueInDays) in samples {
+            let reminder = EKReminder(eventStore: store)
+            reminder.calendar = list
+            reminder.title = title
+
+            if let dueInDays,
+               let due = Calendar.current.date(byAdding: .day, value: dueInDays, to: Date()) {
+                reminder.dueDateComponents = Calendar.current.dateComponents(
+                    [.year, .month, .day], from: due
+                )
+            }
+
+            try? store.save(reminder, commit: false)
+        }
+
+        do {
+            try store.commit()
+            AppLog.importer.info("Debug seeder: added sample reminders")
+        } catch {
+            AppLog.importer.error("Debug seeder reminders commit failed: \(error, privacy: .public)")
+        }
+    }
+
     /// Find the scratch calendar, creating it in a writable source if absent.
     private static func resolveCalendar(in store: EKEventStore) -> EKCalendar? {
         if let existing = store.calendars(for: .event).first(where: { $0.title == calendarTitle }) {

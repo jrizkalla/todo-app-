@@ -72,9 +72,12 @@ struct TodoCheckbox: View {
         }, perform: {})
     }
 
+    /// An open box carries its space or project color too, which is what makes
+    /// a mixed list scannable by color at a glance. Without a color set, `tint`
+    /// is the app accent, so uncolored items stay neutral.
     private var strokeColor: Color {
         switch state {
-        case .open: Color.secondary.opacity(0.45)
+        case .open: tint.opacity(0.75)
         case .started: Theme.Palette.started
         case .completed: tint
         case .cancelled: Theme.Palette.cancelled

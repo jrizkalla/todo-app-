@@ -3,19 +3,41 @@ import OSLog
 import EventKit
 import SwiftData
 
-/// Imports items from the system Reminders app into the Inbox.
+/// A reminder found in the Reminders app that has not been imported yet.
 ///
-/// Per the spec, imported reminders are removed from the Reminders app. Each
-/// deletion happens only after the corresponding todo has been saved to the
-/// store, so a failure mid-import can never lose a reminder without having
-/// created its replacement.
+/// Shown in the Inbox as a pending row so the user can see what is waiting
+/// without anything being copied or deleted first.
+struct PendingReminder: Identifiable, Equatable, Sendable {
+    /// The source `EKReminder`'s `calendarItemIdentifier`.
+    let id: String
+    let title: String
+    let notes: String?
+    let dueDate: Date?
+    let dueHasTime: Bool
+    let listTitle: String
+}
+
+/// Bridges the system Reminders app into the Inbox.
+///
+/// The flow is deliberately two-stage: `scan` only reads, and `importReminder`
+/// copies one item and then removes the original. Nothing leaves the Reminders
+/// app until the user asks for that specific item, so a bad scan can never
+/// destroy anything.
 @MainActor
+@Observable
 final class RemindersImporter {
+    static let shared = RemindersImporter()
+
     private let eventStore = EKEventStore()
+
+    /// Reminders waiting to be imported, refreshed by `scan`.
+    private(set) var pending: [PendingReminder] = []
+    /// When the last successful scan finished, used to debounce foreground
+    /// rescans.
+    private(set) var lastScanDate: Date?
 
     struct ImportResult {
         var imported: Int = 0
-        var skipped: Int = 0
         var failedDeletions: Int = 0
     }
 
@@ -41,78 +63,104 @@ final class RemindersImporter {
         return eventStore.calendars(for: .reminder)
     }
 
-    // MARK: Import
+    // MARK: Scanning
 
-    /// Scan the configured lists and import everything not already imported.
+    /// Refresh `pending` from the configured lists.
+    ///
+    /// Read-only: it never writes to the Reminders app or the store. Runs on
+    /// every foreground, so it must stay cheap and side-effect free.
     ///
     /// - Parameter listIdentifiers: Which lists to scan; empty means all.
-    @discardableResult
-    func importReminders(
-        from listIdentifiers: [String],
-        into context: ModelContext
-    ) async -> ImportResult {
-        guard hasAccess else { return ImportResult() }
+    func scan(listIdentifiers: [String], context: ModelContext) async {
+        guard hasAccess else {
+            pending = []
+            return
+        }
 
         let calendars = resolveCalendars(listIdentifiers)
-        guard !calendars.isEmpty else { return ImportResult() }
+        guard !calendars.isEmpty else {
+            pending = []
+            return
+        }
 
         let predicate = eventStore.predicateForReminders(in: calendars)
-        let ekReminders: [EKReminder] = await withCheckedContinuation { continuation in
-            eventStore.fetchReminders(matching: predicate) { found in
-                continuation.resume(returning: found ?? [])
+        let found: [EKReminder] = await withCheckedContinuation { continuation in
+            eventStore.fetchReminders(matching: predicate) { reminders in
+                continuation.resume(returning: reminders ?? [])
             }
         }
 
-        // Ids already in the store, so a rescan never duplicates.
-        let existing = Set(
+        // Anything already imported stays out of the pending list, so a
+        // re-import is never offered for the same source twice.
+        let alreadyImported = Set(
             ((try? context.fetch(FetchDescriptor<Todo>())) ?? [])
                 .compactMap(\.sourceReminderID)
         )
 
-        let store = TodoStore(context: context)
+        pending = found
+            .filter { !$0.isCompleted && !alreadyImported.contains($0.calendarItemIdentifier) }
+            .map { reminder in
+                PendingReminder(
+                    id: reminder.calendarItemIdentifier,
+                    title: reminder.title ?? "Untitled Reminder",
+                    notes: reminder.notes,
+                    dueDate: reminder.dueDateComponents.flatMap { Calendar.current.date(from: $0) },
+                    dueHasTime: reminder.dueDateComponents?.hour != nil,
+                    listTitle: reminder.calendar.title
+                )
+            }
+            .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+
+        lastScanDate = Date()
+        AppLog.importer.info("Scan found \(self.pending.count) pending reminders")
+    }
+
+    // MARK: Importing
+
+    /// Import one pending reminder, then delete the original.
+    ///
+    /// The todo is saved before the source is touched, so a failure can leave a
+    /// duplicate but never a loss.
+    @discardableResult
+    func importReminder(id: String, into context: ModelContext) -> Bool {
+        guard hasAccess,
+              let ekReminder = eventStore.calendarItem(withIdentifier: id) as? EKReminder
+        else { return false }
+
+        let todo = makeTodo(from: ekReminder)
+        context.insert(todo)
+
+        do {
+            try context.save()
+        } catch {
+            AppLog.importer.error("Import save failed, keeping source reminder: \(error, privacy: .public)")
+            context.delete(todo)
+            return false
+        }
+
+        // Only now that the copy is durable does the original go.
+        do {
+            try eventStore.remove(ekReminder, commit: true)
+        } catch {
+            AppLog.importer.error("Could not delete source reminder: \(error, privacy: .public)")
+        }
+
+        pending.removeAll { $0.id == id }
+        return true
+    }
+
+    /// Import everything currently pending.
+    @discardableResult
+    func importAll(into context: ModelContext) -> ImportResult {
         var result = ImportResult()
 
-        for ekReminder in ekReminders {
-            guard !ekReminder.isCompleted else { continue }
-            guard !existing.contains(ekReminder.calendarItemIdentifier) else {
-                result.skipped += 1
-                continue
-            }
-
-            let todo = makeTodo(from: ekReminder)
-            context.insert(todo)
-
-            // Persist before deleting the source, so the reminder is never
-            // removed without its replacement being safely stored.
-            do {
-                try context.save()
-            } catch {
-                AppLog.importer.error("Import save failed, keeping source reminder: \(error, privacy: .public)")
-                context.delete(todo)
-                continue
-            }
-
-            result.imported += 1
-
-            do {
-                try eventStore.remove(ekReminder, commit: false)
-            } catch {
+        for reminder in pending {
+            if importReminder(id: reminder.id, into: context) {
+                result.imported += 1
+            } else {
                 result.failedDeletions += 1
-                AppLog.importer.error("Could not delete source reminder: \(error, privacy: .public)")
             }
         }
-
-        // Commit the batch of deletions once at the end.
-        if result.imported > 0 {
-            do {
-                try eventStore.commit()
-            } catch {
-                AppLog.importer.error("Commit of reminder deletions failed: \(error, privacy: .public)")
-            }
-        }
-
-        store.save()
-        AppLog.importer.info("Imported \(result.imported) reminders, skipped \(result.skipped)")
         return result
     }
 
@@ -155,9 +203,10 @@ final class RemindersImporter {
             }
         }
 
-        // Imported items start unscheduled in the Inbox unless the reminder
-        // carried a date, which the spec's filing rule then promotes.
         todo.refileForCurrentScheduling()
+        // An imported to-do is something the user has not seen in this app yet,
+        // so it carries the new dot until they look at the list it lands in.
+        todo.markAsNew()
         return todo
     }
 

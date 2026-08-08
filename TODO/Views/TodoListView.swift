@@ -20,7 +20,15 @@ struct TodoListView: View {
     @State private var suggestionModel = TitleSuggestionModel()
     @FocusState private var titleFieldFocused: Bool
 
+    @State private var importer = RemindersImporter.shared
+
     private var store: TodoStore { TodoStore(context: context) }
+
+    /// Pending reminders only surface in the Inbox, which is where the spec
+    /// says unorganized items collect.
+    private var showsPendingReminders: Bool {
+        destination == .inbox && !importer.pending.isEmpty
+    }
 
     /// A blocked state change awaiting confirmation, per the spec's rule that
     /// the app should ask before resolving a parent's subtasks.
@@ -40,6 +48,8 @@ struct TodoListView: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.large)
         #endif
+        // Visiting a list is what "viewing" means, so its dots clear on arrival.
+        .task(id: destination) { markVisibleAsViewed() }
         // Chips for the inline title field sit above the keyboard on iOS and at
         // the window bottom on macOS, the same as in the detail editor.
         .suggestionBar(suggestionModel.suggestions) { suggestion in
@@ -68,10 +78,31 @@ struct TodoListView: View {
 
     @ViewBuilder
     private var listContent: some View {
-        if visibleTodos.isEmpty {
+        if visibleTodos.isEmpty && !showsPendingReminders {
             emptyState
         } else {
             List {
+                // Waiting in the Reminders app, not yet copied here.
+                if showsPendingReminders {
+                    Section {
+                        ForEach(importer.pending) { reminder in
+                            PendingReminderRow(reminder: reminder) {
+                                withAnimation(Theme.Animation.listChange) {
+                                    _ = importer.importReminder(id: reminder.id, into: context)
+                                }
+                            }
+                            .listRowInsets(EdgeInsets())
+                            .listRowSeparator(.hidden)
+                        }
+                    } header: {
+                        PendingRemindersHeader(count: importer.pending.count) {
+                            withAnimation(Theme.Animation.listChange) {
+                                _ = importer.importAll(into: context)
+                            }
+                        }
+                    }
+                }
+
                 ForEach(visibleTodos) { todo in
                     VStack(spacing: 0) {
                         TodoRow(
@@ -200,6 +231,20 @@ struct TodoListView: View {
         } label: {
             Label("Delete", systemImage: "trash")
         }
+    }
+
+    // MARK: Viewed tracking
+
+    /// Clear the new flag on everything this list is showing, including the
+    /// nested subtasks, which are on screen too.
+    ///
+    /// Keyed on the destination alone, so it runs when the user *arrives* at a
+    /// list. Something landing in a list already on screen — an import, or a
+    /// sync — keeps its dot until the user comes back, which is what makes the
+    /// dot worth having.
+    private func markVisibleAsViewed() {
+        let shown = visibleTodos.flatMap { [$0] + $0.orderedSubtasks }
+        store.markAsViewed(shown)
     }
 
     // MARK: Inline title editing
