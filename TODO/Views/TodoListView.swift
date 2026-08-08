@@ -14,11 +14,10 @@ struct TodoListView: View {
     /// Set while waiting on the user's answer to the cascade prompt.
     @State private var pendingCascade: PendingCascade?
 
-    /// The todo whose title is being edited inline, if any.
-    @State private var editingTodoID: UUID?
-    /// Suggestion chips for the inline title field.
+    /// Suggestion chips for whichever row's title has focus.
     @State private var suggestionModel = TitleSuggestionModel()
-    @FocusState private var titleFieldFocused: Bool
+    /// The row whose title field is focused. There is no separate edit mode.
+    @FocusState private var focusedTodoID: UUID?
 
     @State private var importer = RemindersImporter.shared
 
@@ -50,10 +49,16 @@ struct TodoListView: View {
         #endif
         // Visiting a list is what "viewing" means, so its dots clear on arrival.
         .task(id: destination) { markVisibleAsViewed() }
-        // Chips for the inline title field sit above the keyboard on iOS and at
-        // the window bottom on macOS, the same as in the detail editor.
+        // Switching lists drops focus, so the keyboard never follows the user
+        // to a screen they did not open it on.
+        .onChange(of: destination) { _, _ in focusedTodoID = nil }
+        .onChange(of: focusedTodoID) { previous, current in
+            handleFocusChange(from: previous, to: current)
+        }
+        // Chips for the focused title field sit above the keyboard on iOS and
+        // at the window bottom on macOS, the same as in the detail editor.
         .suggestionBar(suggestionModel.suggestions) { suggestion in
-            guard let todo = editingTodo else { return }
+            guard let todo = focusedTodo else { return }
             suggestionModel.apply(suggestion, to: todo, allTodos: todos, store: store)
         }
         .confirmationDialog(
@@ -109,14 +114,12 @@ struct TodoListView: View {
                             todo: todo,
                             showsSpace: showsSpaceBadge,
                             isSelected: selectedTodo?.uuid == todo.uuid,
-                            isEditingTitle: editingTodoID == todo.uuid,
                             onToggle: { handleToggle(todo) },
                             onSelectState: { handleSetState(todo, to: $0) },
                             onTitleChange: { handleTitleChange($0, for: todo) },
-                            onCommitTitle: { endEditing() },
-                            titleFieldFocused: $titleFieldFocused
+                            focusedTodoID: $focusedTodoID
                         )
-                        .onTapGesture { handleRowTap(todo) }
+                        .contextMenu { rowMenu(for: todo) }
 
                         // Subtasks nest under their parent rather than
                         // appearing as separate top-level rows.
@@ -124,15 +127,13 @@ struct TodoListView: View {
                             TodoRow(
                                 todo: subtask,
                                 isSelected: selectedTodo?.uuid == subtask.uuid,
-                                isEditingTitle: editingTodoID == subtask.uuid,
                                 onToggle: { handleToggle(subtask) },
                                 onSelectState: { handleSetState(subtask, to: $0) },
                                 onTitleChange: { handleTitleChange($0, for: subtask) },
-                                onCommitTitle: { endEditing() },
-                                titleFieldFocused: $titleFieldFocused
+                                focusedTodoID: $focusedTodoID
                             )
                             .padding(.leading, 28)
-                            .onTapGesture { handleRowTap(subtask) }
+                            .contextMenu { rowMenu(for: subtask) }
                         }
                     }
                     .listRowInsets(EdgeInsets())
@@ -143,9 +144,6 @@ struct TodoListView: View {
                         } label: {
                             Label("Delete", systemImage: "trash")
                         }
-                    }
-                    .contextMenu {
-                        rowMenu(for: todo)
                     }
                 }
                 .onMove { indices, newOffset in
@@ -172,9 +170,8 @@ struct TodoListView: View {
 
     /// Floating create button.
     ///
-    /// Creating a to-do adds it to the current list straight away and focuses
-    /// its title inline — no detail page. The detail page is reserved for
-    /// tapping an existing row.
+    /// Creating a to-do adds it to the current list and puts the cursor in its
+    /// title. The detail page is reached from the long-press menu instead.
     private var createButton: some View {
         Button {
             let created = store.createTodo(
@@ -182,7 +179,7 @@ struct TodoListView: View {
                 parent: defaultParent,
                 assignedDate: defaultAssignedDate
             )
-            beginEditing(created)
+            focusedTodoID = created.uuid
         } label: {
             Image(systemName: "plus")
                 .font(.title2.weight(.semibold))
@@ -202,6 +199,17 @@ struct TodoListView: View {
 
     @ViewBuilder
     private func rowMenu(for todo: Todo) -> some View {
+        // Tapping a row edits its title in place, so the full editor lives
+        // here.
+        Button {
+            focusedTodoID = nil
+            selectedTodo = todo
+        } label: {
+            Label("Show Details", systemImage: "info.circle")
+        }
+
+        Divider()
+
         Button {
             store.addSubtask(to: todo)
         } label: {
@@ -247,58 +255,40 @@ struct TodoListView: View {
         store.markAsViewed(shown)
     }
 
-    // MARK: Inline title editing
+    // MARK: Title editing
 
-    /// Tapping a row: commit any in-progress edit, otherwise open the detail
-    /// page. The detail page is only for existing to-dos, per the current
-    /// interaction model.
-    private func handleRowTap(_ todo: Todo) {
-        if editingTodoID != nil {
-            endEditing()
-            return
-        }
-        selectedTodo = todo
-    }
-
-    /// Start editing a row's title in place.
-    private func beginEditing(_ todo: Todo) {
-        editingTodoID = todo.uuid
-        suggestionModel.refresh(for: todo.title, todo: todo, allTodos: todos)
-        // Focus has to wait for the field to exist in the hierarchy.
-        DispatchQueue.main.async { titleFieldFocused = true }
-    }
-
-    /// Re-run the parser as the user types so chips track the title.
+    /// Save as the user types, and keep the chips tracking the current title.
+    ///
+    /// There is nothing to "commit": edits land in the store immediately, so
+    /// leaving the screen mid-word loses nothing.
     private func handleTitleChange(_ newTitle: String, for todo: Todo) {
         suggestionModel.refresh(for: newTitle, todo: todo, allTodos: todos)
         store.save()
     }
 
-    /// Finish editing.
+    /// React to focus moving between rows.
     ///
-    /// A to-do left completely untitled is removed — the user added it and then
-    /// typed nothing, so keeping an empty row would be clutter.
-    private func endEditing() {
-        defer {
-            editingTodoID = nil
-            titleFieldFocused = false
+    /// Leaving a row is the moment to refile it and to discard it if it was
+    /// never given a title — the empty row a user creates and then abandons.
+    private func handleFocusChange(from previous: UUID?, to current: UUID?) {
+        if let previous, let todo = todos.first(where: { $0.uuid == previous }) {
+            if todo.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                store.delete(todo)
+            } else {
+                store.update(todo) { _ in }
+            }
+        }
+
+        guard let current, let todo = todos.first(where: { $0.uuid == current }) else {
             suggestionModel.clear()
+            return
         }
-
-        guard let id = editingTodoID,
-              let todo = todos.first(where: { $0.uuid == id })
-        else { return }
-
-        if todo.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            store.delete(todo)
-        } else {
-            store.update(todo) { _ in }
-        }
+        suggestionModel.refresh(for: todo.title, todo: todo, allTodos: todos)
     }
 
-    /// The todo currently being edited, for the suggestion bar.
-    private var editingTodo: Todo? {
-        guard let id = editingTodoID else { return nil }
+    /// The todo whose title has focus, for the suggestion bar.
+    private var focusedTodo: Todo? {
+        guard let id = focusedTodoID else { return nil }
         return todos.first { $0.uuid == id }
     }
 
@@ -331,11 +321,11 @@ struct TodoListView: View {
     private var visibleTodos: [Todo] {
         var result = filteredTodos
 
-        // Keep the row being edited on screen even once it stops matching this
-        // list — accepting "Schedule tomorrow" in Today would otherwise yank the
-        // row out from under the cursor mid-edit. It refiles on commit.
-        if let editing = editingTodo, !result.contains(where: { $0.uuid == editing.uuid }) {
-            result.append(editing)
+        // Keep the focused row on screen even once it stops matching this list
+        // — accepting "Schedule tomorrow" in Today would otherwise yank the row
+        // out from under the cursor mid-word. It drops out once focus leaves.
+        if let focused = focusedTodo, !result.contains(where: { $0.uuid == focused.uuid }) {
+            result.append(focused)
         }
         return result
     }

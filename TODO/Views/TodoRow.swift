@@ -6,18 +6,17 @@ struct TodoRow: View {
     @Bindable var todo: Todo
     var showsSpace: Bool = false
     var isSelected: Bool = false
-    /// True while this row's title is being edited in place.
-    var isEditingTitle: Bool = false
     let onToggle: () -> Void
     let onSelectState: (CompletionState) -> Void
-    /// Called as the inline title changes, so the parser can re-run.
+    /// Called as the title changes, so the parser can re-run and the store save.
     var onTitleChange: (String) -> Void = { _ in }
-    /// Called when the user commits the inline edit (return key or focus loss).
-    var onCommitTitle: () -> Void = {}
 
-    /// Drives focus for the inline field. Owned by the list so only one row
-    /// edits at a time.
-    @FocusState.Binding var titleFieldFocused: Bool
+    /// Which row's title currently holds focus, keyed by todo id.
+    ///
+    /// There is no edit "mode": every row is always a live field, and focus
+    /// alone decides where typing goes. That keeps rows from being stuck in a
+    /// state that outlives the screen they were edited on.
+    @FocusState.Binding var focusedTodoID: UUID?
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: Theme.Metrics.rowSpacing) {
@@ -52,7 +51,7 @@ struct TodoRow: View {
     }
 
     private var titleLine: some View {
-        HStack(spacing: 6) {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
             // Marks a to-do the user has not yet seen in this list.
             if todo.isNew {
                 Circle()
@@ -60,6 +59,7 @@ struct TodoRow: View {
                     .frame(width: 7, height: 7)
                     .transition(.scale.combined(with: .opacity))
                     .accessibilityLabel("New")
+                    .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 1 }
             }
 
             if todo.isProject {
@@ -68,24 +68,20 @@ struct TodoRow: View {
                     .foregroundStyle(tint)
             }
 
-            if isEditingTitle {
-                // Editing in place shows the raw markdown source, so the user
-                // can see and change the marks they typed.
-                TextField("New To-Do", text: $todo.title)
-                    .textFieldStyle(.plain)
-                    .focused($titleFieldFocused)
-                    .onChange(of: todo.title) { _, newValue in
-                        onTitleChange(newValue)
-                    }
-                    .onSubmit { onCommitTitle() }
-                    .submitLabel(.done)
-            } else {
-                InlineMarkdownText(
-                    markdown: todo.title.isEmpty ? "New To-Do" : todo.title,
-                    strikethrough: todo.state == .completed
-                )
-                .foregroundStyle(todo.title.isEmpty ? .secondary : .primary)
-            }
+            // Always a live field: typing saves as it goes, and `axis:
+            // .vertical` lets a long title wrap instead of running off the edge.
+            TextField("New To-Do", text: $todo.title, axis: .vertical)
+                .textFieldStyle(.plain)
+                .lineLimit(1...6)
+                .focused($focusedTodoID, equals: todo.uuid)
+                .strikethrough(todo.state == .completed)
+                .foregroundStyle(todo.state.isResolved ? .secondary : .primary)
+                .onChange(of: todo.title) { _, newValue in
+                    onTitleChange(newValue)
+                }
+                // Return commits rather than inserting a newline; titles are
+                // single-paragraph and notes are where longer text belongs.
+                .onSubmit { focusedTodoID = nil }
 
             // Marks a todo pulled in from the system Reminders app.
             if todo.importedFromReminders {

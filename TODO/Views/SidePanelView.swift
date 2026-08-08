@@ -11,9 +11,8 @@ struct SidePanelView: View {
     @Environment(\.modelContext) private var context
     @Query private var todos: [Todo]
 
-    /// The panel is a read-mostly surface; rows here are never edited in place,
-    /// but `TodoRow` requires a focus binding.
-    @FocusState private var unusedFocus: Bool
+    /// Titles are editable here too, so the panel owns its own focus.
+    @FocusState private var focusedTodoID: UUID?
 
     private var store: TodoStore { TodoStore(context: context) }
 
@@ -68,9 +67,17 @@ struct SidePanelView: View {
                     store.setStateCascading(todo, to: newState)
                 }
             },
-            titleFieldFocused: $unusedFocus
+            onTitleChange: { _ in store.save() },
+            focusedTodoID: $focusedTodoID
         )
-        .onTapGesture { selectedTodo = todo }
+        .contextMenu {
+            Button {
+                focusedTodoID = nil
+                selectedTodo = todo
+            } label: {
+                Label("Show Details", systemImage: "info.circle")
+            }
+        }
         .listRowInsets(EdgeInsets())
         .listRowSeparator(.hidden)
     }

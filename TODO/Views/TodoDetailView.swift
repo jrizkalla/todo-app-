@@ -202,10 +202,11 @@ struct TodoDetailView: View {
 
     // MARK: Suggestions
 
+    /// Not wrapped in `withAnimation`: this runs on every keystroke, and
+    /// animating the enclosing layout from inside the field being typed into is
+    /// what used to steal focus. The bar animates its own appearance instead.
     private func refreshSuggestions(for title: String) {
-        withAnimation(Theme.Animation.suggestion) {
-            suggestionModel.refresh(for: title, todo: todo, allTodos: todos)
-        }
+        suggestionModel.refresh(for: title, todo: todo, allTodos: todos)
     }
 
     /// Apply a suggestion, then clear its text from the title.

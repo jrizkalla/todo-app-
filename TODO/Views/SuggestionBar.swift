@@ -34,23 +34,31 @@ struct SuggestionBar: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
         }
-        .background(.bar)
+        // Hidden rather than absent when empty, so the enclosing inset keeps a
+        // stable identity while the user types.
+        .background(suggestions.isEmpty ? AnyShapeStyle(.clear) : AnyShapeStyle(.bar))
         .animation(Theme.Animation.suggestion, value: suggestions)
     }
 }
 
 extension View {
     /// Attach the suggestion bar at the platform-appropriate edge.
-    @ViewBuilder
+    ///
+    /// The inset container is always present, collapsing to zero height when
+    /// there is nothing to suggest. Adding and removing the inset itself would
+    /// restructure the view tree on each keystroke, which makes the text field
+    /// being typed into lose focus.
     func suggestionBar(
         _ suggestions: [ParsedSuggestion],
         onAccept: @escaping (ParsedSuggestion) -> Void
     ) -> some View {
         self.safeAreaInset(edge: .bottom, spacing: 0) {
-            if !suggestions.isEmpty {
-                SuggestionBar(suggestions: suggestions, onAccept: onAccept)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
+            SuggestionBar(suggestions: suggestions, onAccept: onAccept)
+                .frame(height: suggestions.isEmpty ? 0 : nil)
+                .opacity(suggestions.isEmpty ? 0 : 1)
+                .clipped()
+                .allowsHitTesting(!suggestions.isEmpty)
+                .animation(Theme.Animation.suggestion, value: suggestions.isEmpty)
         }
     }
 }
