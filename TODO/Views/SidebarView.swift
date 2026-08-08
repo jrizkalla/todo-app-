@@ -80,6 +80,41 @@ struct SidebarView: View {
                                 .foregroundStyle(Color(hex: space.colorHex))
                         }
                     }
+                    // Menu and confirmation both hang off the space's own row,
+                    // so the dialog is anchored beside the space it is about.
+                    // Attached to the Section instead, it points at the whole
+                    // section — including the projects underneath.
+                    .contextMenu {
+                        Button {
+                            editingSpace = space
+                        } label: {
+                            Label("Edit Space…", systemImage: "paintpalette")
+                        }
+
+                        Button(role: .destructive) {
+                            pendingDeletion = space
+                        } label: {
+                            Label("Delete Space", systemImage: "trash")
+                        }
+                    }
+                    .confirmationDialog(
+                        deletePrompt,
+                        isPresented: .init(
+                            get: { pendingDeletion?.uuid == space.uuid },
+                            set: { if !$0 { pendingDeletion = nil } }
+                        ),
+                        titleVisibility: .visible
+                    ) {
+                        Button("Delete Space", role: .destructive) {
+                            if case .space(let id) = selection, id == space.uuid {
+                                // The list being shown is about to disappear.
+                                selection = .today
+                            }
+                            store.delete(space)
+                            pendingDeletion = nil
+                        }
+                        Button("Cancel", role: .cancel) { pendingDeletion = nil }
+                    }
 
                     ForEach(space.projects) { project in
                         projectLink(project)
@@ -89,19 +124,6 @@ struct SidebarView: View {
                         var reordered = space.projects
                         reordered.move(fromOffsets: indices, toOffset: newOffset)
                         store.reorder(reordered)
-                    }
-                }
-                .contextMenu {
-                    Button {
-                        editingSpace = space
-                    } label: {
-                        Label("Edit Space…", systemImage: "paintpalette")
-                    }
-
-                    Button(role: .destructive) {
-                        pendingDeletion = space
-                    } label: {
-                        Label("Delete Space", systemImage: "trash")
                     }
                 }
             }
@@ -153,28 +175,6 @@ struct SidebarView: View {
         .sheet(item: $editingSpace) { space in
             NavigationStack {
                 SpaceEditorView(space: space)
-            }
-        }
-        // Deleting a space cascades to everything filed in it, which the
-        // sidebar row does not make obvious.
-        .confirmationDialog(
-            deletePrompt,
-            isPresented: .init(
-                get: { pendingDeletion != nil },
-                set: { if !$0 { pendingDeletion = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let space = pendingDeletion {
-                Button("Delete Space", role: .destructive) {
-                    if case .space(let id) = selection, id == space.uuid {
-                        // The list being shown is about to disappear.
-                        selection = .today
-                    }
-                    store.delete(space)
-                    pendingDeletion = nil
-                }
-                Button("Cancel", role: .cancel) { pendingDeletion = nil }
             }
         }
         .alert("New Space", isPresented: $isCreatingSpace) {
