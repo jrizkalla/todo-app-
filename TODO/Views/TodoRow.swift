@@ -19,6 +19,13 @@ struct TodoRow: View {
     /// state that outlives the screen they were edited on.
     @FocusState.Binding var focusedTodoID: UUID?
 
+    /// The row's long-press menu.
+    ///
+    /// Attached here rather than by the caller so it can cover the text and
+    /// metadata but *not* the checkbox — the checkbox has its own long press
+    /// for the status picker, and the two would otherwise compete.
+    var menu: () -> AnyView = { AnyView(EmptyView()) }
+
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: Theme.Metrics.rowSpacing) {
             TodoCheckbox(
@@ -37,8 +44,11 @@ struct TodoRow: View {
                     metadataLine
                 }
             }
-
-            Spacer(minLength: 0)
+            // The menu covers the row's content but stops short of the
+            // checkbox, so a long press there reaches the status picker.
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .contextMenu { menu() }
         }
         .padding(.vertical, Theme.Metrics.rowVerticalPadding)
         .padding(.horizontal, Theme.Metrics.rowHorizontalPadding)

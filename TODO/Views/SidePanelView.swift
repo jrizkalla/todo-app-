@@ -69,16 +69,18 @@ struct SidePanelView: View {
                 }
             },
             onTitleChange: { _ in store.save() },
-            focusedTodoID: $focusedTodoID
-        )
-        .contextMenu {
-            Button {
-                focusedTodoID = nil
-                selectedTodo = todo
-            } label: {
-                Label("Show Details", systemImage: "info.circle")
+            focusedTodoID: $focusedTodoID,
+            menu: {
+                AnyView(
+                    Button {
+                        focusedTodoID = nil
+                        selectedTodo = todo
+                    } label: {
+                        Label("Show Details", systemImage: "info.circle")
+                    }
+                )
             }
-        }
+        )
         .listRowInsets(EdgeInsets())
         .listRowSeparator(.hidden)
     }

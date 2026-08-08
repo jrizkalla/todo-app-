@@ -37,6 +37,20 @@ struct CalendarView: View {
             Divider()
             timedGrid
         }
+        // Swiping sideways moves a day (or a week), the way Calendar.app does.
+        //
+        // `minimumDistance` is generous and the gesture only fires when the
+        // horizontal movement clearly dominates, so scrolling the hour grid
+        // vertically is never mistaken for a page turn.
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 30)
+                .onEnded { value in
+                    let horizontal = value.translation.width
+                    let vertical = value.translation.height
+                    guard abs(horizontal) > abs(vertical) * 1.5, abs(horizontal) > 50 else { return }
+                    shift(by: horizontal < 0 ? 1 : -1)
+                }
+        )
         .navigationTitle(navigationTitle)
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)

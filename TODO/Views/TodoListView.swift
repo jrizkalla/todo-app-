@@ -13,6 +13,8 @@ struct TodoListView: View {
 
     /// Set while waiting on the user's answer to the cascade prompt.
     @State private var pendingCascade: PendingCascade?
+    /// Set while confirming a delete that would take other items with it.
+    @State private var pendingDeletion: Todo?
 
     /// Suggestion chips for whichever row's title has focus.
     @State private var suggestionModel = TitleSuggestionModel()
@@ -79,6 +81,22 @@ struct TodoListView: View {
                 }
             }
         }
+        .confirmationDialog(
+            deletePrompt,
+            isPresented: .init(
+                get: { pendingDeletion != nil },
+                set: { if !$0 { pendingDeletion = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let todo = pendingDeletion {
+                Button("Delete", role: .destructive) {
+                    store.delete(todo)
+                    pendingDeletion = nil
+                }
+                Button("Cancel", role: .cancel) { pendingDeletion = nil }
+            }
+        }
     }
 
     @ViewBuilder
@@ -117,9 +135,9 @@ struct TodoListView: View {
                             onToggle: { handleToggle(todo) },
                             onSelectState: { handleSetState(todo, to: $0) },
                             onTitleChange: { handleTitleChange($0, for: todo) },
-                            focusedTodoID: $focusedTodoID
+                            focusedTodoID: $focusedTodoID,
+                            menu: { AnyView(rowMenu(for: todo)) }
                         )
-                        .contextMenu { rowMenu(for: todo) }
 
                         // Subtasks nest under their parent rather than
                         // appearing as separate top-level rows.
@@ -130,17 +148,17 @@ struct TodoListView: View {
                                 onToggle: { handleToggle(subtask) },
                                 onSelectState: { handleSetState(subtask, to: $0) },
                                 onTitleChange: { handleTitleChange($0, for: subtask) },
-                                focusedTodoID: $focusedTodoID
+                                focusedTodoID: $focusedTodoID,
+                                menu: { AnyView(rowMenu(for: subtask)) }
                             )
                             .padding(.leading, 28)
-                            .contextMenu { rowMenu(for: subtask) }
                         }
                     }
                     .listRowInsets(EdgeInsets())
                     .listRowSeparator(.hidden)
                     .swipeActions(edge: .trailing) {
                         Button(role: .destructive) {
-                            store.delete(todo)
+                            requestDelete(todo)
                         } label: {
                             Label("Delete", systemImage: "trash")
                         }
@@ -238,10 +256,33 @@ struct TodoListView: View {
         Divider()
 
         Button(role: .destructive) {
-            store.delete(todo)
+            requestDelete(todo)
         } label: {
             Label("Delete", systemImage: "trash")
         }
+    }
+
+    // MARK: Deleting
+
+    /// Delete outright, or ask first when the delete would take more with it.
+    ///
+    /// A plain to-do with nothing attached is a cheap mistake to undo by
+    /// retyping, so it goes immediately. A project or a parent takes its
+    /// children down with it, which is not obvious from the row alone.
+    private func requestDelete(_ todo: Todo) {
+        if todo.subtaskList.isEmpty {
+            store.delete(todo)
+        } else {
+            pendingDeletion = todo
+        }
+    }
+
+    private var deletePrompt: String {
+        guard let todo = pendingDeletion else { return "" }
+        let count = todo.subtaskList.count
+        let noun = count == 1 ? "subtask" : "subtasks"
+        let kind = todo.isProject ? "project" : "to-do"
+        return "Deleting this \(kind) also deletes its \(count) \(noun). This cannot be undone."
     }
 
     // MARK: Viewed tracking

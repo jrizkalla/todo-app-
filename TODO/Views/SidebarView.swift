@@ -16,6 +16,8 @@ struct SidebarView: View {
     @State private var newSpaceName = ""
     @State private var isShowingSettings = false
     @State private var editingSpace: Space?
+    /// Set while confirming a space deletion, which takes its contents with it.
+    @State private var pendingDeletion: Space?
 
     private var store: TodoStore { TodoStore(context: context) }
 
@@ -97,7 +99,7 @@ struct SidebarView: View {
                     }
 
                     Button(role: .destructive) {
-                        store.delete(space)
+                        pendingDeletion = space
                     } label: {
                         Label("Delete Space", systemImage: "trash")
                     }
@@ -153,6 +155,28 @@ struct SidebarView: View {
                 SpaceEditorView(space: space)
             }
         }
+        // Deleting a space cascades to everything filed in it, which the
+        // sidebar row does not make obvious.
+        .confirmationDialog(
+            deletePrompt,
+            isPresented: .init(
+                get: { pendingDeletion != nil },
+                set: { if !$0 { pendingDeletion = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let space = pendingDeletion {
+                Button("Delete Space", role: .destructive) {
+                    if case .space(let id) = selection, id == space.uuid {
+                        // The list being shown is about to disappear.
+                        selection = .today
+                    }
+                    store.delete(space)
+                    pendingDeletion = nil
+                }
+                Button("Cancel", role: .cancel) { pendingDeletion = nil }
+            }
+        }
         .alert("New Space", isPresented: $isCreatingSpace) {
             TextField("Name", text: $newSpaceName)
             Button("Cancel", role: .cancel) { newSpaceName = "" }
@@ -192,6 +216,24 @@ struct SidebarView: View {
 
     private var fixedDestinations: [ListDestination] {
         [.inbox, .today, .thisWeek, .anytime, .logbook]
+    }
+
+    /// Spell out what a space deletion takes with it, counting the projects and
+    /// to-dos separately since they read differently to the user.
+    private var deletePrompt: String {
+        guard let space = pendingDeletion else { return "" }
+
+        let projects = space.projects.count
+        let others = space.todoList.count - projects
+
+        var parts: [String] = []
+        if projects > 0 { parts.append("\(projects) project\(projects == 1 ? "" : "s")") }
+        if others > 0 { parts.append("\(others) to-do\(others == 1 ? "" : "s")") }
+
+        guard !parts.isEmpty else {
+            return "Delete “\(space.name)”? This cannot be undone."
+        }
+        return "Deleting “\(space.name)” also deletes its \(parts.joined(separator: " and ")). This cannot be undone."
     }
 
     private var orderedSpaces: [Space] {
