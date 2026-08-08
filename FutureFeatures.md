@@ -71,10 +71,47 @@ Both EventKit paths need write access; the import flow already requests
 calendar request. `NSCalendarsFullAccessUsageDescription` is already in
 `Info.plist`.
 
+## iCloud sync — currently off
+
+The app opens a **local store**. Sync is disabled because the project's Apple
+team (`6Z52P5J4X8`) is a personal/free account, and those cannot provision the
+iCloud or Push capabilities at all — requesting them makes the app fail to sign
+for a device with:
+
+> Personal development teams do not support the Push Notifications and iCloud
+> capabilities.
+
+The schema and the mirroring code are unchanged and stay CloudKit-ready. Two
+things are switched off together, and they must move together:
+
+| Where | What |
+| --- | --- |
+| `TODO/TODO.entitlements` | The iCloud/Push keys, commented out with the exact block to restore |
+| `ModelContainer.hasCloudKitEntitlement` | `false` — the compile-time gate `canUseCloudKit` reads |
+
+**To enable sync with a paid Apple Developer account:**
+
+1. Create the CloudKit container `iCloud.com.johnrizkalla.app.TODO` in the
+   developer portal.
+2. Restore the four keys listed in the comment in `TODO.entitlements`.
+3. Set `hasCloudKitEntitlement = true`.
+4. Update `cloudKitIsDisabledUntilEntitlementIsRestored`, which pins the current
+   state so the flip is deliberate.
+
+Flipping only one of steps 2 and 3 is the failure mode to avoid: with the flag
+on and the entitlement missing, the store still opens but sync silently never
+happens — the bug this replaced.
+
 ## Notes
 
 - Every model property is optional or defaulted and no property is unique, which
   CloudKit mirroring requires. `ModelTests.schemaIsCloudKitCompatible` walks the
-  schema and fails if a future change breaks either rule.
+  schema and fails if a future change breaks either rule, and
+  `RelationshipValidationTests` checks that every relationship keeps an inverse.
+  Both run even with sync off, so the schema cannot drift out of
+  CloudKit-compatibility while it is disabled.
 - `CompletionState` and `Bucket` persist as raw strings, so new cases can be
   added without a migration.
+- `Library/Application Support` does not exist in a fresh app container, so
+  `appContainer` creates it before opening the store rather than relying on
+  CoreData's recovery path.

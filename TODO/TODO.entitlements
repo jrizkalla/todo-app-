@@ -2,18 +2,30 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>aps-environment</key>
-	<string>development</string>
-	<key>com.apple.developer.aps-environment</key>
-	<string>development</string>
-	<key>com.apple.developer.icloud-container-identifiers</key>
-	<array>
-		<string>iCloud.com.johnrizkalla.app.TODO</string>
-	</array>
-	<key>com.apple.developer.icloud-services</key>
-	<array>
-		<string>CloudKit</string>
-	</array>
+	<!--
+	  iCloud and Push are intentionally absent.
+
+	  A free/personal Apple team cannot provision either capability, so
+	  requesting them makes the app fail to sign for a device. The CloudKit
+	  code and the schema stay in place — `ModelContainer.canUseCloudKit`
+	  detects the missing entitlement and opens a local store instead.
+
+	  To turn sync on with a paid Apple Developer account:
+	    1. Create the CloudKit container `iCloud.com.johnrizkalla.app.TODO`
+	       in the developer portal.
+	    2. Add back the four keys below and rebuild.
+
+	      <key>aps-environment</key>
+	      <string>development</string>
+	      <key>com.apple.developer.icloud-container-identifiers</key>
+	      <array>
+	          <string>iCloud.com.johnrizkalla.app.TODO</string>
+	      </array>
+	      <key>com.apple.developer.icloud-services</key>
+	      <array>
+	          <string>CloudKit</string>
+	      </array>
+	-->
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
 	<key>com.apple.security.network.client</key>
