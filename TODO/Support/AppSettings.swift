@@ -1,11 +1,31 @@
 import Foundation
 import SwiftUI
 
+struct UserInfo: Codable {
+    var name: String?
+    var generalInfomation: String?
+    var memory: String?
+}
+
+extension UserInfo {
+    static var `default`: Self {
+        return .init()
+    }
+}
+
 /// User preferences, backed by `UserDefaults` in the app group so a future
 /// widget and CLI observe the same values.
 @Observable
 final class AppSettings {
+    #if DEBUG
+    static let shared = {
+        var shared = AppSettings()
+        shared.userInfo = .init(name: "John")
+        return shared
+    }()
+    #else
     static let shared = AppSettings()
+    #endif
 
     private let defaults: UserDefaults
 
@@ -25,6 +45,7 @@ final class AppSettings {
         static let showCalendarEvents = "showCalendarEvents"
         static let visibleCalendars = "visibleCalendars"
         static let showResolved = "showResolved"
+        static let userInfo = "userInfo"
     }
 
     /// Whether system calendar events appear in the calendar view.
@@ -89,5 +110,22 @@ final class AppSettings {
     var showResolved: Bool {
         get { defaults.object(forKey: Key.showResolved) as? Bool ?? true }
         set { defaults.set(newValue, forKey: Key.showResolved) }
+    }
+    
+    var userInfo: UserInfo {
+        get {
+            let decoder = JSONDecoder()
+            if
+                let data = defaults.data(forKey: Key.userInfo),
+                let userInfo = try? decoder.decode(UserInfo.self, from: data) {
+                return userInfo
+            } else {
+                return .default
+            }
+        }
+        set {
+            let encoder = JSONEncoder()
+            defaults.set(try! encoder.encode(newValue), forKey: Key.userInfo)
+        }
     }
 }

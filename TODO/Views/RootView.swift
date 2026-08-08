@@ -82,11 +82,16 @@ struct RootView: View {
             CalendarView(selectedTodo: $selectedTodo)
                 .frame(maxWidth: .infinity)
         } else {
-            TodoListView(
-                destination: selection ?? .today,
-                selectedTodo: $selectedTodo
-            )
-            .frame(maxWidth: .infinity)
+            if selection == .today {
+                TodayView(selectedTodo: $selectedTodo)
+                    .frame(maxWidth: .infinity)
+            } else {
+                TodoListView(
+                    destination: selection ?? .inbox,
+                    selectedTodo: $selectedTodo
+                )
+                .frame(maxWidth: .infinity)
+            }
         }
     }
 
