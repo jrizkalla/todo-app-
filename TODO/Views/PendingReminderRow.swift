@@ -83,3 +83,21 @@ struct PendingRemindersHeader: View {
         .textCase(nil)
     }
 }
+
+#if DEBUG
+#Preview("Pending reminders") {
+    // What the Inbox shows before anything is imported.
+    List {
+        Section {
+            ForEach(PreviewData.pendingReminders) { reminder in
+                PendingReminderRow(reminder: reminder) {}
+                    .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
+            }
+        } header: {
+            PendingRemindersHeader(count: PreviewData.pendingReminders.count) {}
+        }
+    }
+    .listStyle(.plain)
+}
+#endif

@@ -426,3 +426,21 @@ struct CalendarView: View {
         }
     }
 }
+
+#if DEBUG
+private struct CalendarPreviewHost: View {
+    @State private var selected: Todo?
+
+    var body: some View {
+        NavigationStack {
+            CalendarView(selectedTodo: $selected)
+        }
+    }
+}
+
+#Preview("Calendar") {
+    // Untimed to-dos sit in the all-day header; timed ones lay out on the grid.
+    CalendarPreviewHost()
+        .previewEnvironment()
+}
+#endif

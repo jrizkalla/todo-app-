@@ -114,3 +114,13 @@ struct RemindersSection: View {
         }
     }
 }
+
+#if DEBUG
+#Preview("Reminders section") {
+    Form {
+        RemindersSection(todo: PreviewData.todo(titled: "Review"))
+    }
+    .formStyle(.grouped)
+    .previewEnvironment()
+}
+#endif

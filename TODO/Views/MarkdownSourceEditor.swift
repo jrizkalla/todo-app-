@@ -119,3 +119,32 @@ final class VimCapableTextView: NSTextView {
     }
 }
 #endif
+
+#if DEBUG
+private struct MarkdownSourceEditorPreviewHost: View {
+    @State private var text = """
+    # Notes
+
+    Some **bold** text with `inline code`.
+
+    - first
+    - second
+    """
+    var vimEnabled: Bool = false
+
+    var body: some View {
+        MarkdownSourceEditor(text: $text, vimBindingsEnabled: vimEnabled)
+            .frame(minHeight: 200)
+            .padding()
+    }
+}
+
+#Preview("Source editor") {
+    MarkdownSourceEditorPreviewHost()
+}
+
+#Preview("Vim bindings") {
+    // macOS only; elsewhere this renders the plain editor.
+    MarkdownSourceEditorPreviewHost(vimEnabled: true)
+}
+#endif

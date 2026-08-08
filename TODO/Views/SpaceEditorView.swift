@@ -73,3 +73,12 @@ struct SpaceEditorView: View {
         }
     }
 }
+
+#if DEBUG
+#Preview("Space editor") {
+    NavigationStack {
+        SpaceEditorView(space: PreviewData.space)
+    }
+    .previewEnvironment()
+}
+#endif

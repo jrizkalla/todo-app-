@@ -82,3 +82,19 @@ struct SidePanelView: View {
         .listRowSeparator(.hidden)
     }
 }
+
+#if DEBUG
+private struct SidePanelPreviewHost: View {
+    @State private var selected: Todo?
+
+    var body: some View {
+        SidePanelView(selectedTodo: $selected)
+    }
+}
+
+#Preview("Side panel") {
+    // Overdue work on top, then the Inbox.
+    SidePanelPreviewHost()
+        .previewEnvironment()
+}
+#endif

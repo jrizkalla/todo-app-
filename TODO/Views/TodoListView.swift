@@ -408,3 +408,45 @@ struct TodoListView: View {
         }
     }
 }
+
+#if DEBUG
+/// Hosts the selection binding the list needs.
+private struct TodoListPreviewHost: View {
+    let destination: ListDestination
+    @State private var selected: Todo?
+
+    var body: some View {
+        NavigationStack {
+            TodoListView(destination: destination, selectedTodo: $selected)
+        }
+    }
+}
+
+#Preview("Today") {
+    TodoListPreviewHost(destination: .today)
+        .previewEnvironment()
+}
+
+#Preview("Inbox") {
+    TodoListPreviewHost(destination: .inbox)
+        .previewEnvironment()
+}
+
+#Preview("Project") {
+    // A project shows its subtasks nested under it.
+    TodoListPreviewHost(destination: .project(PreviewData.project.uuid))
+        .previewEnvironment()
+}
+
+#Preview("Logbook") {
+    TodoListPreviewHost(destination: .logbook)
+        .previewEnvironment()
+}
+
+#Preview("Empty") {
+    // The empty state, which has its own copy per destination.
+    TodoListPreviewHost(destination: .anytime)
+        .modelContainer(for: AppSchema.models, inMemory: true)
+        .environment(AppSettings.shared)
+}
+#endif

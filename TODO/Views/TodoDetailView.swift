@@ -280,3 +280,28 @@ private struct DurationRow: View {
         }
     }
 }
+
+#if DEBUG
+#Preview("To-do") {
+    NavigationStack {
+        TodoDetailView(todo: PreviewData.todo(titled: "Review"))
+    }
+    .previewEnvironment()
+}
+
+#Preview("Project") {
+    // Projects gain the colour picker that plain to-dos do not have.
+    NavigationStack {
+        TodoDetailView(todo: PreviewData.project)
+    }
+    .previewEnvironment()
+}
+
+#Preview("Imported") {
+    // Carries notes and the Reminders origin.
+    NavigationStack {
+        TodoDetailView(todo: PreviewData.imported)
+    }
+    .previewEnvironment()
+}
+#endif

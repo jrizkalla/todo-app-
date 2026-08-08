@@ -219,3 +219,12 @@ struct SettingsView: View {
         }
     }
 }
+
+#if DEBUG
+#Preview("Settings") {
+    NavigationStack {
+        SettingsView()
+    }
+    .previewEnvironment()
+}
+#endif

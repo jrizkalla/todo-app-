@@ -163,3 +163,11 @@ struct RootView: View {
         )
     }
 }
+
+#if DEBUG
+#Preview("Root") {
+    // The whole shell: sidebar, list, and — on wide layouts — the side panel.
+    RootView()
+        .previewEnvironment()
+}
+#endif

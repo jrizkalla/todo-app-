@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 
 /// One line in a todo list, in the spirit of Things: checkbox, title, and a
 /// quiet row of metadata badges that only appear when they carry information.
@@ -176,3 +177,63 @@ struct TodoRow: View {
         return badges
     }
 }
+
+#if DEBUG
+/// Hosts the `@FocusState` a row needs, which a preview cannot provide directly.
+private struct TodoRowPreviewHost: View {
+    let todos: [Todo]
+    var showsSpace: Bool = false
+
+    @FocusState private var focusedTodoID: UUID?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(todos) { todo in
+                TodoRow(
+                    todo: todo,
+                    showsSpace: showsSpace,
+                    onToggle: {},
+                    onSelectState: { _ in },
+                    focusedTodoID: $focusedTodoID
+                )
+            }
+        }
+        .padding(.vertical)
+    }
+}
+
+#Preview("States") {
+    // One row per completion state, including the half-filled "started" box.
+    let todos = CompletionState.allCases.map { state -> Todo in
+        let todo = Todo(title: "\(state.label) to-do")
+        PreviewData.context.insert(todo)
+        todo.setState(state)
+        return todo
+    }
+    return TodoRowPreviewHost(todos: todos)
+        .previewEnvironment()
+}
+
+#Preview("Metadata") {
+    // Dates, duration, reminders, subtask counts, space badges, and the
+    // import and new markers.
+    TodoRowPreviewHost(
+        todos: [
+            PreviewData.todo(titled: "Review"),
+            PreviewData.todo(titled: "Standup"),
+            PreviewData.todo(titled: "Pay the"),
+            PreviewData.todo(titled: "Renew passport"),
+            PreviewData.project,
+            PreviewData.imported,
+        ],
+        showsSpace: true
+    )
+    .previewEnvironment()
+}
+
+#Preview("Long title") {
+    // Titles wrap rather than running off the edge.
+    TodoRowPreviewHost(todos: [PreviewData.longTitled])
+        .previewEnvironment()
+}
+#endif

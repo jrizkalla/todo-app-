@@ -219,3 +219,27 @@ struct SidebarView: View {
         }
     }
 }
+
+#if DEBUG
+private struct SidebarPreviewHost: View {
+    @State private var selection: ListDestination? = .today
+
+    var body: some View {
+        NavigationStack {
+            SidebarView(selection: $selection)
+        }
+    }
+}
+
+#Preview("Sidebar") {
+    // Fixed lists with badge counts, then spaces with their projects.
+    SidebarPreviewHost()
+        .previewEnvironment()
+}
+
+#Preview("No spaces") {
+    SidebarPreviewHost()
+        .modelContainer(for: AppSchema.models, inMemory: true)
+        .environment(AppSettings.shared)
+}
+#endif
