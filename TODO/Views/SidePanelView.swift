@@ -11,6 +11,10 @@ struct SidePanelView: View {
     @Environment(\.modelContext) private var context
     @Query private var todos: [Todo]
 
+    /// The panel is a read-mostly surface; rows here are never edited in place,
+    /// but `TodoRow` requires a focus binding.
+    @FocusState private var unusedFocus: Bool
+
     private var store: TodoStore { TodoStore(context: context) }
 
     var body: some View {
@@ -63,7 +67,8 @@ struct SidePanelView: View {
                 if case .needsSubtaskConfirmation = store.setState(todo, to: newState) {
                     store.setStateCascading(todo, to: newState)
                 }
-            }
+            },
+            titleFieldFocused: $unusedFocus
         )
         .onTapGesture { selectedTodo = todo }
         .listRowInsets(EdgeInsets())

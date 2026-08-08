@@ -21,6 +21,7 @@ struct CalendarView: View {
 
     @State private var scale: Scale = .day
     @State private var anchorDate = Date()
+    @State private var eventStore = CalendarEventStore.shared
 
     /// Height of one hour in the grid.
     private let hourHeight: CGFloat = 52
@@ -40,6 +41,8 @@ struct CalendarView: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+        // Reload whenever the visible range or the calendar preferences change.
+        .task(id: eventReloadKey) { await reloadEvents() }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Picker("Scale", selection: $scale) {
@@ -118,6 +121,9 @@ struct CalendarView: View {
                         ForEach(TodoQueries.untimed(todos, on: day, calendar: calendar)) { todo in
                             chip(for: todo)
                         }
+                        ForEach(allDayEvents(on: day)) { event in
+                            allDayEventChip(event)
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 3)
@@ -182,6 +188,12 @@ struct CalendarView: View {
                 ForEach(0..<24, id: \.self) { _ in
                     Divider().frame(height: hourHeight, alignment: .top)
                 }
+            }
+
+            // System events sit behind to-dos, since to-dos are the app's
+            // own content and stay tappable.
+            ForEach(timedEvents(on: day)) { event in
+                eventBlock(for: event, on: day)
             }
 
             if calendar.isDateInToday(day) {
@@ -266,6 +278,112 @@ struct CalendarView: View {
 
     private func tint(for todo: Todo) -> Color {
         todo.space.map { Color(hex: $0.colorHex) } ?? .accentColor
+    }
+
+    // MARK: System calendar events
+
+    /// Changes to any of these mean the event query has to run again.
+    private var eventReloadKey: String {
+        let days = visibleDays
+        let start = days.first ?? anchorDate
+        let end = days.last ?? anchorDate
+        return "\(start.timeIntervalSince1970)-\(end.timeIntervalSince1970)-\(settings.showCalendarEvents)-\(settings.visibleCalendars.joined(separator: ","))"
+    }
+
+    private func reloadEvents() async {
+        guard settings.showCalendarEvents else {
+            eventStore.clear()
+            return
+        }
+
+        // Ask on first use, so enabling the toggle in settings is all it takes.
+        if !eventStore.hasAccess {
+            guard await eventStore.requestAccess() else { return }
+        }
+
+        guard let first = visibleDays.first, let last = visibleDays.last,
+              let rangeEnd = calendar.date(byAdding: .day, value: 1, to: last)
+        else { return }
+
+        eventStore.loadEvents(
+            from: calendar.startOfDay(for: first),
+            to: rangeEnd,
+            calendarIdentifiers: settings.visibleCalendars
+        )
+    }
+
+    /// All-day system events falling on a given day.
+    private func allDayEvents(on day: Date) -> [CalendarEvent] {
+        let dayStart = calendar.startOfDay(for: day)
+        guard let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) else { return [] }
+
+        return eventStore.events.filter { event in
+            // An all-day event can span days, so overlap is the right test.
+            event.isAllDay && event.start < dayEnd && event.end > dayStart
+        }
+    }
+
+    /// Timed system events starting on a given day.
+    private func timedEvents(on day: Date) -> [CalendarEvent] {
+        let dayStart = calendar.startOfDay(for: day)
+        guard let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) else { return [] }
+
+        return eventStore.events
+            .filter { !$0.isAllDay && $0.start >= dayStart && $0.start < dayEnd }
+            .sorted { $0.start < $1.start }
+    }
+
+    /// Read-only block for a system calendar event.
+    ///
+    /// Styled to read as "not a to-do": no checkbox, a dashed-free flat fill in
+    /// the source calendar's own color, and no tap target.
+    private func eventBlock(for event: CalendarEvent, on day: Date) -> some View {
+        let color = Color(hex: event.colorHex)
+        let minutes = CGFloat(calendar.component(.hour, from: event.start) * 60
+            + calendar.component(.minute, from: event.start))
+        let height = max(CGFloat(event.duration / 3600) * hourHeight, 18)
+
+        return VStack(alignment: .leading, spacing: 2) {
+            Text(event.title)
+                .font(.caption)
+                .lineLimit(height > 30 ? 2 : 1)
+                .foregroundStyle(color)
+
+            if height > 34 {
+                Text(event.start.formatted(date: .omitted, time: .shortened))
+                    .font(.caption2)
+                    .foregroundStyle(color.opacity(0.75))
+            }
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .frame(maxWidth: .infinity, minHeight: height, alignment: .topLeading)
+        .background {
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(color.opacity(0.13))
+                .overlay(alignment: .leading) {
+                    Rectangle().fill(color.opacity(0.7)).frame(width: 2.5)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+        }
+        .offset(y: minutes / 60 * hourHeight)
+        .allowsHitTesting(false)
+        .accessibilityLabel("Calendar event: \(event.title)")
+    }
+
+    private func allDayEventChip(_ event: CalendarEvent) -> some View {
+        let color = Color(hex: event.colorHex)
+        return Text(event.title)
+            .font(.caption)
+            .lineLimit(1)
+            .foregroundStyle(color)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(color.opacity(0.13))
+            }
     }
 
     // MARK: Dates

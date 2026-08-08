@@ -3,11 +3,21 @@ import SwiftUI
 /// One line in a todo list, in the spirit of Things: checkbox, title, and a
 /// quiet row of metadata badges that only appear when they carry information.
 struct TodoRow: View {
-    let todo: Todo
+    @Bindable var todo: Todo
     var showsSpace: Bool = false
     var isSelected: Bool = false
+    /// True while this row's title is being edited in place.
+    var isEditingTitle: Bool = false
     let onToggle: () -> Void
     let onSelectState: (CompletionState) -> Void
+    /// Called as the inline title changes, so the parser can re-run.
+    var onTitleChange: (String) -> Void = { _ in }
+    /// Called when the user commits the inline edit (return key or focus loss).
+    var onCommitTitle: () -> Void = {}
+
+    /// Drives focus for the inline field. Owned by the list so only one row
+    /// edits at a time.
+    @FocusState.Binding var titleFieldFocused: Bool
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: Theme.Metrics.rowSpacing) {
@@ -49,11 +59,24 @@ struct TodoRow: View {
                     .foregroundStyle(tint)
             }
 
-            InlineMarkdownText(
-                markdown: todo.title.isEmpty ? "New To-Do" : todo.title,
-                strikethrough: todo.state == .completed
-            )
-            .foregroundStyle(todo.title.isEmpty ? .secondary : .primary)
+            if isEditingTitle {
+                // Editing in place shows the raw markdown source, so the user
+                // can see and change the marks they typed.
+                TextField("New To-Do", text: $todo.title)
+                    .textFieldStyle(.plain)
+                    .focused($titleFieldFocused)
+                    .onChange(of: todo.title) { _, newValue in
+                        onTitleChange(newValue)
+                    }
+                    .onSubmit { onCommitTitle() }
+                    .submitLabel(.done)
+            } else {
+                InlineMarkdownText(
+                    markdown: todo.title.isEmpty ? "New To-Do" : todo.title,
+                    strikethrough: todo.state == .completed
+                )
+                .foregroundStyle(todo.title.isEmpty ? .secondary : .primary)
+            }
 
             // Marks a todo pulled in from the system Reminders app.
             if todo.importedFromReminders {

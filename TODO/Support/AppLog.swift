@@ -13,4 +13,5 @@ nonisolated enum AppLog {
     static let importer = Logger(subsystem: subsystem, category: "importer")
     static let reminders = Logger(subsystem: subsystem, category: "reminders")
     static let location = Logger(subsystem: subsystem, category: "location")
+    static let calendar = Logger(subsystem: subsystem, category: "calendar")
 }

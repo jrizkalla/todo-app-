@@ -22,6 +22,20 @@ final class AppSettings {
         static let vimBindingsEnabled = "vimBindingsEnabled"
         static let showSidePanel = "showSidePanel"
         static let weekStartsOnMonday = "weekStartsOnMonday"
+        static let showCalendarEvents = "showCalendarEvents"
+        static let visibleCalendars = "visibleCalendars"
+    }
+
+    /// Whether system calendar events appear in the calendar view.
+    var showCalendarEvents: Bool {
+        get { defaults.object(forKey: Key.showCalendarEvents) as? Bool ?? false }
+        set { defaults.set(newValue, forKey: Key.showCalendarEvents) }
+    }
+
+    /// Identifiers of the calendars to display. Empty means all of them.
+    var visibleCalendars: [String] {
+        get { defaults.stringArray(forKey: Key.visibleCalendars) ?? [] }
+        set { defaults.set(newValue, forKey: Key.visibleCalendars) }
     }
 
     /// Calendar length for a timed todo with no explicit duration. The spec

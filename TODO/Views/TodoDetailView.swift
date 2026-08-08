@@ -13,7 +13,7 @@ struct TodoDetailView: View {
     @Query private var todos: [Todo]
     @Query private var spaces: [Space]
 
-    @State private var suggestions: [ParsedSuggestion] = []
+    @State private var suggestionModel = TitleSuggestionModel()
     @State private var isEditingNotes = false
     @FocusState private var focusedField: Field?
 
@@ -98,7 +98,7 @@ struct TodoDetailView: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
-        .suggestionBar(suggestions) { accept($0) }
+        .suggestionBar(suggestionModel.suggestions) { accept($0) }
         .onAppear {
             refreshSuggestions(for: todo.title)
             if todo.title.isEmpty { focusedField = .title }
@@ -185,37 +185,16 @@ struct TodoDetailView: View {
     // MARK: Suggestions
 
     private func refreshSuggestions(for title: String) {
-        var parser = TitleParser()
-        // Offer only projects the todo isn't already inside.
-        parser.projectNames = todos
-            .filter { $0.isProject && $0.uuid != todo.uuid && $0.uuid != todo.parent?.uuid }
-            .map { (name: $0.title, uuid: $0.uuid) }
-
         withAnimation(Theme.Animation.suggestion) {
-            suggestions = parser.suggestions(for: title)
+            suggestionModel.refresh(for: title, todo: todo, allTodos: todos)
         }
     }
 
     /// Apply a suggestion, then clear its text from the title.
     private func accept(_ suggestion: ParsedSuggestion) {
-        switch suggestion.kind {
-        case .schedule(let date, let hasTime):
-            todo.assignedDate = date
-            todo.assignedHasTime = hasTime
-        case .deadline(let date, let hasTime):
-            todo.dueDate = date
-            todo.dueHasTime = hasTime
-        case .duration(let seconds):
-            todo.duration = seconds
-        case .project(_, let uuid):
-            if let project = todos.first(where: { $0.uuid == uuid }) {
-                store.move(todo, toParent: project)
-            }
+        withAnimation(Theme.Animation.suggestion) {
+            suggestionModel.apply(suggestion, to: todo, allTodos: todos, store: store)
         }
-
-        todo.title = TitleParser.removing(suggestion, from: todo.title)
-        store.update(todo) { _ in }
-        refreshSuggestions(for: todo.title)
     }
 }
 

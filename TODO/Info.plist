@@ -10,7 +10,7 @@
 	<key>NSRemindersFullAccessUsageDescription</key>
 	<string>TODO imports your reminders into its Inbox so you can organize them alongside your other tasks.</string>
 	<key>NSCalendarsFullAccessUsageDescription</key>
-	<string>TODO can export your scheduled tasks as calendar events.</string>
+	<string>TODO shows your calendar events alongside your to-dos in the calendar view.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>TODO uses your location to remind you about tasks when you arrive at or leave a place.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>

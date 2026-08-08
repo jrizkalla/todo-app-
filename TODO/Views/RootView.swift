@@ -113,6 +113,12 @@ struct RootView: View {
         // alerts covering the interface. Never set in normal use.
         let skipsPrompts = ProcessInfo.processInfo.arguments.contains("-skipPermissionPrompts")
 
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-seedCalendarEvents") {
+            await DebugCalendarSeeder.seed()
+        }
+        #endif
+
         // Scheduling itself prompts for authorization, so both steps are gated.
         if !skipsPrompts {
             await NotificationScheduler.shared.requestNotificationAuthorization()

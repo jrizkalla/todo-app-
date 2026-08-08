@@ -14,6 +14,7 @@ struct SidebarView: View {
 
     @State private var isCreatingSpace = false
     @State private var newSpaceName = ""
+    @State private var isShowingSettings = false
 
     private var store: TodoStore { TodoStore(context: context) }
 
@@ -98,19 +99,48 @@ struct SidebarView: View {
         }
         .navigationTitle("Lists")
         .safeAreaInset(edge: .bottom) {
-            Button {
-                isCreatingSpace = true
-            } label: {
-                Label("New Space", systemImage: "plus.circle")
-                    .font(.callout)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 10)
+            HStack {
+                Button {
+                    isCreatingSpace = true
+                } label: {
+                    Label("New Space", systemImage: "plus.circle")
+                        .font(.callout)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+
+                Spacer()
+
+                // macOS gets the standard Settings scene; on the other
+                // platforms this is the way in.
+                #if !os(macOS)
+                Button {
+                    isShowingSettings = true
+                } label: {
+                    Image(systemName: "gearshape")
+                        .font(.callout)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Settings")
+                #endif
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 10)
             .background(.bar)
         }
+        #if !os(macOS)
+        .sheet(isPresented: $isShowingSettings) {
+            NavigationStack {
+                SettingsView()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { isShowingSettings = false }
+                        }
+                    }
+            }
+        }
+        #endif
         .alert("New Space", isPresented: $isCreatingSpace) {
             TextField("Name", text: $newSpaceName)
             Button("Cancel", role: .cancel) { newSpaceName = "" }

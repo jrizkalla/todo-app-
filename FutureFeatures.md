@@ -54,7 +54,12 @@ portal and add it to the entitlements before building either.
 
 ## Export
 
-`Services/ExportService.swift` holds the mapping, unwired to any UI:
+Reading calendar events is already implemented — see
+`Services/CalendarEventStore.swift`, which the calendar view uses to show the
+user's events alongside to-dos. That path is strictly read-only.
+
+Writing is what remains. `Services/ExportService.swift` holds the mapping,
+unwired to any UI:
 
 - `makeReminder(from:in:)` — `Todo` → `EKReminder`, carrying dates and alarms.
 - `makeEvent(from:in:defaultDuration:)` — `Todo` → `EKEvent`, using the todo's
