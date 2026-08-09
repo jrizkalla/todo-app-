@@ -79,8 +79,11 @@ struct RootView: View {
     @ViewBuilder
     private var mainContent: some View {
         if showsCalendar {
-            CalendarView(selectedTodo: $selectedTodo)
-                .frame(maxWidth: .infinity)
+            CalendarView(
+                selectedTodo: $selectedTodo,
+                destination: selection ?? .today
+            )
+            .frame(maxWidth: .infinity)
         } else {
             if selection == .today {
                 TodayView(selectedTodo: $selectedTodo)

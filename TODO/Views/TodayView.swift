@@ -50,7 +50,7 @@ struct TodayView: View {
                 TodoListView(destination: .today, selectedTodo: $selectedTodo)
             }
         case .calendar:
-            CalendarView(selectedTodo: $selectedTodo)
+            CalendarView(selectedTodo: $selectedTodo, destination: .today)
         }
     }
     

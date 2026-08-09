@@ -61,6 +61,13 @@ final class RemindersImporter {
     func availableLists() -> [EKCalendar] {
         guard hasAccess else { return [] }
         return eventStore.calendars(for: .reminder)
+            .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    }
+
+    /// The system's default list, pre-selected when the user has not chosen.
+    var defaultListIdentifier: String? {
+        guard hasAccess else { return nil }
+        return eventStore.defaultCalendarForNewReminders()?.calendarIdentifier
     }
 
     // MARK: Scanning
@@ -70,8 +77,9 @@ final class RemindersImporter {
     /// Read-only: it never writes to the Reminders app or the store. Runs on
     /// every foreground, so it must stay cheap and side-effect free.
     ///
-    /// - Parameter listIdentifiers: Which lists to scan; empty means all.
-    func scan(listIdentifiers: [String], context: ModelContext) async {
+    /// - Parameter listIdentifiers: Which lists to scan; `nil` means the
+    ///   system's default list, and empty means none.
+    func scan(listIdentifiers: [String]?, context: ModelContext) async {
         guard hasAccess else {
             pending = []
             return
@@ -210,9 +218,17 @@ final class RemindersImporter {
         return todo
     }
 
-    private func resolveCalendars(_ identifiers: [String]) -> [EKCalendar] {
+    /// Lists to scan.
+    ///
+    /// `nil` means the user has never chosen, so only the system's default list
+    /// is scanned. An explicitly empty array means they deselected everything
+    /// and nothing should be scanned.
+    private func resolveCalendars(_ identifiers: [String]?) -> [EKCalendar] {
         let all = eventStore.calendars(for: .reminder)
-        guard !identifiers.isEmpty else { return all }
+
+        guard let identifiers else {
+            return eventStore.defaultCalendarForNewReminders().map { [$0] } ?? []
+        }
         return all.filter { identifiers.contains($0.calendarIdentifier) }
     }
 }

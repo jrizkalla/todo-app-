@@ -15,11 +15,17 @@ struct SettingsView: View {
 
     @State private var calendarStore = CalendarEventStore.shared
     @State private var availableCalendars: [EKCalendar] = []
+    
 
     var body: some View {
         @Bindable var settings = settings
 
         Form {
+            Section("About me") {
+                NavigationLink("Personalize AI Summary") {
+                    aboutMeView
+                }
+            }
             Section("TODOs") {
                 Toggle("Show completed TODOs", isOn: $settings.showResolved)
             }
@@ -64,34 +70,23 @@ struct SettingsView: View {
                             }
                         }
                     } else {
-                        // Empty selection means every list, so the UI states
-                        // that explicitly rather than looking like a no-op.
-                        Text(settings.importReminderLists.isEmpty
-                             ? "Scanning all lists"
-                             : "Scanning \(settings.importReminderLists.count) list(s)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-
-                        ForEach(availableLists, id: \.calendarIdentifier) { list in
-                            Toggle(list.title, isOn: Binding(
-                                get: {
-                                    settings.importReminderLists.isEmpty
-                                        || settings.importReminderLists.contains(list.calendarIdentifier)
-                                },
-                                set: { enabled in
-                                    var selected = settings.importReminderLists.isEmpty
-                                        ? availableLists.map(\.calendarIdentifier)
-                                        : settings.importReminderLists
-                                    if enabled {
-                                        if !selected.contains(list.calendarIdentifier) {
-                                            selected.append(list.calendarIdentifier)
-                                        }
-                                    } else {
-                                        selected.removeAll { $0 == list.calendarIdentifier }
-                                    }
-                                    settings.importReminderLists = selected
-                                }
-                            ))
+                        NavigationLink {
+                            SourceSelectionView(
+                                title: "Lists",
+                                footer: "Reminders in the selected lists appear in your Inbox, ready to import.",
+                                sources: availableLists,
+                                defaultIdentifier: importer.defaultListIdentifier,
+                                selection: $settings.importReminderLists
+                            )
+                        } label: {
+                            LabeledContent(
+                                "Lists",
+                                value: SourceSelectionView.summary(
+                                    selection: settings.importReminderLists,
+                                    sources: availableLists,
+                                    defaultIdentifier: importer.defaultListIdentifier
+                                )
+                            )
                         }
 
                         Button(isImporting ? "Checking…" : "Check Now") {
@@ -127,42 +122,23 @@ struct SettingsView: View {
                             }
                         }
                     } else {
-                        // Empty selection means every calendar, so say so rather
-                        // than showing what looks like nothing selected.
-                        Text(settings.visibleCalendars.isEmpty
-                             ? "Showing all calendars"
-                             : "Showing \(settings.visibleCalendars.count) calendar(s)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-
-                        ForEach(availableCalendars, id: \.calendarIdentifier) { calendar in
-                            Toggle(isOn: Binding(
-                                get: {
-                                    settings.visibleCalendars.isEmpty
-                                        || settings.visibleCalendars.contains(calendar.calendarIdentifier)
-                                },
-                                set: { enabled in
-                                    var selected = settings.visibleCalendars.isEmpty
-                                        ? availableCalendars.map(\.calendarIdentifier)
-                                        : settings.visibleCalendars
-                                    if enabled {
-                                        if !selected.contains(calendar.calendarIdentifier) {
-                                            selected.append(calendar.calendarIdentifier)
-                                        }
-                                    } else {
-                                        selected.removeAll { $0 == calendar.calendarIdentifier }
-                                    }
-                                    settings.visibleCalendars = selected
-                                }
-                            )) {
-                                Label {
-                                    Text(calendar.title)
-                                } icon: {
-                                    Circle()
-                                        .fill(Color(hex: CalendarEventStore.hexString(from: calendar.cgColor)))
-                                        .frame(width: 10, height: 10)
-                                }
-                            }
+                        NavigationLink {
+                            SourceSelectionView(
+                                title: "Calendars",
+                                footer: "Events from the selected calendars appear alongside your to-dos in Today and This Week.",
+                                sources: availableCalendars,
+                                defaultIdentifier: calendarStore.defaultCalendarIdentifier,
+                                selection: $settings.visibleCalendars
+                            )
+                        } label: {
+                            LabeledContent(
+                                "Calendars",
+                                value: SourceSelectionView.summary(
+                                    selection: settings.visibleCalendars,
+                                    sources: availableCalendars,
+                                    defaultIdentifier: calendarStore.defaultCalendarIdentifier
+                                )
+                            )
                         }
                     }
                 }
@@ -220,6 +196,41 @@ struct SettingsView: View {
                 : "\(count) reminder\(count == 1 ? "" : "s") waiting in your Inbox."
             isImporting = false
         }
+    }
+    
+    private var aboutMeView: some View {
+        VStack(alignment: .leading) {
+            Text("Name").font(.caption).foregroundStyle(.secondary)
+            TextField("Name", text: .init(
+                get: { settings.userInfo.name ?? "" },
+                set: { name in
+                    print("Setting name: \(name)")
+                    settings.userInfo = .init(
+                        name: name == "" ? nil : name,
+                        generalInfomation: settings.userInfo.generalInfomation
+                    )
+                }
+            ))
+            
+            Spacer().frame(height: 20)
+            
+            Text("Description").font(.caption).foregroundStyle(.secondary)
+            TextField(
+                "Describe yourself, your commute, any any other information you would like to feed into the model",
+                text: .init(
+                    get: { settings.userInfo.generalInfomation ?? "" },
+                    set: { info in
+                        settings.userInfo = .init(
+                            name: settings.userInfo.name,
+                            generalInfomation: info == "" ? nil : info
+                        )
+                    }
+                ),
+                axis: .vertical
+            )
+            .lineLimit(4...)
+            Spacer()
+        }.padding()
     }
 }
 

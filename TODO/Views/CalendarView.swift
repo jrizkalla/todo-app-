@@ -15,6 +15,13 @@ struct CalendarView: View {
 
     @Binding var selectedTodo: Todo?
 
+    /// The list the calendar was opened from.
+    ///
+    /// Determines both which to-dos are laid out and whether outside calendar
+    /// events appear at all: from a space or project the calendar is about that
+    /// container's work, so events from the user's calendars would be noise.
+    var destination: ListDestination = .today
+
     @Environment(\.modelContext) private var context
     @Environment(AppSettings.self) private var settings
     @Query private var todos: [Todo]
@@ -23,34 +30,58 @@ struct CalendarView: View {
     @State private var anchorDate = Date()
     @State private var eventStore = CalendarEventStore.shared
 
+    /// Page currently shown, as an offset from `pageOrigin`.
+    @State private var pageIndex = 0
+    /// Date that page 0 refers to; moved when the window is recentred.
+    @State private var pageOrigin = Date()
+
+    /// How many pages exist either side of the origin. Large enough that
+    /// recentring is invisible, small enough to stay cheap.
+    private let pageWindow = 200
+
+    private var pageRange: ClosedRange<Int> { -pageWindow...pageWindow }
+
     /// Height of one hour in the grid.
     private let hourHeight: CGFloat = 52
 
     private var calendar: Calendar { settings.calendar }
     private var store: TodoStore { TodoStore(context: context) }
 
+    /// Outside calendar events belong on the cross-cutting lists only.
+    ///
+    /// Today and This Week are "what does my day look like" views, where the
+    /// user's meetings are the point. A space or project calendar is scoped to
+    /// that container, so events from elsewhere would be noise.
+    private var showsCalendarEvents: Bool {
+        switch destination {
+        case .today, .thisWeek, .anytime:
+            settings.showCalendarEvents
+        default:
+            false
+        }
+    }
+
+    /// To-dos this calendar lays out, narrowed to the container it was opened
+    /// from.
+    private var scopedTodos: [Todo] {
+        switch destination {
+        case .space(let id):
+            // Everything filed in the space, including work inside its
+            // projects, since the space calendar is about the whole area.
+            todos.filter { $0.space?.uuid == id && !$0.isProject }
+        case .project(let id):
+            todos.filter { $0.parent?.uuid == id }
+        default:
+            todos
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
-            allDayRow
-            Divider()
-            timedGrid
+            pagedContent
         }
-        // Swiping sideways moves a day (or a week), the way Calendar.app does.
-        //
-        // `minimumDistance` is generous and the gesture only fires when the
-        // horizontal movement clearly dominates, so scrolling the hour grid
-        // vertically is never mistaken for a page turn.
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 30)
-                .onEnded { value in
-                    let horizontal = value.translation.width
-                    let vertical = value.translation.height
-                    guard abs(horizontal) > abs(vertical) * 1.5, abs(horizontal) > 50 else { return }
-                    shift(by: horizontal < 0 ? 1 : -1)
-                }
-        )
         .navigationTitle(navigationTitle)
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
@@ -68,6 +99,102 @@ struct CalendarView: View {
                 .frame(width: 140)
             }
         }
+    }
+
+    // MARK: Paging
+
+    /// Days (or weeks) laid out as pages so a sideways swipe tracks the finger
+    /// and settles with a real animation, the way Calendar.app does.
+    ///
+    /// Pages are addressed by an integer offset from `pageOrigin` rather than
+    /// by date, because `TabView` needs a stable, ordered selection and dates
+    /// do not increment uniformly across DST or month ends. The window is
+    /// recentred when the user nears either edge, which keeps paging unbounded
+    /// without materializing every day.
+    @ViewBuilder
+    private var pagedContent: some View {
+        #if os(iOS)
+        TabView(selection: $pageIndex) {
+            ForEach(pageRange, id: \.self) { offset in
+                dayPage(for: offset)
+                    .tag(offset)
+            }
+        }
+        .tabViewStyle(.page(indexDisplayMode: .never))
+        .onChange(of: pageIndex) { _, newValue in
+            // Paging is the source of truth; the anchor follows it.
+            anchorDate = date(forPage: newValue)
+            recentreIfNeeded()
+        }
+        .onChange(of: anchorDate) { _, _ in
+            // The Today button and the chevrons move the anchor directly, so
+            // the page has to catch up without fighting the user's swipe.
+            let target = page(for: anchorDate)
+            if target != pageIndex { pageIndex = target }
+        }
+        .onChange(of: scale) { _, _ in
+            // A page means a day in one scale and a week in the other, so the
+            // index has to be recomputed against the date the user was on.
+            pageOrigin = anchorDate
+            pageIndex = 0
+        }
+        #else
+        // No paged TabView on macOS; the chevrons in the header are the way to
+        // move between days there.
+        dayPage(for: pageIndex)
+        #endif
+    }
+
+    /// One page: the all-day row and the hour grid for that offset.
+    private func dayPage(for offset: Int) -> some View {
+        let days = days(forPage: offset)
+
+        return VStack(spacing: 0) {
+            allDayRow(for: days)
+            Divider()
+            timedGrid(for: days)
+        }
+    }
+
+    /// Days shown on a given page.
+    private func days(forPage offset: Int) -> [Date] {
+        let anchor = date(forPage: offset)
+
+        switch scale {
+        case .day:
+            return [calendar.startOfDay(for: anchor)]
+        case .week:
+            guard let week = calendar.dateInterval(of: .weekOfYear, for: anchor) else {
+                return [calendar.startOfDay(for: anchor)]
+            }
+            return (0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: week.start) }
+        }
+    }
+
+    private func date(forPage offset: Int) -> Date {
+        let component: Calendar.Component = scale == .day ? .day : .weekOfYear
+        return calendar.date(byAdding: component, value: offset, to: pageOrigin) ?? pageOrigin
+    }
+
+    private func page(for date: Date) -> Int {
+        let component: Calendar.Component = scale == .day ? .day : .weekOfYear
+        let from = scale == .day
+            ? calendar.startOfDay(for: pageOrigin)
+            : (calendar.dateInterval(of: .weekOfYear, for: pageOrigin)?.start ?? pageOrigin)
+        let to = scale == .day
+            ? calendar.startOfDay(for: date)
+            : (calendar.dateInterval(of: .weekOfYear, for: date)?.start ?? date)
+
+        return calendar.dateComponents([component], from: from, to: to).value(for: component) ?? 0
+    }
+
+    /// Slide the window when the user approaches an end, so paging never stops.
+    private func recentreIfNeeded() {
+        guard abs(pageIndex) > pageWindow - 20 else { return }
+
+        let anchor = date(forPage: pageIndex)
+        pageOrigin = anchor
+        pageIndex = 0
     }
 
     // MARK: Header
@@ -121,7 +248,7 @@ struct CalendarView: View {
     // MARK: All-day
 
     /// Untimed scheduled todos, pinned above the grid as the spec requires.
-    private var allDayRow: some View {
+    private func allDayRow(for days: [Date]) -> some View {
         HStack(alignment: .top, spacing: 0) {
             Text("all-day")
                 .font(.caption2)
@@ -130,9 +257,9 @@ struct CalendarView: View {
                 .padding(.trailing, 6)
 
             HStack(alignment: .top, spacing: 0) {
-                ForEach(visibleDays, id: \.self) { day in
+                ForEach(days, id: \.self) { day in
                     VStack(spacing: 4) {
-                        ForEach(TodoQueries.untimed(todos, on: day, calendar: calendar, includeResolved: settings.showResolved)) { todo in
+                        ForEach(TodoQueries.untimed(scopedTodos, on: day, calendar: calendar, includeResolved: settings.showResolved)) { todo in
                             chip(for: todo)
                         }
                         ForEach(allDayEvents(on: day)) { event in
@@ -167,13 +294,13 @@ struct CalendarView: View {
 
     // MARK: Timed grid
 
-    private var timedGrid: some View {
+    private func timedGrid(for days: [Date]) -> some View {
         ScrollView {
             HStack(alignment: .top, spacing: 0) {
                 hourLabels
 
                 HStack(alignment: .top, spacing: 0) {
-                    ForEach(visibleDays, id: \.self) { day in
+                    ForEach(days, id: \.self) { day in
                         dayColumn(for: day)
                     }
                 }
@@ -214,7 +341,7 @@ struct CalendarView: View {
                 currentTimeIndicator
             }
 
-            ForEach(TodoQueries.timed(todos, on: day, calendar: calendar, includeResolved: settings.showResolved)) { todo in
+            ForEach(TodoQueries.timed(scopedTodos, on: day, calendar: calendar, includeResolved: settings.showResolved)) { todo in
                 eventBlock(for: todo, on: day)
             }
         }
@@ -302,11 +429,12 @@ struct CalendarView: View {
         let days = visibleDays
         let start = days.first ?? anchorDate
         let end = days.last ?? anchorDate
-        return "\(start.timeIntervalSince1970)-\(end.timeIntervalSince1970)-\(settings.showCalendarEvents)-\(settings.visibleCalendars.joined(separator: ","))"
+        let calendars = settings.visibleCalendars?.joined(separator: ",") ?? "default"
+        return "\(start.timeIntervalSince1970)-\(end.timeIntervalSince1970)-\(showsCalendarEvents)-\(calendars)"
     }
 
     private func reloadEvents() async {
-        guard settings.showCalendarEvents else {
+        guard showsCalendarEvents else {
             eventStore.clear()
             return
         }
@@ -329,6 +457,10 @@ struct CalendarView: View {
 
     /// All-day system events falling on a given day.
     private func allDayEvents(on day: Date) -> [CalendarEvent] {
+        // `eventStore` is shared, so a scoped calendar must not render events
+        // another destination loaded before it.
+        guard showsCalendarEvents else { return [] }
+
         let dayStart = calendar.startOfDay(for: day)
         guard let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) else { return [] }
 
@@ -340,6 +472,8 @@ struct CalendarView: View {
 
     /// Timed system events starting on a given day.
     private func timedEvents(on day: Date) -> [CalendarEvent] {
+        guard showsCalendarEvents else { return [] }
+
         let dayStart = calendar.startOfDay(for: day)
         guard let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) else { return [] }
 
@@ -403,16 +537,10 @@ struct CalendarView: View {
 
     // MARK: Dates
 
+    /// Days on the page currently shown. Used by the week header and to decide
+    /// which range of events to load; `days(forPage:)` is the single definition.
     private var visibleDays: [Date] {
-        switch scale {
-        case .day:
-            return [calendar.startOfDay(for: anchorDate)]
-        case .week:
-            guard let week = calendar.dateInterval(of: .weekOfYear, for: anchorDate) else {
-                return [calendar.startOfDay(for: anchorDate)]
-            }
-            return (0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: week.start) }
-        }
+        days(forPage: page(for: anchorDate))
     }
 
     private func shift(by amount: Int) {

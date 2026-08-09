@@ -64,9 +64,9 @@ final class CalendarEventStore {
 
     /// Load events between two dates from the enabled calendars.
     ///
-    /// - Parameter calendarIdentifiers: Which calendars to read; empty means
-    ///   all of them, matching how the Reminders import treats its list filter.
-    func loadEvents(from start: Date, to end: Date, calendarIdentifiers: [String]) {
+    /// - Parameter calendarIdentifiers: Which calendars to read; `nil` means
+    ///   the system's default calendar, and empty means none.
+    func loadEvents(from start: Date, to end: Date, calendarIdentifiers: [String]?) {
         guard hasAccess else {
             events = []
             return
@@ -82,14 +82,28 @@ final class CalendarEventStore {
         events = eventStore.events(matching: predicate).map(Self.makeEvent)
     }
 
+    /// The system's default calendar, pre-selected when the user has not
+    /// chosen.
+    var defaultCalendarIdentifier: String? {
+        guard hasAccess else { return nil }
+        return eventStore.defaultCalendarForNewEvents?.calendarIdentifier
+    }
+
     /// Drop loaded events, used when the user turns the integration off.
     func clear() {
         events = []
     }
 
-    private func resolveCalendars(_ identifiers: [String]) -> [EKCalendar] {
+    /// Calendars to read.
+    ///
+    /// `nil` means never chosen, so only the system's default calendar is read
+    /// rather than every subscribed calendar. Empty is a deliberate "none".
+    private func resolveCalendars(_ identifiers: [String]?) -> [EKCalendar] {
         let all = eventStore.calendars(for: .event)
-        guard !identifiers.isEmpty else { return all }
+
+        guard let identifiers else {
+            return eventStore.defaultCalendarForNewEvents.map { [$0] } ?? []
+        }
         return all.filter { identifiers.contains($0.calendarIdentifier) }
     }
 

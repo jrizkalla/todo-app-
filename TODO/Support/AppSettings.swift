@@ -54,10 +54,21 @@ final class AppSettings {
         set { defaults.set(newValue, forKey: Key.showCalendarEvents) }
     }
 
-    /// Identifiers of the calendars to display. Empty means all of them.
-    var visibleCalendars: [String] {
-        get { defaults.stringArray(forKey: Key.visibleCalendars) ?? [] }
-        set { defaults.set(newValue, forKey: Key.visibleCalendars) }
+    /// Identifiers of the calendars to display.
+    ///
+    /// `nil` means the user has never chosen, which falls back to the system's
+    /// default calendar rather than every calendar — the old behavior pulled in
+    /// birthdays, holidays, and shared calendars nobody asked for. An empty
+    /// array is a real choice ("show none") and is preserved as such.
+    var visibleCalendars: [String]? {
+        get { defaults.stringArray(forKey: Key.visibleCalendars) }
+        set {
+            if let newValue {
+                defaults.set(newValue, forKey: Key.visibleCalendars)
+            } else {
+                defaults.removeObject(forKey: Key.visibleCalendars)
+            }
+        }
     }
 
     /// Calendar length for a timed todo with no explicit duration. The spec
@@ -70,11 +81,19 @@ final class AppSettings {
         set { defaults.set(newValue, forKey: Key.defaultEventDuration) }
     }
 
-    /// Identifiers of the Reminders lists to scan on launch. Empty means all
-    /// lists are scanned.
-    var importReminderLists: [String] {
-        get { defaults.stringArray(forKey: Key.importReminderLists) ?? [] }
-        set { defaults.set(newValue, forKey: Key.importReminderLists) }
+    /// Identifiers of the Reminders lists to scan.
+    ///
+    /// `nil` means never chosen, which falls back to the system's default list.
+    /// See `visibleCalendars` for why that beats scanning everything.
+    var importReminderLists: [String]? {
+        get { defaults.stringArray(forKey: Key.importReminderLists) }
+        set {
+            if let newValue {
+                defaults.set(newValue, forKey: Key.importReminderLists)
+            } else {
+                defaults.removeObject(forKey: Key.importReminderLists)
+            }
+        }
     }
 
     /// Master switch for the launch-time Reminders scan.
