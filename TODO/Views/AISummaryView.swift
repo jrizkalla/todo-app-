@@ -14,7 +14,9 @@ struct AISummaryView : View {
     @StateObject var weatherService = TodoWeatherService.shared
     @StateObject var aiSummaryService = AISummaryService(userInfo: .default)
     @State var summary: AISummary?
-    
+    /// Shared with the calendar so both read the same loaded range.
+    @State private var eventStore = CalendarEventStore.shared
+
     @Query var todos: [Todo]
     
     var timeOfDay: String {
@@ -35,37 +37,79 @@ struct AISummaryView : View {
             " \($0)"
         } ?? ""
     }
+
+    /// Load today's events for the inline calendar.
+    ///
+    /// Access is only requested if the user has turned calendar events on, so
+    /// the summary never prompts for a permission the feature does not use.
+    private func loadEvents() async {
+        guard settings.showCalendarEvents else {
+            eventStore.clear()
+            return
+        }
+        if !eventStore.hasAccess {
+            guard await eventStore.requestAccess() else { return }
+        }
+
+        let calendar = settings.calendar
+        let start = calendar.startOfDay(for: Date())
+        guard let end = calendar.date(byAdding: .day, value: 1, to: start) else { return }
+
+        eventStore.loadEvents(from: start, to: end, calendarIdentifiers: settings.visibleCalendars)
+    }
     
     
     var body: some View {
-        VStack(alignment: .leading) {
-            Text("Good \(timeOfDay)\(nameGreeting)")
-                .font(.largeTitle)
-                .fontWeight(.medium)
-            Spacer().frame(height: 50)
-            
-            if let summary {
-                if let quickSummary = summary.quickSummary {
-                    Text(
-                        (try? AttributedString(markdown: quickSummary)) ??
-                        AttributedString(quickSummary)
-                    ).font(.headline)
-                    Spacer().frame(height: 8)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Good \(timeOfDay)\(nameGreeting)")
+                    .font(.largeTitle)
+                    .fontWeight(.medium)
+                Spacer().frame(height: 50)
+
+                if let summary {
+                    if let quickSummary = summary.quickSummary {
+                        Text(
+                            (try? AttributedString(markdown: quickSummary)) ??
+                            AttributedString(quickSummary)
+                        ).font(.headline)
+                        Spacer().frame(height: 8)
+                    }
+                    if let detailedSummary = summary.detailedSummary {
+                        Text(
+                            (try? AttributedString(markdown: detailedSummary)) ??
+                            AttributedString(detailedSummary)
+                        )
+                    }
+                } else {
+                    HStack {
+                        ProgressView()
+                        Text("Summarizing your day...")
+                    }
                 }
-                if let detailedSummary = summary.detailedSummary {
-                    Text(
-                        (try? AttributedString(markdown: detailedSummary)) ??
-                        AttributedString(detailedSummary)
+
+                // The cards stand on their own: they render from local data, so
+                // the glance at today's weather, schedule, and list is there
+                // immediately rather than waiting on the model.
+                Spacer().frame(height: 24)
+
+                VStack(spacing: 14) {
+                    WeatherSummaryCard(forecast: weatherService.weather)
+
+                    InlineCalendarCard(
+                        todos: todos,
+                        events: eventStore.events,
+                        calendar: settings.calendar,
+                        defaultDuration: settings.defaultEventDuration
                     )
-                }
-            } else {
-                HStack {
-                    ProgressView()
-                    Text("Summarizing your day...")
+
+                    TodoListCard(todos: todos)
                 }
             }
+            .padding([.leading, .trailing])
+            .padding(.bottom, 24)
         }
-        .padding([.leading, .trailing])
+        .task(id: settings.showCalendarEvents) { await loadEvents() }
         .onChange(of: weatherService.weather) {
             aiSummaryService.userInfo = settings.userInfo
             aiSummaryService.weather = weatherService.weather
