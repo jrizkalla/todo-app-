@@ -24,6 +24,18 @@ enum AppSchema {
 
     /// CloudKit container backing sync.
     static let cloudKitContainerIdentifier = "iCloud.com.johnrizkalla.app.TODO"
+
+    /// Location of the shared SwiftData store, inside the app group.
+    ///
+    /// `nil` when the App Group capability is not provisioned for this build,
+    /// in which case callers fall back to the app's private container. The
+    /// widget has no fallback: without the group there is no shared store for
+    /// it to read.
+    static var storeURL: URL? {
+        FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier)?
+            .appending(path: "TODO.store")
+    }
 }
 
 extension ModelContainer {
@@ -50,13 +62,30 @@ extension ModelContainer {
             // a fresh install.
             ensureStoreDirectoryExists()
 
-            configuration = ModelConfiguration(
-                schema: AppSchema.schema,
-                isStoredInMemoryOnly: false,
-                cloudKitDatabase: cloudKit
-                    ? .private(AppSchema.cloudKitContainerIdentifier)
-                    : .none
-            )
+            let cloudKitDatabase: ModelConfiguration.CloudKitDatabase = cloudKit
+                ? .private(AppSchema.cloudKitContainerIdentifier)
+                : .none
+
+            // Prefer the group container so the widget opens the same store.
+            // Falling back to the default location keeps the app working when
+            // the App Group capability is not provisioned — the widget simply
+            // has nothing to read, rather than the app failing to launch.
+            if let groupURL = AppSchema.storeURL {
+                migrateLegacyStoreIfNeeded(to: groupURL)
+
+                configuration = ModelConfiguration(
+                    schema: AppSchema.schema,
+                    url: groupURL,
+                    cloudKitDatabase: cloudKitDatabase
+                )
+            } else {
+                AppLog.data.warning("App group unavailable; using the app's private store")
+                configuration = ModelConfiguration(
+                    schema: AppSchema.schema,
+                    isStoredInMemoryOnly: false,
+                    cloudKitDatabase: cloudKitDatabase
+                )
+            }
         }
 
         return try ModelContainer(for: AppSchema.schema, configurations: [configuration])
@@ -109,6 +138,48 @@ extension ModelContainer {
         }
 
         return true
+    }
+
+    /// Move a pre-app-group store into the group container.
+    ///
+    /// Before the widget existed the store lived in the app's private
+    /// Application Support directory. Pointing at the group container without
+    /// this would silently present an empty database to anyone upgrading, which
+    /// reads as total data loss.
+    ///
+    /// Copies rather than moves, and only when the destination is absent, so a
+    /// failure part-way leaves the original intact to try again next launch.
+    private static func migrateLegacyStoreIfNeeded(to groupURL: URL) {
+        let fileManager = FileManager.default
+
+        guard !fileManager.fileExists(atPath: groupURL.path) else { return }
+
+        guard let support = try? fileManager.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: false
+        ) else { return }
+
+        // SwiftData's implicit store name, plus the SQLite sidecars that carry
+        // any not-yet-checkpointed writes.
+        let legacyURL = support.appending(path: "default.store")
+        guard fileManager.fileExists(atPath: legacyURL.path) else { return }
+
+        for suffix in ["", "-shm", "-wal"] {
+            let source = URL(fileURLWithPath: legacyURL.path + suffix)
+            let destination = URL(fileURLWithPath: groupURL.path + suffix)
+            guard fileManager.fileExists(atPath: source.path) else { continue }
+
+            do {
+                try fileManager.copyItem(at: source, to: destination)
+            } catch {
+                AppLog.data.error("Store migration failed for \(suffix, privacy: .public): \(error, privacy: .public)")
+                return
+            }
+        }
+
+        AppLog.data.info("Migrated the store into the app group")
     }
 
     /// Make sure the store's parent directory exists.

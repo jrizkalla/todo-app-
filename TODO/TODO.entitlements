@@ -26,6 +26,14 @@
 	          <string>CloudKit</string>
 	      </array>
 	-->
+	<!--
+	  The app group is what lets the Today widget read the same SwiftData
+	  store as the app. Unlike iCloud, a free team can provision this.
+	-->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.johnrizkalla.app.TODO</string>
+	</array>
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
 	<key>com.apple.security.network.client</key>

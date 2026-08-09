@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		AA000000000000000000000E /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = AA000000000000000000000D /* MarkdownUI */; };
+		AA0000000000000000000020 /* TodayWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000011 /* TodayWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -18,14 +19,45 @@
 			remoteGlobalIDString = BD10313030269141008B5B9B;
 			remoteInfo = TODO;
 		};
+		AA0000000000000000000022 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = BD10312930269141008B5B9B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AA0000000000000000000010;
+			remoteInfo = TodayWidgetExtension;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		AA0000000000000000000002 /* TODOTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TODOTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000000000000000000011 /* TodayWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TodayWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		BD10313130269141008B5B9B /* TODO.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TODO.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		AA0000000000000000000024 /* Exceptions for "TODO" folder in "TodayWidgetExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Models/Enums.swift,
+				"Models/ModelContainer+App.swift",
+				Models/Reminder.swift,
+				Models/Space.swift,
+				Models/Structs.swift,
+				Models/Todo.swift,
+				Services/TodoQueries.swift,
+				Support/AppLog.swift,
+				Support/StringExtensions.swift,
+				Support/Theme.swift,
+			);
+			target = AA0000000000000000000010 /* TodayWidgetExtension */;
+		};
+		AA0000000000000000000025 /* Exceptions for "TodayWidget" folder in "TodayWidgetExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = AA0000000000000000000010 /* TodayWidgetExtension */;
+		};
 		BD10313E30269142008B5B9B /* Exceptions for "TODO" folder in "TODO" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -41,10 +73,19 @@
 			path = TODOTests;
 			sourceTree = "<group>";
 		};
+		AA0000000000000000000012 /* TodayWidget */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				AA0000000000000000000025 /* Exceptions for "TodayWidget" folder in "TodayWidgetExtension" target */,
+			);
+			path = TodayWidget;
+			sourceTree = "<group>";
+		};
 		BD10313330269141008B5B9B /* TODO */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 				BD10313E30269142008B5B9B /* Exceptions for "TODO" folder in "TODO" target */,
+				AA0000000000000000000024 /* Exceptions for "TODO" folder in "TodayWidgetExtension" target */,
 			);
 			path = TODO;
 			sourceTree = "<group>";
@@ -53,6 +94,13 @@
 
 /* Begin PBXFrameworksBuildPhase section */
 		AA0000000000000000000005 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA0000000000000000000014 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -69,11 +117,26 @@
 		};
 /* End PBXFrameworksBuildPhase section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		AA0000000000000000000021 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				AA0000000000000000000020 /* TodayWidgetExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXGroup section */
 		BD10312830269141008B5B9B = {
 			isa = PBXGroup;
 			children = (
 				BD10313330269141008B5B9B /* TODO */,
+				AA0000000000000000000012 /* TodayWidget */,
 				AA0000000000000000000003 /* TODOTests */,
 				BD10313230269141008B5B9B /* Products */,
 			);
@@ -83,6 +146,7 @@
 			isa = PBXGroup;
 			children = (
 				BD10313130269141008B5B9B /* TODO.app */,
+				AA0000000000000000000011 /* TodayWidgetExtension.appex */,
 				AA0000000000000000000002 /* TODOTests.xctest */,
 			);
 			name = Products;
@@ -114,6 +178,28 @@
 			productReference = AA0000000000000000000002 /* TODOTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		AA0000000000000000000010 /* TodayWidgetExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA0000000000000000000017 /* Build configuration list for PBXNativeTarget "TodayWidgetExtension" */;
+			buildPhases = (
+				AA0000000000000000000013 /* Sources */,
+				AA0000000000000000000014 /* Frameworks */,
+				AA0000000000000000000015 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				AA0000000000000000000012 /* TodayWidget */,
+			);
+			name = TodayWidgetExtension;
+			packageProductDependencies = (
+			);
+			productName = TodayWidgetExtension;
+			productReference = AA0000000000000000000011 /* TodayWidgetExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 		BD10313030269141008B5B9B /* TODO */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = BD10313F30269142008B5B9B /* Build configuration list for PBXNativeTarget "TODO" */;
@@ -121,10 +207,12 @@
 				BD10312D30269141008B5B9B /* Sources */,
 				BD10312E30269141008B5B9B /* Frameworks */,
 				BD10312F30269141008B5B9B /* Resources */,
+				AA0000000000000000000021 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				AA0000000000000000000023 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				BD10313330269141008B5B9B /* TODO */,
@@ -151,6 +239,9 @@
 						CreatedOnToolsVersion = 26.1.1;
 						TestTargetID = BD10313030269141008B5B9B;
 					};
+					AA0000000000000000000010 = {
+						CreatedOnToolsVersion = 26.1.1;
+					};
 					BD10313030269141008B5B9B = {
 						CreatedOnToolsVersion = 26.1.1;
 					};
@@ -174,6 +265,7 @@
 			projectRoot = "";
 			targets = (
 				BD10313030269141008B5B9B /* TODO */,
+				AA0000000000000000000010 /* TodayWidgetExtension */,
 				AA0000000000000000000001 /* TODOTests */,
 			);
 		};
@@ -181,6 +273,13 @@
 
 /* Begin PBXResourcesBuildPhase section */
 		AA0000000000000000000006 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA0000000000000000000015 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -204,6 +303,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AA0000000000000000000013 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		BD10312D30269141008B5B9B /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -218,6 +324,11 @@
 			isa = PBXTargetDependency;
 			target = BD10313030269141008B5B9B /* TODO */;
 			targetProxy = AA000000000000000000000B /* PBXContainerItemProxy */;
+		};
+		AA0000000000000000000023 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AA0000000000000000000010 /* TodayWidgetExtension */;
+			targetProxy = AA0000000000000000000022 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -267,6 +378,70 @@
 				TARGETED_DEVICE_FAMILY = "1,2,7";
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/TODO.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/TODO";
 				XROS_DEPLOYMENT_TARGET = 26.1;
+			};
+			name = Release;
+		};
+		AA0000000000000000000018 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = TodayWidget/TodayWidget.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 6Z52P5J4X8;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = TodayWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Today;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.johnrizkalla.app.TODO.TodayWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = auto;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		AA0000000000000000000019 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = TodayWidget/TodayWidget.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 6Z52P5J4X8;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = TodayWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Today;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.johnrizkalla.app.TODO.TodayWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = auto;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
 		};
@@ -486,6 +661,15 @@
 			buildConfigurations = (
 				AA0000000000000000000008 /* Debug */,
 				AA0000000000000000000009 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AA0000000000000000000017 /* Build configuration list for PBXNativeTarget "TodayWidgetExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA0000000000000000000018 /* Debug */,
+				AA0000000000000000000019 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
