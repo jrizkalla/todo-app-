@@ -32,8 +32,8 @@ final class AISummaryService: ObservableObject {
 //    let location: CLLocation?
     var weather: WeatherForecast?
     var reminders: RelevantTodoList?
-//    let calendarEvents: [CalendarEvent]
     var userInfo: UserInfo
+    var visibleCalendars: [String] = []
     
     var session: LanguageModelSession!
     
@@ -49,6 +49,14 @@ final class AISummaryService: ObservableObject {
             return nil
         }
         
+        let calEventStore = CalendarEventStore()
+        let now = Date()
+        calEventStore.loadEvents(
+            from: Calendar.current.startOfDay(for: now),
+            to: Calendar.current.startOfDay(for: now).addingTimeInterval(24 * 60 * 60 - 1),
+            calendarIdentifiers: visibleCalendars
+        )
+        
         let prompt = Prompt {
             
             "Information about the user:"
@@ -61,6 +69,9 @@ final class AISummaryService: ObservableObject {
             if let reminders {
                 reminders
             }
+            
+            "Calendar events:"
+            calEventStore.events
         }
         
         if session == nil {
@@ -111,7 +122,13 @@ extension AISummaryService {
         
         The text should be formatted like you are talking to the user directly. The text should also be punctuated correctly.
         
-        Example response (assumes the user has 2 calendar events and a todo: a meeting at 9am with a set location, another event at 6:30 pm titled "dinner", and a todo at 11am to "work on app"):
+
+        The output will be fed verbatim to a JSON decoder and it must decode correctly.
+        """
+}
+
+/*
+         Here is an fictional example response. Follow this template but don't use any of the information in it because it is all made up.
         {
             "quickSummary": "Busy morning followed by a fun evening",
             "detailedSummary": "Your morning starts at *9am* with a meeting in the office.
@@ -119,7 +136,15 @@ extension AISummaryService {
         During the day, you're going to work on your app.
         You have a dinner planned in the evening at Chick-Fil-A, make sure you leave the office before 5:30pm to have enough time to prepare for dinner."
         }
-        
-        The output will be fed verbatim to a JSON decoder and it must decode correctly.
-        """
+ */
+
+extension CalendarEvent: PromptRepresentable {
+    var promptRepresentation: Prompt {
+        "Calendar event:"
+        "\t\(title)"
+        "\t\(start.description(with: .current)) - \(end.description(with: .current))"
+        "\tAll day: \(isAllDay)"
+        "\tCalendar: \(calendarTitle)"
+        "\tLocation: \(location ?? "none")"
+    }
 }

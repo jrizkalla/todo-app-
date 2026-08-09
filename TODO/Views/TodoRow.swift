@@ -11,6 +11,8 @@ struct TodoRow: View {
     let onSelectState: (CompletionState) -> Void
     /// Called as the title changes, so the parser can re-run and the store save.
     var onTitleChange: (String) -> Void = { _ in }
+    /// Called as the inline notes change, so edits are saved as they are typed.
+    var onNotesChange: () -> Void = {}
 
     /// Which row's title currently holds focus, keyed by todo id.
     ///
@@ -19,6 +21,29 @@ struct TodoRow: View {
     /// state that outlives the screen they were edited on.
     @FocusState.Binding var focusedTodoID: UUID?
 
+    /// Which of this row's two fields holds focus, once the row is expanded.
+    ///
+    /// Separate from `focusedTodoID` because that identifies *which row* the
+    /// keyboard belongs to, while the row itself has a title and a notes field
+    /// to move between.
+    @FocusState private var focusedField: Field?
+
+    private enum Field: Hashable { case notes }
+
+    /// Local buffer for the title field. See the field's binding for why the
+    /// model is not written directly.
+    @State private var draftTitle: String = ""
+
+    /// True when this row owns the keyboard, which is what expands it.
+    private var isFocused: Bool {
+        focusedTodoID == todo.uuid || focusedField != nil
+    }
+
+    private var backgroundFill: Color {
+        if isFocused { return Color.secondary.opacity(0.10) }
+        return isSelected ? Color.accentColor.opacity(0.12) : .clear
+    }
+
     /// The row's long-press menu.
     ///
     /// Attached here rather than by the caller so it can cover the text and
@@ -26,18 +51,20 @@ struct TodoRow: View {
     /// for the status picker, and the two would otherwise compete.
     var menu: () -> AnyView = { AnyView(EmptyView()) }
 
-    /// Called when the row is tapped while its title already holds focus.
+    /// Called when Return is pressed in the title field.
     ///
-    /// The first tap focuses the title for a quick rename; a second tap on a
-    /// row that is already focused means the user wants more than the title,
-    /// so it opens the detail view.
-    var onTapWhileFocused: () -> Void = {}
+    /// Creating the next to-do rather than dismissing the keyboard is what
+    /// makes typing out a list in one pass possible.
+    var onSubmitTitle: () -> Void = {}
+
+    /// Called from the expanded row's button to open the full editor.
+    var onShowDetail: () -> Void = {}
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: Theme.Metrics.rowSpacing) {
             TodoCheckbox(
                 state: todo.state,
-                tint: tint,
+                tint: todo.color,
                 onToggle: onToggle,
                 onSelect: onSelectState
             )
@@ -46,8 +73,20 @@ struct TodoRow: View {
 
             VStack(alignment: .leading, spacing: 3) {
                 titleLine
-                
-                if !todo.notes.isEmpty {
+
+                // Focused rows expand to expose notes inline, so a quick
+                // thought can be captured without leaving the list. Collapsed
+                // rows show only a summary badge.
+                if isFocused {
+                    TextField("Notes", text: $todo.notes, axis: .vertical)
+                        .textFieldStyle(.plain)
+                        .font(.callout)
+                        .lineLimit(1...4)
+                        .foregroundStyle(.secondary)
+                        .focused($focusedField, equals: .notes)
+                        .onChange(of: todo.notes) { _, _ in onNotesChange() }
+                        .transition(.opacity)
+                } else if !todo.notes.isEmpty {
                     HStack {
                         badge(for: .init(
                             text: todo.notesSummary,
@@ -65,22 +104,40 @@ struct TodoRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
             .contextMenu { menu() }
-            // Runs alongside the text field's own tap handling, so the caret
-            // still moves; it only acts when this row already had focus.
-            .simultaneousGesture(
-                TapGesture().onEnded {
-                    if focusedTodoID == todo.uuid {
-                        onTapWhileFocused()
-                    }
+
+            // Only while focused: a way into the full editor. Replaces the old
+            // tap-to-open, which fought the text field for the same tap.
+            if isFocused {
+                Button(action: onShowDetail) {
+                    Image(systemName: "arrow.up.forward.square")
+                        .font(.title3)
+                        .foregroundStyle(todo.color)
                 }
-            )
+                .buttonStyle(.plain)
+                .accessibilityLabel("Show Details")
+                .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 4 }
+            }
         }
         .padding(.vertical, Theme.Metrics.rowVerticalPadding)
-        .padding(.horizontal, Theme.Metrics.rowHorizontalPadding)
+        .padding(.horizontal, Theme.Metrics.rowHorizontalPadding * 2)
+        // The focused row lifts off the list with a filled card and a tinted
+        // border, so it is obvious which to-do the keyboard belongs to.
         .background {
             RoundedRectangle(cornerRadius: Theme.Metrics.cornerRadius, style: .continuous)
-                .fill(isSelected ? Color.accentColor.opacity(0.12) : .clear)
+                .fill(backgroundFill)
+                .padding([.leading, .trailing], Theme.Metrics.rowHorizontalPadding)
+                .overlay {
+                    RoundedRectangle(cornerRadius: Theme.Metrics.cornerRadius, style: .continuous)
+                        .stroke(todo.color.opacity(isFocused ? 0.45 : 0), lineWidth: 1.5)
+                        .padding([.leading, .trailing], Theme.Metrics.rowHorizontalPadding)
+                }
+                .shadow(
+                    color: .black.opacity(isFocused ? 0.10 : 0),
+                    radius: isFocused ? 6 : 0,
+                    y: isFocused ? 2 : 0
+                )
         }
+        .animation(Theme.Animation.toggle, value: isFocused)
         .contentShape(Rectangle())
         .opacity(todo.state.isResolved ? 0.5 : 1)
         .animation(Theme.Animation.toggle, value: todo.state)
@@ -101,27 +158,63 @@ struct TodoRow: View {
             if todo.isProject {
                 Image(systemName: "list.bullet")
                     .font(.caption2)
-                    .foregroundStyle(tint)
+                    .foregroundStyle(todo.color)
             }
 
             // Always a live field: typing saves as it goes, and `axis:
             // .vertical` lets a long title wrap instead of running off the edge.
             // workaround for https://stackoverflow.com/questions/77388314/swiftui-textfield-with-vertical-axis-does-not-align-to-firsttextbaseline-when-te
-            TextField("New TODO", text: .constant("New TODO"), axis: .vertical)
+            TextField("New TODO", text: $draftTitle, axis: .vertical)
                 .opacity(0)
                 .overlay {
-                    TextField("New To-Do", text: $todo.title, axis: .vertical)
+                    // Bound to local state rather than straight to the model.
+                    //
+                    // Writing through `$todo.title` meant the character typed
+                    // immediately before Return could be lost: `onSubmit` moved
+                    // focus away in the same update pass, before SwiftUI had
+                    // pushed that keystroke into the binding. Buffering here and
+                    // copying to the model on change makes the text authoritative
+                    // at submit time.
+                    TextField("New To-Do", text: $draftTitle, axis: .vertical)
                         .textFieldStyle(.plain)
                         .lineLimit(1...6)
                         .focused($focusedTodoID, equals: todo.uuid)
                         .strikethrough(todo.state == .completed)
                         .foregroundStyle(todo.state.isResolved ? .secondary : .primary)
-                        .onChange(of: todo.title) { _, newValue in
-                            onTitleChange(newValue)
+                        // Return is detected here rather than through
+                        // `onSubmit`.
+                        //
+                        // `onSubmit` fires before SwiftUI has pushed the last
+                        // keystroke into the binding, so moving focus from it
+                        // dropped whatever character preceded Return. With
+                        // `axis: .vertical` the newline arrives as ordinary
+                        // text, which means by the time it is visible here
+                        // every earlier character is already committed.
+                        .onChange(of: draftTitle) { _, newValue in
+                            guard newValue.contains("\n") else {
+                                if todo.title != newValue {
+                                    todo.title = newValue
+                                    onTitleChange(newValue)
+                                }
+                                return
+                            }
+
+                            let cleaned = newValue
+                                .replacingOccurrences(of: "\n", with: "")
+                                .trimmingCharacters(in: .whitespaces)
+
+                            draftTitle = cleaned
+                            todo.title = cleaned
+                            onTitleChange(cleaned)
+                            onSubmitTitle()
                         }
-                    // Return commits rather than inserting a newline; titles are
-                    // single-paragraph and notes are where longer text belongs.
-                        .onSubmit { focusedTodoID = nil }
+                        // Pick up edits made elsewhere, such as an accepted
+                        // suggestion stripping a date from the title.
+                        .onChange(of: todo.title) { _, newValue in
+                            if draftTitle != newValue { draftTitle = newValue }
+                        }
+                        .onAppear { draftTitle = todo.title }
+                        .submitLabel(.next)
                 }
 
             // Marks a todo pulled in from the system Reminders app.
@@ -145,11 +238,6 @@ struct TodoRow: View {
         HStack(spacing: 8) {
             ForEach(metadata, content: badge(for:))
         }
-    }
-
-    /// Checkbox and accent color, from the todo's project or space.
-    private var tint: Color {
-        todo.resolvedColorHex.map { Color(hex: $0) } ?? Theme.Palette.accent
     }
 
     // MARK: Badges
@@ -216,6 +304,59 @@ struct TodoRow: View {
     }
 }
 
+
+struct StatusPicker: View {
+    let current: CompletionState
+    let tint: Color
+    let onSelect: (CompletionState) -> Void
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(CompletionState.allCases.filter { $0 != current }, id: \.self) { option in
+                Button {
+                    onSelect(option)
+                } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: option.symbolName)
+                            .font(.system(size: 20))
+                            .foregroundStyle(color(for: option))
+                            .frame(height: 24)
+
+                        Text(option.label)
+                            .font(.caption2)
+                            .foregroundStyle(option == current ? .primary : .secondary)
+                    }
+                    .frame(width: 64)
+                    .padding(.vertical, 8)
+                    .background {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(option == current
+                                  ? Color.secondary.opacity(0.16)
+                                  : Color.clear)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(option.label)
+                .accessibilityAddTraits(option == current ? [.isSelected] : [])
+            }
+        }
+        .padding(6)
+    }
+
+    /// Each state keeps the colour it has in the list, so the picker reads as
+    /// the same vocabulary rather than a separate one.
+    private func color(for option: CompletionState) -> Color {
+        switch option {
+        case .open: .secondary
+        case .started: Theme.Palette.started
+        case .completed: tint
+        case .cancelled: Theme.Palette.cancelled
+        }
+    }
+}
+
+
 #if DEBUG
 /// Hosts the `@FocusState` a row needs, which a preview cannot provide directly.
 private struct TodoRowPreviewHost: View {
@@ -226,10 +367,11 @@ private struct TodoRowPreviewHost: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(todos) { todo in
+            ForEach(todos.enumerated(), id: \.element) { (i, todo) in
                 TodoRow(
                     todo: todo,
                     showsSpace: showsSpace,
+                    isSelected: i == 0,
                     onToggle: {},
                     onSelectState: { _ in },
                     focusedTodoID: $focusedTodoID
@@ -275,5 +417,9 @@ private struct TodoRowPreviewHost: View {
     // Titles wrap rather than running off the edge.
     TodoRowPreviewHost(todos: [PreviewData.longTitled])
         .previewEnvironment()
+}
+#Preview("Status picker") {
+    // What the long press opens.
+    StatusPicker(current: .started, tint: .blue) { _ in }
 }
 #endif

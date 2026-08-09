@@ -193,12 +193,14 @@ enum TodoQueries {
     // MARK: Sorting
 
     private static func sortByOrder(_ a: Todo, _ b: Todo) -> Bool {
+        if a.state.isResolved != b.state.isResolved { return !a.state.isResolved } // if a is not resolved, it is less than b
         if a.sortIndex != b.sortIndex { return a.sortIndex < b.sortIndex }
         return a.createdAt < b.createdAt
     }
 
     /// Dated items first, in date order; undated items keep manual order.
     private static func sortByDateThenOrder(_ a: Todo, _ b: Todo) -> Bool {
+        if a.state.isResolved != b.state.isResolved { return !a.state.isResolved } // if a is not resolved, it is less than b
         let aDate = a.assignedDate ?? a.dueDate
         let bDate = b.assignedDate ?? b.dueDate
 

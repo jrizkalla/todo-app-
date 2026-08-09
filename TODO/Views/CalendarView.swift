@@ -25,10 +25,17 @@ struct CalendarView: View {
     @Environment(\.modelContext) private var context
     @Environment(AppSettings.self) private var settings
     @Query private var todos: [Todo]
+    @Query private var spaces: [Space]
 
     @State private var scale: Scale = .day
     @State private var anchorDate = Date()
     @State private var eventStore = CalendarEventStore.shared
+
+    /// The to-do being dragged to a new time, and how far it has moved.
+    @State private var draggingTodoID: UUID?
+    @State private var dragTranslation: CGFloat = 0
+    /// Where a long press landed, cleared when the press ends.
+    @State private var pendingCreationPoint: CGPoint?
 
     /// Page currently shown, as an offset from `pageOrigin`.
     @State private var pageIndex = 0
@@ -290,6 +297,14 @@ struct CalendarView: View {
                 }
         }
         .buttonStyle(.plain)
+        // Dragging an all-day chip onto the grid gives it a time. The grid
+        // receives it via `dropDestination` below.
+        .draggable(todo.uuid.uuidString) {
+            Text(todo.title.isEmpty ? "Untitled" : todo.title)
+                .font(.caption)
+                .padding(6)
+                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 5))
+        }
     }
 
     // MARK: Timed grid
@@ -323,35 +338,182 @@ struct CalendarView: View {
     }
 
     private func dayColumn(for day: Date) -> some View {
-        ZStack(alignment: .topLeading) {
-            // Hour grid lines.
-            VStack(spacing: 0) {
-                ForEach(0..<24, id: \.self) { _ in
-                    Divider().frame(height: hourHeight, alignment: .top)
+        let todosOnDay = TodoQueries.timed(
+            scopedTodos, on: day, calendar: calendar, includeResolved: settings.showResolved
+        )
+        let eventsOnDay = timedEvents(on: day)
+        let slots = layoutSlots(todos: todosOnDay, events: eventsOnDay)
+
+        return GeometryReader { proxy in
+            ZStack(alignment: .topLeading) {
+                // Hour grid lines.
+                VStack(spacing: 0) {
+                    ForEach(0..<24, id: \.self) { _ in
+                        Divider().frame(height: hourHeight, alignment: .top)
+                    }
+                }
+
+                // System events sit behind to-dos, since to-dos are the app's
+                // own content and stay tappable.
+                ForEach(eventsOnDay) { event in
+                    eventBlock(
+                        for: event,
+                        on: day,
+                        slot: slots["event-\(event.id)"] ?? fullWidth,
+                        columnWidth: proxy.size.width
+                    )
+                }
+
+                if calendar.isDateInToday(day) {
+                    currentTimeIndicator
+                }
+
+                ForEach(todosOnDay) { todo in
+                    eventBlock(
+                        for: todo,
+                        on: day,
+                        slot: slots["todo-\(todo.uuid.uuidString)"] ?? fullWidth,
+                        columnWidth: proxy.size.width
+                    )
                 }
             }
-
-            // System events sit behind to-dos, since to-dos are the app's
-            // own content and stay tappable.
-            ForEach(timedEvents(on: day)) { event in
-                eventBlock(for: event, on: day)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            // Long-pressing empty space creates a to-do at that time, the way
+            // Calendar.app creates an event.
+            .contentShape(Rectangle())
+            .onLongPressGesture(minimumDuration: 0.45) {
+            } onPressingChanged: { pressing in
+                if !pressing { pendingCreationPoint = nil }
             }
+            .simultaneousGesture(
+                LongPressGesture(minimumDuration: 0.45)
+                    .sequenced(before: DragGesture(minimumDistance: 0))
+                    .onEnded { value in
+                        guard case .second(_, let drag?) = value else { return }
+                        createTodo(at: drag.location.y, on: day)
+                    }
+            )
+            // Accepts all-day chips dragged down onto the grid, scheduling them
+            // for the time they were dropped at.
+            .dropDestination(for: String.self) { items, location in
+                guard let identifier = items.first,
+                      let uuid = UUID(uuidString: identifier),
+                      let todo = todos.first(where: { $0.uuid == uuid })
+                else { return false }
 
-            if calendar.isDateInToday(day) {
-                currentTimeIndicator
-            }
-
-            ForEach(TodoQueries.timed(scopedTodos, on: day, calendar: calendar, includeResolved: settings.showResolved)) { todo in
-                eventBlock(for: todo, on: day)
+                schedule(todo, at: location.y, on: day)
+                return true
             }
         }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .frame(height: hourHeight * 24)
         .padding(.horizontal, 3)
     }
 
-    private func eventBlock(for todo: Todo, on day: Date) -> some View {
-        let offset = verticalOffset(for: todo, on: day)
+    private var fullWidth: CalendarSlot { CalendarSlot(offset: 0, width: 1) }
+
+    /// Lay to-dos and events out together, so a to-do never hides behind a
+    /// meeting at the same hour.
+    private func layoutSlots(todos: [Todo], events: [CalendarEvent]) -> [String: CalendarSlot] {
+        var blocks: [CalendarLayout.Block] = []
+
+        for todo in todos {
+            guard let start = todo.assignedDate else { continue }
+            let duration = todo.effectiveDuration(defaultDuration: settings.defaultEventDuration)
+            blocks.append(
+                .init(
+                    id: "todo-\(todo.uuid.uuidString)",
+                    start: start,
+                    end: start.addingTimeInterval(duration)
+                )
+            )
+        }
+
+        for event in events {
+            blocks.append(.init(id: "event-\(event.id)", start: event.start, end: event.end))
+        }
+
+        return CalendarLayout.slots(for: blocks)
+    }
+
+    /// Turn a y position in the grid into a start time, rounded to the nearest
+    /// quarter hour so created items land on tidy boundaries.
+    private func time(atY y: CGFloat, on day: Date) -> Date {
+        let minutes = max(0, min(24 * 60 - 15, Double(y / hourHeight) * 60))
+        let rounded = (minutes / 15).rounded(.down) * 15
+
+        return calendar.date(
+            byAdding: .minute,
+            value: Int(rounded),
+            to: calendar.startOfDay(for: day)
+        ) ?? day
+    }
+
+    /// Give a previously untimed to-do a time, from a drop onto the grid.
+    private func schedule(_ todo: Todo, at y: CGFloat, on day: Date) {
+        let start = time(atY: y, on: day)
+
+        store.update(todo) {
+            $0.assignedDate = start
+            $0.assignedHasTime = true
+            // Only supply a length if it had none, so an existing duration is
+            // preserved across the move.
+            if $0.duration == nil { $0.duration = settings.defaultEventDuration }
+        }
+
+        #if os(iOS)
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        #endif
+    }
+
+    /// Create a to-do at the pressed time and open it for editing.
+    private func createTodo(at y: CGFloat, on day: Date) {
+        let start = time(atY: y, on: day)
+
+        let todo = store.createTodo(
+            space: creationSpace,
+            parent: creationParent,
+            assignedDate: start
+        )
+        store.update(todo) {
+            $0.assignedHasTime = true
+            $0.duration = settings.defaultEventDuration
+        }
+
+        #if os(iOS)
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        #endif
+
+        selectedTodo = todo
+    }
+
+    /// A to-do created on a scoped calendar belongs to that container.
+    private var creationSpace: Space? {
+        if case .space(let id) = destination {
+            return spaces.first { $0.uuid == id }
+        }
+        if case .project(let id) = destination {
+            return todos.first { $0.uuid == id }?.space
+        }
+        return nil
+    }
+
+    private var creationParent: Todo? {
+        if case .project(let id) = destination {
+            return todos.first { $0.uuid == id }
+        }
+        return nil
+    }
+
+    private func eventBlock(
+        for todo: Todo,
+        on day: Date,
+        slot: CalendarSlot,
+        columnWidth: CGFloat
+    ) -> some View {
+        let baseOffset = verticalOffset(for: todo, on: day)
         let height = blockHeight(for: todo)
+        let isDragging = draggingTodoID == todo.uuid
+        let dragOffset = isDragging ? dragTranslation : 0
 
         return Button {
             selectedTodo = todo
@@ -374,7 +536,7 @@ struct CalendarView: View {
             .frame(maxWidth: .infinity, minHeight: height, alignment: .topLeading)
             .background {
                 RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(tint(for: todo).opacity(0.22))
+                    .fill(tint(for: todo).opacity(isDragging ? 0.38 : 0.22))
                     .overlay(alignment: .leading) {
                         Rectangle()
                             .fill(tint(for: todo))
@@ -385,7 +547,50 @@ struct CalendarView: View {
             .opacity(todo.state.isResolved ? 0.55 : 1)
         }
         .buttonStyle(.plain)
-        .offset(y: offset)
+        // Overlapping blocks share the column instead of stacking.
+        .frame(width: max(columnWidth * slot.width - 2, 1), alignment: .topLeading)
+        .offset(x: columnWidth * slot.offset, y: baseOffset + dragOffset)
+        .shadow(color: .black.opacity(isDragging ? 0.2 : 0), radius: isDragging ? 8 : 0)
+        .zIndex(isDragging ? 1 : 0)
+        // Long press then drag reschedules, so a plain drag still scrolls the
+        // grid vertically.
+        .gesture(
+            LongPressGesture(minimumDuration: 0.3)
+                .sequenced(before: DragGesture(minimumDistance: 0))
+                .onChanged { value in
+                    guard case .second(_, let drag) = value else { return }
+                    if draggingTodoID != todo.uuid {
+                        draggingTodoID = todo.uuid
+                        #if os(iOS)
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        #endif
+                    }
+                    dragTranslation = drag?.translation.height ?? 0
+                }
+                .onEnded { _ in
+                    reschedule(todo, on: day, by: dragTranslation)
+                    draggingTodoID = nil
+                    dragTranslation = 0
+                }
+        )
+    }
+
+    /// Move a to-do by however far it was dragged, snapped to a quarter hour.
+    private func reschedule(_ todo: Todo, on day: Date, by translation: CGFloat) {
+        guard let current = todo.assignedDate, translation != 0 else { return }
+
+        let minutesMoved = Double(translation / hourHeight) * 60
+        let snapped = (minutesMoved / 15).rounded() * 15
+        guard snapped != 0 else { return }
+
+        guard let moved = calendar.date(byAdding: .minute, value: Int(snapped), to: current),
+              calendar.isDate(moved, inSameDayAs: day)
+        else { return }
+
+        store.update(todo) {
+            $0.assignedDate = moved
+            $0.assignedHasTime = true
+        }
     }
 
     private var currentTimeIndicator: some View {
@@ -486,7 +691,12 @@ struct CalendarView: View {
     ///
     /// Styled to read as "not a to-do": no checkbox, a dashed-free flat fill in
     /// the source calendar's own color, and no tap target.
-    private func eventBlock(for event: CalendarEvent, on day: Date) -> some View {
+    private func eventBlock(
+        for event: CalendarEvent,
+        on day: Date,
+        slot: CalendarSlot,
+        columnWidth: CGFloat
+    ) -> some View {
         let color = Color(hex: event.colorHex)
         let minutes = CGFloat(calendar.component(.hour, from: event.start) * 60
             + calendar.component(.minute, from: event.start))
@@ -515,7 +725,8 @@ struct CalendarView: View {
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
         }
-        .offset(y: minutes / 60 * hourHeight)
+        .frame(width: max(columnWidth * slot.width - 2, 1), alignment: .topLeading)
+        .offset(x: columnWidth * slot.offset, y: minutes / 60 * hourHeight)
         .allowsHitTesting(false)
         .accessibilityLabel("Calendar event: \(event.title)")
     }

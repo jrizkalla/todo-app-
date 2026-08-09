@@ -6,7 +6,7 @@ enum Theme {
     enum Metrics {
         static let rowSpacing: CGFloat = 10
         static let rowVerticalPadding: CGFloat = 9
-        static let rowHorizontalPadding: CGFloat = 14
+        static let rowHorizontalPadding: CGFloat = 7
         static let checkboxSize: CGFloat = 19
         static let cornerRadius: CGFloat = 8
         static let sectionSpacing: CGFloat = 22
@@ -55,5 +55,13 @@ extension Color {
             green: Double((value >> 8) & 0xFF) / 255,
             blue: Double(value & 0xFF) / 255
         )
+    }
+}
+
+
+extension Todo {
+    /// Checkbox and accent color, from the todo's project or space.
+    var color: Color {
+        resolvedColorHex.map { Color(hex: $0) } ?? Theme.Palette.accent
     }
 }

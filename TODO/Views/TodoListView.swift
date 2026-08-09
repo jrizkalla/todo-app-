@@ -16,6 +16,8 @@ struct TodoListView: View {
     @State private var pendingCascade: PendingCascade?
     /// Set while confirming a delete that would take other items with it.
     @State private var pendingDeletion: Todo?
+    /// The to-do whose scheduling panel is open, from a leading swipe.
+    @State private var schedulingTodo: Todo?
 
     /// Suggestion chips for whichever row's title has focus.
     @State private var suggestionModel = TitleSuggestionModel()
@@ -82,6 +84,25 @@ struct TodoListView: View {
                 }
             }
         }
+        .sheet(item: $schedulingTodo) { todo in
+            SchedulePickerView(
+                todo: todo,
+                onPick: { date, hasTime in
+                    store.update(todo) {
+                        $0.assignedDate = date
+                        $0.assignedHasTime = hasTime
+                    }
+                    schedulingTodo = nil
+                },
+                onAddReminder: {
+                    // The full reminder editor lives in the detail view.
+                    schedulingTodo = nil
+                    selectedTodo = todo
+                },
+                onDismiss: { schedulingTodo = nil }
+            )
+            .presentationDetents([.medium, .large])
+        }
         .confirmationDialog(
             deletePrompt,
             isPresented: .init(
@@ -136,9 +157,11 @@ struct TodoListView: View {
                             onToggle: { handleToggle(todo) },
                             onSelectState: { handleSetState(todo, to: $0) },
                             onTitleChange: { handleTitleChange($0, for: todo) },
+                            onNotesChange: { store.save() },
                             focusedTodoID: $focusedTodoID,
                             menu: { AnyView(rowMenu(for: todo)) },
-                            onTapWhileFocused: { showDetail(for: todo) }
+                            onSubmitTitle: { createTodoAfterSubmit(from: todo) },
+                            onShowDetail: { showDetail(for: todo) }
                         )
 
                         // Subtasks nest under their parent rather than
@@ -152,9 +175,13 @@ struct TodoListView: View {
                                 onToggle: { handleToggle(subtask) },
                                 onSelectState: { handleSetState(subtask, to: $0) },
                                 onTitleChange: { handleTitleChange($0, for: subtask) },
+                                onNotesChange: { store.save() },
                                 focusedTodoID: $focusedTodoID,
                                 menu: { AnyView(rowMenu(for: subtask)) },
-                                onTapWhileFocused: { showDetail(for: subtask) }
+                                // Return inside a project adds another subtask
+                                // to the same parent.
+                                onSubmitTitle: { addSubtaskAfterSubmit(to: todo) },
+                                onShowDetail: { showDetail(for: subtask) }
                             )
                             .padding(.leading, 28)
                         }
@@ -167,6 +194,17 @@ struct TodoListView: View {
                         } label: {
                             Label("Delete", systemImage: "trash")
                         }
+                    }
+                    // Leading swipe schedules, which is the most common edit
+                    // after creating something.
+                    .swipeActions(edge: .leading) {
+                        Button {
+                            focusedTodoID = nil
+                            schedulingTodo = todo
+                        } label: {
+                            Label("When", systemImage: "calendar")
+                        }
+                        .tint(.blue)
                     }
                 }
                 .onMove { indices, newOffset in
@@ -200,12 +238,7 @@ struct TodoListView: View {
     /// title. The detail page is reached from the long-press menu instead.
     private var createButton: some View {
         Button {
-            let created = store.createTodo(
-                space: defaultSpace,
-                parent: defaultParent,
-                assignedDate: defaultAssignedDate
-            )
-            focusedTodoID = created.uuid
+            createTodoInCurrentList()
         } label: {
             Image(systemName: "plus")
                 .font(.title2.weight(.semibold))
@@ -223,6 +256,44 @@ struct TodoListView: View {
         .keyboardShortcut("n", modifiers: .command)
     }
 
+    /// Create a to-do belonging to the list currently on screen, and put the
+    /// cursor in its title.
+    ///
+    /// The scheduling context comes from the destination, so a to-do added from
+    /// Today is scheduled for today and one added inside a project belongs to
+    /// that project — rather than everything landing in the Inbox.
+    @discardableResult
+    private func createTodoInCurrentList() -> Todo {
+        let created = store.createTodo(
+            space: defaultSpace,
+            parent: defaultParent,
+            assignedDate: defaultAssignedDate
+        )
+        focusedTodoID = created.uuid
+        return created
+    }
+
+    /// Create the next to-do after Return, once the field has committed.
+    ///
+    /// Moving focus in the same runloop pass as `onSubmit` drops the keystroke
+    /// still in flight — the last character typed before Return never reaches
+    /// the binding. Deferring by one turn lets it land first.
+    private func createTodoAfterSubmit(from todo: Todo) {
+        DispatchQueue.main.async {
+            store.save()
+            createTodoInCurrentList()
+        }
+    }
+
+    /// Same deferral for a subtask created with Return inside a project.
+    private func addSubtaskAfterSubmit(to parent: Todo) {
+        DispatchQueue.main.async {
+            store.save()
+            let subtask = store.addSubtask(to: parent)
+            focusedTodoID = subtask.uuid
+        }
+    }
+
     /// Open the detail view, dropping focus so the keyboard does not follow.
     private func showDetail(for todo: Todo) {
         focusedTodoID = nil
@@ -231,6 +302,13 @@ struct TodoListView: View {
 
     @ViewBuilder
     private func rowMenu(for todo: Todo) -> some View {
+        ControlGroup {
+            StatusPicker(current: todo.state, tint: todo.color) { state in
+                handleSetState(todo, to: state)
+            }
+        }.controlGroupStyle(.menu)
+        
+        Divider()
         // A first tap edits the title in place; the full editor is here and on
         // a second tap of an already-focused row.
         Button {
@@ -442,8 +520,15 @@ struct TodoListView: View {
     /// Creating from Today schedules for today, which is what the list implies.
     private var defaultAssignedDate: Date? {
         switch destination {
-        case .today: Calendar.current.startOfDay(for: Date())
-        default: nil
+        // Both lists are date-driven, so something created there should land in
+        // them rather than dropping into the Inbox. Today is the natural date
+        // for This Week too — it is inside the week and needs no guessing.
+        case .today, .thisWeek:
+            Calendar.current.startOfDay(for: Date())
+        // Anytime means scheduled-but-undated, which the bucket rules give a
+        // to-do once it has a home; a date would move it into Today.
+        default:
+            nil
         }
     }
 
