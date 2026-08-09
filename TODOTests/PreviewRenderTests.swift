@@ -155,9 +155,12 @@ private struct TodoListRenderHost: View {
 @MainActor
 private struct SidebarRenderHost: View {
     @State private var selection: ListDestination? = .today
+    @State private var selectedTodo: Todo?
 
     var body: some View {
-        NavigationStack { SidebarView(selection: $selection) }
+        NavigationStack {
+            SidebarView(selection: $selection, selectedTodo: $selectedTodo)
+        }
     }
 }
 

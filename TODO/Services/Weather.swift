@@ -99,7 +99,12 @@ enum WeatherError: Error {
     case invalidResponse
 }
 
-func fetchForecast(for location: CLLocation) async throws -> WeatherForecast {
+enum TempUnit: String {
+    case celsius
+    case fahrenheit
+}
+
+func fetchForecast(for location: CLLocation, unit: TempUnit = .celsius) async throws -> WeatherForecast {
     var components = URLComponents(string: "https://api.open-meteo.com/v1/forecast")
     components?.queryItems = [
         URLQueryItem(name: "latitude", value: "\(location.coordinate.latitude)"),
@@ -108,7 +113,7 @@ func fetchForecast(for location: CLLocation) async throws -> WeatherForecast {
             name: "daily",
             value: "temperature_2m_max,temperature_2m_min,precipitation_probability_max"
         ),
-        URLQueryItem(name: "temperature_unit", value: "fahrenheit"),
+        URLQueryItem(name: "temperature_unit", value: unit.rawValue),
         URLQueryItem(name: "timezone", value: "auto"),
         URLQueryItem(name: "forecast_days", value: "7")
     ]

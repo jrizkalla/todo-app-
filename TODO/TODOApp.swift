@@ -28,6 +28,9 @@ struct TODOApp: App {
         .commands { AppCommands() }
 
         #if os(macOS)
+        // Backs a detail popover torn off into a window of its own.
+        TodoDetailWindowScene(container: modelContainer, settings: settings)
+
         Settings {
             SettingsView()
                 .environment(settings)

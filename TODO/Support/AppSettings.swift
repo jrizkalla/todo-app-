@@ -46,6 +46,24 @@ final class AppSettings {
         static let visibleCalendars = "visibleCalendars"
         static let showResolved = "showResolved"
         static let userInfo = "userInfo"
+        static let summaryBackground = "summaryBackground"
+    }
+
+    /// Backdrop behind the AI summary.
+    ///
+    /// Falls back to a built-in gradient when the user has selected their own
+    /// photo but the file is gone — a deleted image should change how the
+    /// screen looks, not leave it blank.
+    var summaryBackground: SummaryBackground {
+        get {
+            guard let raw = defaults.string(forKey: Key.summaryBackground),
+                  let background = SummaryBackground(rawValue: raw)
+            else { return .dawn }
+
+            if background == .custom && !SummaryBackgroundStore.hasImage { return .dawn }
+            return background
+        }
+        set { defaults.set(newValue.rawValue, forKey: Key.summaryBackground) }
     }
 
     /// Whether system calendar events appear in the calendar view.

@@ -1,19 +1,74 @@
 import SwiftUI
 import SwiftData
 
-/// The app shell: hamburger sidebar, main content, and — on wide layouts — the
-/// optional right-hand Inbox/overdue panel.
+/// The app's top-level tabs.
+enum AppTab: String, CaseIterable, Identifiable, Hashable {
+    case inbox, today, lists, calendar
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .inbox: "Inbox"
+        case .today: "Today"
+        case .lists: "Lists"
+        case .calendar: "Calendar"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .inbox: "tray"
+        case .today: "sparkles"
+        case .lists: "list.bullet"
+        case .calendar: "calendar"
+        }
+    }
+}
+
+/// The app shell: four tabs, each with its own navigation stack.
+///
+/// Inbox and Today are single screens; Lists keeps the sidebar-and-detail
+/// arrangement the app has always had, and Calendar owns the day/week grid. The
+/// create button lives here rather than inside any one screen, so it is on
+/// every tab and creates into whichever one is open.
 struct RootView: View {
     @Environment(\.modelContext) private var context
     @Environment(AppSettings.self) private var settings
     @Query private var todos: [Todo]
 
     /// The app launches on Today, per the spec.
-    @State private var selection: ListDestination? = .today
+    @State private var tab: AppTab = .today
+
+    /// Per-tab navigation state. Kept here so a tap on a summary card can move
+    /// the user to another tab *and* set what that tab is showing.
+    @State private var listSelection: ListDestination? = .today
     @State private var selectedTodo: Todo?
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
-    /// `-startInCalendar` opens straight into the calendar, for UI verification.
-    @State private var showsCalendar = ProcessInfo.processInfo.arguments.contains("-startInCalendar")
+
+    /// The day the Calendar tab is showing, and its scale.
+    @State private var calendarAnchor = Date()
+    @State private var calendarScale: CalendarView.Scale = .day
+
+    /// Bumped to ask the open screen to create something. Each screen watches
+    /// this and does whatever "new" means for it — a row in a list, a block on
+    /// the calendar — which is what keeps one button correct everywhere.
+    ///
+    /// How many times each tab has been asked to create something.
+    ///
+    /// Per tab rather than one shared counter because every tab's view stays
+    /// alive once visited: a single counter changes under all of them at once,
+    /// and one tap creates a to-do on each. A tab's own count only ever moves
+    /// when that tab is the one asking, so nothing fires on a mere tab switch.
+    @State private var createRequests: [AppTab: Int] = [:]
+
+    private func createCount(for tab: AppTab) -> Binding<Int> {
+        Binding(
+            get: { createRequests[tab] ?? 0 },
+            set: { createRequests[tab] = $0 }
+        )
+    }
+
     @State private var didRunLaunchTasks = false
     @State private var importer = RemindersImporter.shared
 
@@ -31,32 +86,68 @@ struct RootView: View {
     #endif
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            SidebarView(selection: $selection)
-                .navigationSplitViewColumnWidth(
-                    min: 200, ideal: Theme.Metrics.sidebarWidth, max: 320
-                )
-        } detail: {
-            NavigationStack {
-                HStack(spacing: 0) {
-                    mainContent
-
-                    // Right-hand panel: wide layouts only, and only when the
-                    // user has it switched on.
-                    if isWideLayout && settings.showSidePanel {
-                        Divider()
-                        SidePanelView(selectedTodo: $selectedTodo)
-                            .frame(width: Theme.Metrics.sidePanelWidth)
-                            .transition(.move(edge: .trailing).combined(with: .opacity))
-                    }
+        TabView(selection: $tab) {
+            Tab(AppTab.inbox.title, systemImage: AppTab.inbox.symbol, value: AppTab.inbox) {
+                NavigationStack {
+                    TodoListView(
+                        destination: .inbox,
+                        selectedTodo: $selectedTodo,
+                        createRequest: createCount(for: .inbox)
+                    )
+                    .todoDetailDestination(selection: $selectedTodo)
                 }
-                .animation(Theme.Animation.panel, value: settings.showSidePanel)
-                .toolbar { toolbarContent }
-                .navigationDestination(item: $selectedTodo) { todo in
-                    TodoDetailView(todo: todo)
+            }
+
+            Tab(AppTab.today.title, systemImage: AppTab.today.symbol, value: AppTab.today) {
+                NavigationStack {
+                    AISummaryView(
+                        onOpenSchedule: {
+                            calendarAnchor = Date()
+                            calendarScale = .day
+                            tab = .calendar
+                        },
+                        onOpenAnyTime: {
+                            listSelection = .today
+                            tab = .lists
+                        }
+                    )
+                }
+            }
+
+            Tab(AppTab.lists.title, systemImage: AppTab.lists.symbol, value: AppTab.lists) {
+                listsTab
+            }
+
+            Tab(AppTab.calendar.title, systemImage: AppTab.calendar.symbol, value: AppTab.calendar) {
+                NavigationStack {
+                    CalendarView(
+                        selectedTodo: $selectedTodo,
+                        destination: .today,
+                        anchorDate: $calendarAnchor,
+                        scaleBinding: $calendarScale,
+                        createRequest: createCount(for: .calendar)
+                    )
+                    .todoDetailDestination(selection: $selectedTodo)
                 }
             }
         }
+        // One create button for the whole app, floating above the tab bar.
+        //
+        // The Today tab is the exception: it is a read-only glance whose two
+        // cards lead somewhere else, so there is nothing there for "new" to
+        // mean. Every other tab handles the request itself.
+        .overlay(alignment: .bottomTrailing) {
+            if tab != .today {
+                CreateButton {
+                    createRequests[tab, default: 0] += 1
+                }
+                .padding(.bottom, Theme.Metrics.createButtonTabBarClearance)
+                // Scales out of the corner it sits in rather than blinking, so
+                // arriving on Today reads as the button leaving.
+                .transition(.scale(scale: 0.5, anchor: .bottomTrailing).combined(with: .opacity))
+            }
+        }
+        .animation(Theme.Animation.panel, value: tab)
         .task {
             guard !didRunLaunchTasks else { return }
             didRunLaunchTasks = true
@@ -76,50 +167,39 @@ struct RootView: View {
         }
     }
 
-    @ViewBuilder
-    private var mainContent: some View {
-        if showsCalendar {
-            CalendarView(
-                selectedTodo: $selectedTodo,
-                destination: selection ?? .today
-            )
-            .frame(maxWidth: .infinity)
-        } else {
-            if selection == .today {
-                TodayView(selectedTodo: $selectedTodo)
+    /// Lists: the sidebar of spaces and projects, with the selected list beside
+    /// or pushed from it.
+    ///
+    /// Inbox is deliberately absent from the sidebar here — it has its own tab,
+    /// and listing it twice would leave two ways to reach one screen with no
+    /// way to tell which one the user is on.
+    private var listsTab: some View {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+            SidebarView(selection: $listSelection, selectedTodo: $selectedTodo)
+                .navigationSplitViewColumnWidth(
+                    min: 200, ideal: Theme.Metrics.sidebarWidth, max: 320
+                )
+        } detail: {
+            NavigationStack {
+                HStack(spacing: 0) {
+                    TodoListView(
+                        destination: listSelection ?? .today,
+                        selectedTodo: $selectedTodo,
+                        createRequest: createCount(for: .lists)
+                    )
                     .frame(maxWidth: .infinity)
-            } else {
-                TodoListView(
-                    destination: selection ?? .inbox,
-                    selectedTodo: $selectedTodo
-                )
-                .frame(maxWidth: .infinity)
-            }
-        }
-    }
 
-    @ToolbarContentBuilder
-    private var toolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .primaryAction) {
-            Button {
-                withAnimation(Theme.Animation.panel) { showsCalendar.toggle() }
-            } label: {
-                Label(
-                    showsCalendar ? "List View" : "Calendar View",
-                    systemImage: showsCalendar ? "list.bullet" : "calendar"
-                )
-            }
-        }
-
-        if isWideLayout {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    withAnimation(Theme.Animation.panel) {
-                        settings.showSidePanel.toggle()
+                    // Right-hand panel: wide layouts only, and only when the
+                    // user has it switched on.
+                    if isWideLayout && settings.showSidePanel {
+                        Divider()
+                        SidePanelView(selectedTodo: $selectedTodo)
+                            .frame(width: Theme.Metrics.sidePanelWidth)
+                            .transition(.move(edge: .trailing).combined(with: .opacity))
                     }
-                } label: {
-                    Label("Toggle Panel", systemImage: "sidebar.right")
                 }
+                .animation(Theme.Animation.panel, value: settings.showSidePanel)
+                .todoDetailDestination(selection: $selectedTodo)
             }
         }
     }
@@ -137,6 +217,10 @@ struct RootView: View {
         }
         if ProcessInfo.processInfo.arguments.contains("-seedReminders") {
             await DebugCalendarSeeder.seedReminders()
+        }
+        // `-startInCalendar` opens straight into the calendar, for UI checks.
+        if ProcessInfo.processInfo.arguments.contains("-startInCalendar") {
+            tab = .calendar
         }
         #endif
 
@@ -172,9 +256,58 @@ struct RootView: View {
     }
 }
 
+/// The floating "new" button, shared by every tab that can create something.
+///
+/// Only the appearance lives here; what a tap *means* is the open screen's
+/// business, which is why this takes a bare closure.
+struct CreateButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "plus")
+                .font(.system(size: Theme.Metrics.createButtonGlyphSize, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(
+                    width: Theme.Metrics.createButtonSize,
+                    height: Theme.Metrics.createButtonSize
+                )
+                .background {
+                    Circle().fill(Color.accentColor)
+                        .shadow(color: .black.opacity(0.22), radius: 9, y: 4)
+                }
+        }
+        // The same press response the summary cards use — one feel for every
+        // custom control in the app.
+        .buttonStyle(PressableCardStyle(pressedScale: 0.92))
+        .padding(.trailing, Theme.Metrics.createButtonInset)
+        .padding(.bottom, Theme.Metrics.createButtonInset)
+        .accessibilityLabel("New To-Do")
+        .keyboardShortcut("n", modifiers: .command)
+    }
+}
+
+extension View {
+    /// The pushed detail page, on the platforms that use one.
+    ///
+    /// macOS presents the editor as a popover anchored to the row itself — see
+    /// `todoDetailPopover(for:selection:)`, attached in the list. iOS keeps the
+    /// pushed page, which is the right shape for a single-screen device.
+    @ViewBuilder
+    func todoDetailDestination(selection: Binding<Todo?>) -> some View {
+        #if os(macOS)
+        self
+        #else
+        self.navigationDestination(item: selection) { todo in
+            TodoDetailView(todo: todo)
+        }
+        #endif
+    }
+}
+
 #if DEBUG
 #Preview("Root") {
-    // The whole shell: sidebar, list, and — on wide layouts — the side panel.
+    // The whole shell: four tabs, with Today's summary showing first.
     RootView()
         .previewEnvironment()
 }

@@ -84,6 +84,9 @@ struct SidePanelView: View {
         )
         .listRowInsets(EdgeInsets())
         .listRowSeparator(.hidden)
+        // The panel selects to-dos too, so its rows anchor the editor popover
+        // the same way the main list's do.
+        .todoDetailPopover(for: todo, selection: $selectedTodo)
     }
 }
 

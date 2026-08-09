@@ -27,8 +27,21 @@ struct CalendarView: View {
     @Query private var todos: [Todo]
     @Query private var spaces: [Space]
 
-    @State private var scale: Scale = .day
-    @State private var anchorDate = Date()
+    /// Day or week, and the day being shown.
+    ///
+    /// Owned by `RootView` when the calendar is a tab, so tapping the summary's
+    /// schedule card can open the calendar *on today* rather than wherever the
+    /// user last left it. The local defaults keep the view usable on its own —
+    /// in previews, and scoped to a space or project.
+    var anchorDate: Binding<Date>?
+    var scaleBinding: Binding<Scale>?
+
+    /// Incremented by the app-wide create button; the calendar answers by
+    /// creating a block at the next quarter hour. See `createAtNextSlot`.
+    var createRequest: Binding<Int>?
+
+    @State private var localScale: Scale = .day
+    @State private var localAnchor = Date()
     @State private var eventStore = CalendarEventStore.shared
 
     /// The to-do being dragged to a new time, and how far it has moved.
@@ -65,6 +78,26 @@ struct CalendarView: View {
     private var calendar: Calendar { settings.calendar }
     private var store: TodoStore { TodoStore(context: context) }
 
+    /// The externally-owned value when there is one, else the local state.
+    private var scale: Scale {
+        get { scaleBinding?.wrappedValue ?? localScale }
+        nonmutating set {
+            if let scaleBinding { scaleBinding.wrappedValue = newValue } else { localScale = newValue }
+        }
+    }
+
+    private var anchor: Date {
+        get { anchorDate?.wrappedValue ?? localAnchor }
+        nonmutating set {
+            if let anchorDate { anchorDate.wrappedValue = newValue } else { localAnchor = newValue }
+        }
+    }
+
+    /// Binding form, for the picker.
+    private var scaleSelection: Binding<Scale> {
+        scaleBinding ?? $localScale
+    }
+
     /// Outside calendar events belong on the cross-cutting lists only.
     ///
     /// Today and This Week are "what does my day look like" views, where the
@@ -100,23 +133,18 @@ struct CalendarView: View {
             Divider()
             pagedContent
         }
+        // The week header appearing and the grid re-columning are one change,
+        // so they move together rather than the header snapping in first.
+        .animation(Theme.Animation.panel, value: scale)
         .navigationTitle(navigationTitle)
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
         // Reload whenever the visible range or the calendar preferences change.
         .task(id: eventReloadKey) { await reloadEvents() }
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Picker("Scale", selection: $scale) {
-                    ForEach(Scale.allCases) { option in
-                        Text(option.label).tag(option)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 140)
-            }
-        }
+        // The app-wide button asks; the calendar answers by blocking out the
+        // next quarter hour on the day being shown.
+        .onChange(of: createRequest?.wrappedValue) { _, _ in createAtNextSlot() }
     }
 
     // MARK: Paging
@@ -141,19 +169,19 @@ struct CalendarView: View {
         .tabViewStyle(.page(indexDisplayMode: .never))
         .onChange(of: pageIndex) { _, newValue in
             // Paging is the source of truth; the anchor follows it.
-            anchorDate = date(forPage: newValue)
+            anchor = date(forPage: newValue)
             recentreIfNeeded()
         }
-        .onChange(of: anchorDate) { _, _ in
+        .onChange(of: anchor) { _, _ in
             // The Today button and the chevrons move the anchor directly, so
             // the page has to catch up without fighting the user's swipe.
-            let target = page(for: anchorDate)
+            let target = page(for: anchor)
             if target != pageIndex { pageIndex = target }
         }
         .onChange(of: scale) { _, _ in
             // A page means a day in one scale and a week in the other, so the
             // index has to be recomputed against the date the user was on.
-            pageOrigin = anchorDate
+            pageOrigin = anchor
             pageIndex = 0
         }
         #else
@@ -217,32 +245,52 @@ struct CalendarView: View {
 
     // MARK: Header
 
+    /// Navigation controls above the grid.
+    ///
+    /// The Day/Week switch sits here rather than in the toolbar: it belongs
+    /// with the other controls that change what the grid is showing, and the
+    /// toolbar's top-right corner is no longer where this app puts view
+    /// switches.
     private var header: some View {
-        HStack(spacing: 12) {
-            Button {
-                shift(by: -1)
-            } label: {
-                Image(systemName: "chevron.left")
-            }
-            .buttonStyle(.plain)
-
-            Button("Today") { withAnimation(Theme.Animation.panel) { anchorDate = Date() } }
+        VStack(spacing: 8) {
+            HStack(spacing: 12) {
+                Button {
+                    shift(by: -1)
+                } label: {
+                    Image(systemName: "chevron.left")
+                }
                 .buttonStyle(.plain)
-                .font(.callout)
-                .foregroundStyle(Color.accentColor)
 
-            Button {
-                shift(by: 1)
-            } label: {
-                Image(systemName: "chevron.right")
+                Button("Today") { withAnimation(Theme.Animation.panel) { anchor = Date() } }
+                    .buttonStyle(.plain)
+                    .font(.callout)
+                    .foregroundStyle(Color.accentColor)
+
+                Button {
+                    shift(by: 1)
+                } label: {
+                    Image(systemName: "chevron.right")
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                Picker("Scale", selection: scaleSelection) {
+                    ForEach(Scale.allCases) { option in
+                        Text(option.label).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 140)
             }
-            .buttonStyle(.plain)
-
-            Spacer()
 
             // Day-of-week columns, so a week view reads at a glance.
             if scale == .week {
                 HStack(spacing: 0) {
+                    // Matches the hour gutter, so the columns line up with the
+                    // grid underneath rather than sitting half a column off.
+                    Color.clear.frame(width: 58, height: 1)
+
                     ForEach(visibleDays, id: \.self) { day in
                         VStack(spacing: 2) {
                             Text(day.formatted(.dateTime.weekday(.abbreviated)))
@@ -322,18 +370,31 @@ struct CalendarView: View {
     // MARK: Timed grid
 
     private func timedGrid(for days: [Date]) -> some View {
-        ScrollView {
-            HStack(alignment: .top, spacing: 0) {
-                hourLabels
-
+        ScrollViewReader { proxy in
+            ScrollView {
                 HStack(alignment: .top, spacing: 0) {
-                    ForEach(days, id: \.self) { day in
-                        dayColumn(for: day)
+                    hourLabels
+
+                    HStack(alignment: .top, spacing: 0) {
+                        ForEach(days, id: \.self) { day in
+                            dayColumn(for: day)
+                        }
                     }
                 }
+                .padding(.bottom, 24)
             }
-            .padding(.bottom, 24)
+            // Open on the working hours rather than at midnight, which is what
+            // the top of a 24-hour grid otherwise shows.
+            .onAppear {
+                proxy.scrollTo(scrollAnchorHour, anchor: .top)
+            }
         }
+    }
+
+    /// Hour the grid opens on: an hour before now, so the current time is in
+    /// view with a little context above it.
+    private var scrollAnchorHour: Int {
+        max(calendar.component(.hour, from: Date()) - 1, 0)
     }
 
     private var hourLabels: some View {
@@ -343,6 +404,8 @@ struct CalendarView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .frame(height: hourHeight, alignment: .top)
+                    // Targets for `scrollTo`, which opens the grid near now.
+                    .id(hour)
             }
         }
         .frame(width: 52)
@@ -549,6 +612,33 @@ struct CalendarView: View {
             )
             return time >= start && time < end
         }
+    }
+
+    /// Create a block from the app-wide button.
+    ///
+    /// Long-pressing the grid says *when*; the button does not, so it picks the
+    /// next quarter hour — on today when today is on screen, and at the start
+    /// of the working day otherwise, since "now" means nothing on a day the
+    /// user is only looking at.
+    private func createAtNextSlot() {
+        let day = calendar.isDate(anchor, inSameDayAs: Date()) ? Date() : anchor
+
+        let start: Date
+        if calendar.isDateInToday(day) {
+            let minute = calendar.component(.minute, from: day)
+            let rounded = (Double(minute) / 15).rounded(.up) * 15
+            start = calendar.date(
+                byAdding: .minute,
+                value: Int(rounded) - minute,
+                to: calendar.date(bySetting: .second, value: 0, of: day) ?? day
+            ) ?? day
+        } else {
+            start = calendar.date(
+                bySettingHour: 9, minute: 0, second: 0, of: day
+            ) ?? day
+        }
+
+        createTodo(startingAt: start)
     }
 
     /// Create a to-do at the pressed time and open it for editing.
@@ -775,8 +865,8 @@ struct CalendarView: View {
     /// Changes to any of these mean the event query has to run again.
     private var eventReloadKey: String {
         let days = visibleDays
-        let start = days.first ?? anchorDate
-        let end = days.last ?? anchorDate
+        let start = days.first ?? anchor
+        let end = days.last ?? anchor
         let calendars = settings.visibleCalendars?.joined(separator: ",") ?? "default"
         return "\(start.timeIntervalSince1970)-\(end.timeIntervalSince1970)-\(showsCalendarEvents)-\(calendars)"
     }
@@ -895,13 +985,13 @@ struct CalendarView: View {
     /// Days on the page currently shown. Used by the week header and to decide
     /// which range of events to load; `days(forPage:)` is the single definition.
     private var visibleDays: [Date] {
-        days(forPage: page(for: anchorDate))
+        days(forPage: page(for: anchor))
     }
 
     private func shift(by amount: Int) {
         let component: Calendar.Component = scale == .day ? .day : .weekOfYear
-        if let next = calendar.date(byAdding: component, value: amount, to: anchorDate) {
-            withAnimation(Theme.Animation.panel) { anchorDate = next }
+        if let next = calendar.date(byAdding: component, value: amount, to: anchor) {
+            withAnimation(Theme.Animation.panel) { anchor = next }
         }
     }
 
@@ -915,9 +1005,9 @@ struct CalendarView: View {
     private var navigationTitle: String {
         switch scale {
         case .day:
-            return anchorDate.formatted(.dateTime.weekday(.wide).month().day())
+            return anchor.formatted(.dateTime.weekday(.wide).month().day())
         case .week:
-            guard let week = calendar.dateInterval(of: .weekOfYear, for: anchorDate) else { return "Week" }
+            guard let week = calendar.dateInterval(of: .weekOfYear, for: anchor) else { return "Week" }
             let end = calendar.date(byAdding: .day, value: -1, to: week.end) ?? week.end
             return "\(week.start.formatted(.dateTime.month().day())) – \(end.formatted(.dateTime.month().day()))"
         }

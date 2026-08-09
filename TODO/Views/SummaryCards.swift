@@ -3,33 +3,104 @@ import SwiftData
 
 /// Compact cards shown under the AI summary.
 ///
-/// These are read-only glances, not editors: the summary screen answers "what
-/// does today look like", and anything that needs changing is a tap away in the
-/// list or calendar. That is why they reuse the shared layout and query code
-/// rather than the full `TodoRow`, whose focus handling and inline editing
-/// would be dead weight here.
+/// These are glances, not editors: the summary screen answers "what does today
+/// look like", and anything that needs changing is a tap away in the list or
+/// calendar. That is why they reuse the shared layout and query code rather
+/// than the full `TodoRow`, whose focus handling and inline editing would be
+/// dead weight here.
+///
+/// The cards float on the summary's background image, so every one of them is
+/// a glass panel — text is never drawn straight onto the photo, where a light
+/// patch in the image would swallow it.
 
 // MARK: Shared chrome
 
-/// The rounded container every summary card sits in.
-private struct SummaryCard<Content: View>: View {
+/// The glass container every summary card sits in.
+///
+/// `glassEffect` on iOS 26 and up; the material fallback below keeps earlier
+/// systems (and macOS builds without the API) looking like the same design
+/// rather than reverting to the flat gray box this replaced.
+struct SummaryCard<Content: View>: View {
     let title: String
     let symbol: String
+    /// Set when tapping the card goes somewhere, which adds a chevron and the
+    /// button treatment.
+    var action: (() -> Void)?
     @ViewBuilder var content: Content
 
     var body: some View {
+        if let action {
+            Button(action: action) { panel }
+                .buttonStyle(PressableCardStyle())
+                .accessibilityAddTraits(.isButton)
+        } else {
+            panel
+        }
+    }
+
+    private var panel: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label(title, systemImage: symbol)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                Label(title, systemImage: symbol)
+                    .font(.subheadline.weight(.semibold))
+
+                Spacer(minLength: 0)
+
+                if action != nil {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .opacity(0.6)
+                }
+            }
+            .foregroundStyle(.white.opacity(0.85))
 
             content
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background {
-            RoundedRectangle(cornerRadius: Theme.Metrics.cornerRadius, style: .continuous)
-                .fill(.quaternary.opacity(0.4))
+        .glassCard()
+        // The cards sit on a darkened image, so their contents are drawn light
+        // throughout rather than following the system's light/dark text color.
+        .foregroundStyle(.white)
+        .environment(\.colorScheme, .dark)
+    }
+}
+
+/// The press response every tappable card and the create button share.
+///
+/// A plain `Button` on a custom label gives no feedback at all, which on a
+/// large glass panel leaves the user unsure the tap registered. A small, fast
+/// scale is enough — and having one style rather than a per-site `scaleEffect`
+/// is what keeps the feedback identical everywhere.
+struct PressableCardStyle: ButtonStyle {
+    var pressedScale: CGFloat = 0.97
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? pressedScale : 1)
+            .opacity(configuration.isPressed ? 0.9 : 1)
+            .animation(Theme.Animation.quick, value: configuration.isPressed)
+    }
+}
+
+extension View {
+    /// Liquid glass, with a material fallback for platforms without it.
+    @ViewBuilder
+    func glassCard(cornerRadius: CGFloat = 20) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+
+        if #available(iOS 26.0, macOS 26.0, *) {
+            self.glassEffect(.regular, in: shape)
+        } else {
+            self.background {
+                shape
+                    .fill(.ultraThinMaterial)
+                    .overlay {
+                        shape.strokeBorder(.white.opacity(0.25), lineWidth: 0.5)
+                    }
+                    .shadow(color: .black.opacity(0.15), radius: 12, y: 6)
+            }
+            .clipShape(shape)
         }
     }
 }
@@ -50,7 +121,7 @@ struct WeatherSummaryCard: View {
             } else {
                 Text("Weather unavailable")
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white.opacity(0.7))
             }
         }
     }
@@ -65,11 +136,10 @@ struct WeatherSummaryCard: View {
                     Text("Low \(temperature(daily.temperatureMin[0]))")
                     if let chance = daily.precipitationProbabilityMax.first ?? nil, chance > 0 {
                         Label("\(chance)%", systemImage: "drop.fill")
-                            .foregroundStyle(.tint)
                     }
                 }
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.white.opacity(0.75))
             }
 
             // The next few days, so "should I plan around the weather" is
@@ -79,10 +149,10 @@ struct WeatherSummaryCard: View {
                     VStack(spacing: 3) {
                         Text(day.label)
                             .font(.caption2)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.white.opacity(0.7))
                         Image(systemName: day.symbol)
                             .font(.caption)
-                            .foregroundStyle(day.chance > 40 ? Color.accentColor : .secondary)
+                            .foregroundStyle(day.chance > 40 ? .white : .white.opacity(0.75))
                         Text(temperature(day.high))
                             .font(.caption2.weight(.medium))
                     }
@@ -134,96 +204,100 @@ struct WeatherSummaryCard: View {
 
 // MARK: Inline calendar
 
-/// A squeezed one-day calendar: the same blocks the full calendar draws, at a
-/// fraction of the height.
+/// The next couple of hours, drawn as a miniature calendar.
 ///
-/// Shares `CalendarLayout` with `CalendarView`, so overlapping work cascades
-/// here exactly as it does there rather than drawing on top of itself.
+/// Scoped to *now* rather than the whole day on purpose: this card answers
+/// "what is coming up", so an empty morning or a finished evening is wasted
+/// height. Untimed work is left out entirely — the Any Time card below is where
+/// that belongs — and what remains is the same block layout `CalendarView`
+/// draws, sharing `CalendarLayout` so overlapping work cascades here exactly as
+/// it does there.
 struct InlineCalendarCard: View {
     let todos: [Todo]
     let events: [CalendarEvent]
     var day: Date = Date()
     var calendar: Calendar = .current
     var defaultDuration: TimeInterval
+    /// Tapping the card opens the full calendar on this day.
+    var onOpen: (() -> Void)?
 
-    /// Height of one hour. Much tighter than the full calendar's, since this is
-    /// a glance rather than a surface to work on.
-    private let hourHeight: CGFloat = 13
+    /// Height of one hour. Much taller than the old whole-day version, since
+    /// only a short window is on screen.
+    private let hourHeight: CGFloat = 46
 
+    /// How far ahead the window looks.
+    private let lookahead: TimeInterval = 2 * 3600
+    /// How much of the recent past stays visible, so something that started a
+    /// few minutes ago is still in view.
+    private let lookbehind: TimeInterval = 30 * 60
+
+    /// "Now", redrawn every minute so the window and its marker creep forward
+    /// rather than freezing wherever they were when the card first appeared.
+    ///
+    /// A `TimelineView` rather than a `Timer` publisher: it schedules itself
+    /// against the run loop, and stops while the view is off screen.
     var body: some View {
-        SummaryCard(title: "Schedule", symbol: "calendar.day.timeline.left") {
-            if timed.isEmpty && untimed.isEmpty {
-                Text("Nothing scheduled")
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            content(now: context.date)
+        }
+    }
+
+    /// Everything the card draws, worked out once per redraw.
+    ///
+    /// `TodoQueries.timed` walks every to-do, so the window, its hours, and its
+    /// blocks are resolved together and passed down rather than recomputed by
+    /// each part of the view that happens to need them.
+    private func content(now: Date) -> some View {
+        let window = Window(card: self, now: now)
+
+        return SummaryCard(title: "Schedule", symbol: "calendar.day.timeline.left", action: onOpen) {
+            if window.blocks.isEmpty {
+                Text("Nothing in the next two hours")
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white.opacity(0.7))
             } else {
-                VStack(alignment: .leading, spacing: 8) {
-                    if !untimed.isEmpty {
-                        allDayRow
-                    }
-                    if !timed.isEmpty {
-                        grid
-                    }
-                }
+                grid(window: window, now: now)
             }
         }
     }
 
-    /// Untimed work, as chips above the grid — the same split the full calendar
-    /// makes between the all-day header and the hour grid.
-    private var allDayRow: some View {
-        HStack(spacing: 4) {
-            ForEach(untimed.prefix(3)) { todo in
-                Text(todo.title.isEmpty ? "Untitled" : todo.title)
-                    .font(.caption2)
-                    .lineLimit(1)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background {
-                        RoundedRectangle(cornerRadius: 4, style: .continuous)
-                            .fill(todo.color.opacity(0.2))
-                    }
-            }
-            if untimed.count > 3 {
-                Text("+\(untimed.count - 3)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
+    /// The hour grid for the window, with the current-time marker on top.
+    private func grid(window: Window, now: Date) -> some View {
+        let hours = window.hours
+        let height = CGFloat(hours.count) * hourHeight
+        let windowStart = window.start
 
-    /// The hour grid, cropped to the span that actually has something in it so
-    /// an empty night does not dominate the card.
-    private var grid: some View {
-        let range = visibleHourRange
-        let height = CGFloat(range.count) * hourHeight
-
-        return HStack(alignment: .top, spacing: 6) {
+        return HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .trailing, spacing: 0) {
-                ForEach(range, id: \.self) { hour in
-                    Text(shortHour(hour))
-                        .font(.system(size: 8))
-                        .foregroundStyle(.secondary)
+                ForEach(hours, id: \.self) { hour in
+                    Text(hourLabel(hour))
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.65))
                         .frame(height: hourHeight, alignment: .top)
                 }
             }
-            .frame(width: 26)
+            .frame(width: 46)
 
             GeometryReader { proxy in
                 ZStack(alignment: .topLeading) {
                     VStack(spacing: 0) {
-                        ForEach(range, id: \.self) { _ in
-                            Divider().frame(height: hourHeight, alignment: .top)
+                        ForEach(hours, id: \.self) { _ in
+                            Rectangle()
+                                .fill(.white.opacity(0.18))
+                                .frame(height: 0.5)
+                                .frame(height: hourHeight, alignment: .top)
                         }
                     }
 
-                    ForEach(blocks, id: \.id) { block in
+                    ForEach(window.blocks, id: \.id) { block in
                         block.view(
                             columnWidth: proxy.size.width,
                             hourHeight: hourHeight,
-                            topHour: range.lowerBound
+                            windowStart: windowStart
                         )
                     }
+
+                    currentTimeIndicator(now: now, windowStart: windowStart)
                 }
             }
             .frame(height: height)
@@ -231,141 +305,177 @@ struct InlineCalendarCard: View {
         .frame(height: height)
     }
 
-    // MARK: Content
+    /// The same red line and dot the full calendar draws, so the two surfaces
+    /// read as one calendar at two sizes.
+    @ViewBuilder
+    private func currentTimeIndicator(now: Date, windowStart: Date) -> some View {
+        let offset = CGFloat(now.timeIntervalSince(windowStart) / 3600) * hourHeight
 
-    private var timed: [Todo] {
-        TodoQueries.timed(todos, on: day, calendar: calendar)
+        Rectangle()
+            .fill(Color.red)
+            .frame(height: 1.5)
+            .overlay(alignment: .leading) {
+                Circle()
+                    .fill(Color.red)
+                    .frame(width: 7, height: 7)
+                    .offset(x: -3.5)
+            }
+            .offset(y: offset)
+            .zIndex(10)
     }
 
-    private var untimed: [Todo] {
-        TodoQueries.untimed(todos, on: day, calendar: calendar)
-    }
+    // MARK: Window
 
-    private var timedEvents: [CalendarEvent] {
-        let start = calendar.startOfDay(for: day)
-        guard let end = calendar.date(byAdding: .day, value: 1, to: start) else { return [] }
-        return events.filter { !$0.isAllDay && $0.start >= start && $0.start < end }
-    }
+    /// The card's contents for one moment: where the window starts, which hours
+    /// it covers, and the blocks laid out inside it.
+    ///
+    /// Resolved once per redraw and handed down. Working these out separately
+    /// meant `TodoQueries.timed` — which walks every to-do in the store — ran
+    /// three or four times for a single frame.
+    struct Window {
+        let start: Date
+        let hours: [Date]
+        let blocks: [PositionedBlock]
 
-    /// To-dos and events, positioned by the shared layout.
-    private var blocks: [PositionedBlock] {
-        var layout: [CalendarLayout.Block] = []
+        init(card: InlineCalendarCard, now: Date) {
+            let calendar = card.calendar
+            let start = calendar.startOfHour(for: now.addingTimeInterval(-card.lookbehind))
+            self.start = start
 
-        for todo in timed {
-            guard let start = todo.assignedDate else { continue }
-            layout.append(
-                .init(
+            // Everything timed that overlaps the window. Untimed work is
+            // deliberately absent: it has no place on an hour grid, and the Any
+            // Time card already lists it.
+            let end = start.addingTimeInterval(Double(max(Int(card.lookahead / 3600) + 2, 3)) * 3600)
+            var candidates: [(id: String, title: String, start: Date, duration: TimeInterval, color: Color)] = []
+
+            for todo in TodoQueries.timed(card.todos, on: card.day, calendar: calendar) {
+                guard let todoStart = todo.assignedDate else { continue }
+                let duration = todo.effectiveDuration(defaultDuration: card.defaultDuration)
+                guard todoStart < end, todoStart.addingTimeInterval(duration) > start else { continue }
+
+                candidates.append((
                     id: "todo-\(todo.uuid.uuidString)",
-                    start: start,
-                    end: start.addingTimeInterval(todo.effectiveDuration(defaultDuration: defaultDuration))
-                )
-            )
-        }
-        for event in timedEvents {
-            layout.append(.init(id: "event-\(event.id)", start: event.start, end: event.end))
-        }
-
-        let slots = CalendarLayout.slots(for: layout)
-
-        var positioned: [PositionedBlock] = []
-        for todo in timed {
-            guard let start = todo.assignedDate else { continue }
-            let id = "todo-\(todo.uuid.uuidString)"
-            positioned.append(
-                PositionedBlock(
-                    id: id,
                     title: todo.title.isEmpty ? "Untitled" : todo.title,
-                    start: start,
-                    duration: todo.effectiveDuration(defaultDuration: defaultDuration),
-                    color: todo.color,
-                    slot: slots[id] ?? CalendarSlot(offset: 0, width: 1),
-                    calendar: calendar
-                )
-            )
-        }
-        for event in timedEvents {
-            let id = "event-\(event.id)"
-            positioned.append(
-                PositionedBlock(
-                    id: id,
+                    start: todoStart,
+                    duration: duration,
+                    color: todo.color
+                ))
+            }
+
+            for event in card.events where !event.isAllDay {
+                guard event.start < end, event.end > start else { continue }
+                candidates.append((
+                    id: "event-\(event.id)",
                     title: event.title,
                     start: event.start,
                     duration: event.duration,
-                    color: Color(hex: event.colorHex),
-                    slot: slots[id] ?? CalendarSlot(offset: 0, width: 1),
-                    calendar: calendar
-                )
+                    color: Color(hex: event.colorHex)
+                ))
+            }
+
+            let slots = CalendarLayout.slots(
+                for: candidates.map {
+                    .init(id: $0.id, start: $0.start, end: $0.start.addingTimeInterval($0.duration))
+                }
             )
+            self.blocks = candidates.map { candidate in
+                PositionedBlock(
+                    id: candidate.id,
+                    title: candidate.title,
+                    start: candidate.start,
+                    duration: candidate.duration,
+                    color: candidate.color,
+                    slot: slots[candidate.id] ?? CalendarSlot(offset: 0, width: 1)
+                )
+            }
+
+            // Hours the grid draws: the default window, stretched to cover a
+            // block running past it so a long meeting is not silently clipped,
+            // and never past midnight. At least three, so the card keeps a
+            // stable shape whether or not anything is scheduled.
+            let minimumEnd = calendar
+                .startOfHour(for: now.addingTimeInterval(card.lookahead))
+                .addingTimeInterval(3600)
+            let latest = self.blocks
+                .map { $0.start.addingTimeInterval($0.duration) }
+                .max() ?? minimumEnd
+            let gridEnd = min(
+                max(minimumEnd, calendar.startOfHour(for: latest).addingTimeInterval(3600)),
+                calendar.startOfDay(for: now).addingTimeInterval(24 * 3600)
+            )
+
+            let count = max(Int(gridEnd.timeIntervalSince(start) / 3600), 3)
+            self.hours = (0..<count).compactMap {
+                calendar.date(byAdding: .hour, value: $0, to: start)
+            }
         }
-        return positioned
     }
 
-    /// Hours worth drawing: from the first block to the last, padded by one and
-    /// never narrower than a few hours so the card keeps a stable shape.
-    private var visibleHourRange: Range<Int> {
-        let starts = blocks.map { calendar.component(.hour, from: $0.start) }
-        let ends = blocks.map { block -> Int in
-            let end = block.start.addingTimeInterval(block.duration)
-            let hour = calendar.component(.hour, from: end)
-            return calendar.component(.minute, from: end) > 0 ? hour + 1 : hour
-        }
-
-        guard let first = starts.min(), let last = ends.max() else { return 9..<18 }
-
-        let lower = max(first - 1, 0)
-        let upper = min(max(last + 1, lower + 4), 24)
-        return lower..<upper
-    }
-
-    private func shortHour(_ hour: Int) -> String {
-        var components = DateComponents()
-        components.hour = hour
-        guard let date = calendar.date(from: components) else { return "" }
-        return date.formatted(.dateTime.hour(.defaultDigits(amPM: .omitted)))
+    /// Hour labels carry am/pm, since a window that straddles noon or midnight
+    /// is ambiguous without it.
+    private func hourLabel(_ date: Date) -> String {
+        date.formatted(.dateTime.hour(.defaultDigits(amPM: .abbreviated)))
     }
 
     /// One laid-out block, ready to draw.
-    private struct PositionedBlock: Identifiable {
+    struct PositionedBlock: Identifiable {
         let id: String
         let title: String
         let start: Date
         let duration: TimeInterval
         let color: Color
         let slot: CalendarSlot
-        let calendar: Calendar
 
-        func view(columnWidth: CGFloat, hourHeight: CGFloat, topHour: Int) -> some View {
-            let minutes = CGFloat(calendar.component(.hour, from: start) * 60
-                + calendar.component(.minute, from: start))
-            let offset = (minutes - CGFloat(topHour * 60)) / 60 * hourHeight
-            let height = max(CGFloat(duration / 3600) * hourHeight, 10)
+        func view(columnWidth: CGFloat, hourHeight: CGFloat, windowStart: Date) -> some View {
+            let offset = CGFloat(start.timeIntervalSince(windowStart) / 3600) * hourHeight
+            let height = max(CGFloat(duration / 3600) * hourHeight, 16)
 
-            return Text(title)
-                .font(.system(size: 9))
-                .lineLimit(1)
-                .padding(.horizontal, 3)
-                .frame(
-                    width: max(columnWidth * slot.width - 1, 1),
-                    height: height,
-                    alignment: .topLeading
-                )
-                .background {
-                    RoundedRectangle(cornerRadius: 3, style: .continuous)
-                        .fill(color.opacity(0.22))
-                        .overlay(alignment: .leading) {
-                            Rectangle().fill(color).frame(width: 1.5)
-                        }
-                        .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+            return VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.system(size: 10, weight: .medium))
+                    .lineLimit(height > 30 ? 2 : 1)
+                if height > 34 {
+                    Text(start.formatted(date: .omitted, time: .shortened))
+                        .font(.system(size: 9))
+                        .opacity(0.75)
                 }
-                .offset(x: columnWidth * slot.offset, y: offset)
-                .zIndex(Double(slot.depth))
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .frame(
+                width: max(columnWidth * slot.width - 2, 1),
+                height: height,
+                alignment: .topLeading
+            )
+            .background {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(color.opacity(0.55))
+                    .overlay(alignment: .leading) {
+                        Rectangle().fill(color).frame(width: 2)
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+            }
+            .offset(x: columnWidth * slot.offset, y: offset)
+            .zIndex(Double(slot.depth))
         }
     }
 }
 
-// MARK: To-do list
+private extension Calendar {
+    /// Top of the hour containing `date`.
+    func startOfHour(for date: Date) -> Date {
+        self.date(from: dateComponents([.year, .month, .day, .hour], from: date)) ?? date
+    }
+}
 
-/// Today's unfinished work, with working checkboxes.
+// MARK: Any Time
+
+/// Today's unfinished work that has no time attached.
+///
+/// Timed work is the schedule card's job, so listing it again here would show
+/// the same to-do twice on one screen. What is left is precisely the work the
+/// user can slot in whenever — hence "Any Time".
 ///
 /// Interactive on purpose: ticking something off is the one action worth having
 /// here, and it is the same `TodoCheckbox` and `TodoStore.toggle` the real list
@@ -373,48 +483,62 @@ struct InlineCalendarCard: View {
 struct TodoListCard: View {
     let todos: [Todo]
     var limit: Int = 5
+    /// Tapping the card opens the Today list.
+    var onOpen: (() -> Void)?
 
     @Environment(\.modelContext) private var context
 
     private var store: TodoStore { TodoStore(context: context) }
 
+    /// Today's work with no time of day. See `TodoQueries.untimedToday`.
+    private var allItems: [Todo] {
+        TodoQueries.untimedToday(todos)
+    }
+
     private var items: [Todo] {
-        Array(TodoQueries.today(todos).prefix(limit))
+        Array(allItems.prefix(limit))
     }
 
     private var remaining: Int {
-        max(TodoQueries.today(todos).count - limit, 0)
+        max(allItems.count - limit, 0)
     }
 
     var body: some View {
-        SummaryCard(title: "Today", symbol: "checklist") {
+        SummaryCard(title: "Any Time", symbol: "checklist", action: onOpen) {
             if items.isEmpty {
-                Text("Nothing due today")
+                Text("Nothing to do")
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white.opacity(0.7))
             } else {
-                VStack(alignment: .leading, spacing: 9) {
+                VStack(alignment: .leading, spacing: scale.rowGap) {
                     ForEach(items) { todo in
                         row(for: todo)
                     }
 
                     if remaining > 0 {
                         Text("+\(remaining) more")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .font(scale.overflowFont)
+                            .foregroundStyle(.white.opacity(0.7))
                     }
                 }
             }
         }
+        // Ticking something off here removes its row and shrinks the card; the
+        // same curve the real list uses for the same change.
+        .animation(Theme.Animation.listChange, value: items.map(\.uuid))
     }
 
+    /// Sizes and fonts for this surface. See `Theme.RowScale`.
+    private let scale = Theme.RowScale.compact
+
     private func row(for todo: Todo) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: Theme.Metrics.rowSpacing) {
+        HStack(alignment: .firstTextBaseline, spacing: scale.horizontalSpacing) {
             TodoCheckbox(
                 state: todo.state,
-                tint: todo.color,
+                tint: .white,
                 onToggle: { withAnimation(Theme.Animation.toggle) { _ = store.toggle(todo) } },
-                onSelect: { _ = store.setState(todo, to: $0) }
+                onSelect: { _ = store.setState(todo, to: $0) },
+                scale: scale
             )
             .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 4 }
 
@@ -422,29 +546,30 @@ struct TodoListCard: View {
                 markdown: todo.title.isEmpty ? "Untitled" : todo.title,
                 strikethrough: todo.state == .completed
             )
-            .font(.callout)
-            .foregroundStyle(todo.state.isResolved ? .secondary : .primary)
+            .font(scale.titleFont)
+            .foregroundStyle(todo.state.isResolved ? .white.opacity(0.6) : .white)
 
             Spacer(minLength: 0)
-
-            if let assigned = todo.assignedDate, todo.assignedHasTime {
-                Text(assigned.formatted(date: .omitted, time: .shortened))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
         }
+        // The checkbox is the only control here; a tap anywhere else should
+        // fall through to the card's own "open the list" action.
+        .contentShape(Rectangle())
     }
 }
 
 #if DEBUG
 #Preview("Summary cards") {
-    ScrollView {
-        VStack(spacing: 14) {
-            WeatherSummaryCard(forecast: nil)
-            InlineCalendarCard(todos: [], events: [], defaultDuration: 15 * 60)
-            TodoListCard(todos: [])
+    ZStack {
+        SummaryBackgroundView(background: .dawn)
+
+        ScrollView {
+            VStack(spacing: 14) {
+                WeatherSummaryCard(forecast: nil)
+                InlineCalendarCard(todos: [], events: [], defaultDuration: 15 * 60)
+                TodoListCard(todos: [])
+            }
+            .padding()
         }
-        .padding()
     }
     .previewEnvironment()
 }

@@ -378,6 +378,36 @@ extension Todo {
         subtask.move(toParent: self)
         return subtask
     }
+
+    /// This todo and every ancestor above it.
+    ///
+    /// Walks defensively with a visited set: a cycle already in the store —
+    /// from a bad import or an older build — would otherwise hang the walk
+    /// instead of being reported.
+    var ancestors: [Todo] {
+        var result: [Todo] = []
+        var seen: Set<UUID> = [uuid]
+        var current = parent
+
+        while let node = current, seen.insert(node.uuid).inserted {
+            result.append(node)
+            current = node.parent
+        }
+        return result
+    }
+
+    /// Whether `candidate` may become a subtask of this todo.
+    ///
+    /// Rejects the todo itself, anything already parented here, and any
+    /// ancestor — re-parenting an ancestor under its own descendant would make
+    /// the tree circular, and every recursive walk over it non-terminating.
+    func canAdopt(_ candidate: Todo) -> Bool {
+        guard candidate.uuid != uuid else { return false }
+        guard candidate.parent?.uuid != uuid else { return false }
+        // A project is a top-level container, so it never becomes a subtask.
+        guard !candidate.isProject else { return false }
+        return !ancestors.contains { $0.uuid == candidate.uuid }
+    }
 }
 
 

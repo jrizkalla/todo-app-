@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import EventKit
+import PhotosUI
 
 /// App preferences: the calendar default, Reminders import, and — on macOS —
 /// vim bindings.
@@ -15,7 +16,118 @@ struct SettingsView: View {
 
     @State private var calendarStore = CalendarEventStore.shared
     @State private var availableCalendars: [EKCalendar] = []
-    
+
+    /// The photo being picked for the summary background, if any.
+    @State private var pickedBackground: PhotosPickerItem?
+    /// Bumped after a save so the swatches redraw with the new photo.
+    @State private var backgroundVersion = 0
+
+    /// Backdrop behind the AI summary: a row of gradient swatches, plus the
+    /// user's own photo.
+    @ViewBuilder
+    private var backgroundSection: some View {
+        @Bindable var settings = settings
+
+        Section {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    ForEach(SummaryBackground.builtIn) { background in
+                        swatch(for: background) {
+                            SummaryBackgroundView(background: background, fillsScreen: false)
+                        }
+                    }
+
+                    swatch(for: .custom) {
+                        if SummaryBackgroundStore.hasImage {
+                            SummaryBackgroundView(
+                                background: .custom,
+                                customImageData: SummaryBackgroundStore.load(),
+                                fillsScreen: false
+                            )
+                        } else {
+                            ZStack {
+                                Rectangle().fill(.quaternary)
+                                Image(systemName: "photo")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .id(backgroundVersion)
+                }
+                .padding(.vertical, 4)
+            }
+
+            PhotosPicker(
+                selection: $pickedBackground,
+                matching: .images,
+                photoLibrary: .shared()
+            ) {
+                Label(
+                    SummaryBackgroundStore.hasImage ? "Change Photo…" : "Choose Photo…",
+                    systemImage: "photo.on.rectangle"
+                )
+            }
+
+            if SummaryBackgroundStore.hasImage {
+                Button("Remove Photo", role: .destructive) {
+                    SummaryBackgroundStore.clear()
+                    if settings.summaryBackground == .custom {
+                        settings.summaryBackground = .dawn
+                    }
+                    backgroundVersion += 1
+                }
+            }
+        } header: {
+            Text("Summary Background")
+        } footer: {
+            Text("The backdrop behind your daily summary.")
+        }
+        .onChange(of: pickedBackground) { _, item in
+            guard let item else { return }
+            Task {
+                guard let data = try? await item.loadTransferable(type: Data.self),
+                      SummaryBackgroundStore.save(data)
+                else { return }
+
+                settings.summaryBackground = .custom
+                backgroundVersion += 1
+                pickedBackground = nil
+            }
+        }
+    }
+
+    /// One selectable background thumbnail.
+    private func swatch<Preview: View>(
+        for background: SummaryBackground,
+        @ViewBuilder preview: () -> Preview
+    ) -> some View {
+        let isSelected = settings.summaryBackground == background
+
+        return Button {
+            settings.summaryBackground = background
+        } label: {
+            VStack(spacing: 4) {
+                preview()
+                    .frame(width: 56, height: 84)
+                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .strokeBorder(
+                                isSelected ? Color.accentColor : .clear,
+                                lineWidth: 2.5
+                            )
+                    }
+
+                Text(background.title)
+                    .font(.caption2)
+                    .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(background.title)
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+    }
+
 
     var body: some View {
         @Bindable var settings = settings
@@ -29,6 +141,8 @@ struct SettingsView: View {
             Section("TODOs") {
                 Toggle("Show completed TODOs", isOn: $settings.showResolved)
             }
+
+            backgroundSection
             Section("Calendar") {
                 Picker("Default duration", selection: Binding(
                     get: { settings.defaultEventDuration },

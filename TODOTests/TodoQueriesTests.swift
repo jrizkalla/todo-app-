@@ -95,6 +95,35 @@ struct TodoQueriesTests {
         #expect(TodoQueries.today([done], calendar: calendar).isEmpty)
     }
 
+    // MARK: Any Time
+
+    /// The summary's Any Time card and the home screen widget both list work
+    /// with no time of day. Timed work belongs on the schedule grid, and
+    /// showing it in both places would list the same to-do twice on one screen.
+    @Test func untimedTodayExcludesTimedWork() throws {
+        let context = try makeContext()
+        let timed = Todo(title: "Timed", assignedDate: day(offset: 0))
+        timed.assignedHasTime = true
+        let untimed = Todo(title: "Untimed", assignedDate: day(offset: 0))
+        [timed, untimed].forEach(context.insert)
+
+        let result = TodoQueries.untimedToday([timed, untimed], calendar: calendar)
+
+        #expect(result.map(\.title) == ["Untimed"])
+    }
+
+    /// Built on `today`, so overdue work is carried along with it — an untimed
+    /// to-do from last week is still something to do at any point today.
+    @Test func untimedTodayKeepsOverdueWork() throws {
+        let context = try makeContext()
+        let overdue = Todo(title: "Overdue", assignedDate: day(offset: -3))
+        context.insert(overdue)
+
+        #expect(
+            TodoQueries.untimedToday([overdue], calendar: calendar).map(\.title) == ["Overdue"]
+        )
+    }
+
     // MARK: This week
 
     /// A date beyond the current week falls outside This Week.

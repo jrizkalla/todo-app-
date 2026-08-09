@@ -9,47 +9,62 @@ struct TodoDetailView: View {
     @Bindable var todo: Todo
 
     @Environment(\.modelContext) private var context
+    @Environment(\.dismiss) private var dismiss
     @Environment(AppSettings.self) private var settings
     @Query private var todos: [Todo]
     @Query private var spaces: [Space]
 
     @State private var suggestionModel = TitleSuggestionModel()
     @State private var isEditingNotes = false
+    /// Set while confirming deletion, which also takes any subtasks with it.
+    @State private var isConfirmingDelete = false
+    @State private var isAddingExistingSubtask = false
     @FocusState private var focusedField: Field?
+    @FocusState private var isTitleFocused: Bool
 
     private enum Field { case title, notes }
 
     private var store: TodoStore { TodoStore(context: context) }
 
+    /// Color the editor tints itself with, from the todo's project or space.
+    private var accent: Color { todo.color }
+
     var body: some View {
         Form {
             Section {
-                TextField("Title", text: $todo.title, axis: .vertical)
-                    .font(.title3)
-                    .focused($focusedField, equals: .title)
-                    .onChange(of: todo.title) { _, newValue in
-                        refreshSuggestions(for: newValue)
-                        store.save()
-                    }
+                TodoTitleHeader(
+                    title: $todo.title,
+                    summary: headerSummary,
+                    accent: accent,
+                    focusBinding: $isTitleFocused
+                )
+                .onChange(of: todo.title) { _, newValue in
+                    refreshSuggestions(for: newValue)
+                    store.save()
+                }
+            }
 
+            Section {
                 notesEditor
             }
 
-            Section("Schedule") {
-                DateRow(
-                    label: "When",
-                    symbol: "calendar",
-                    date: $todo.assignedDate,
-                    hasTime: $todo.assignedHasTime
-                ) { store.update(todo) { _ in } }
+            DateTimeSection(
+                title: "Date & Time",
+                date: $todo.assignedDate,
+                hasTime: $todo.assignedHasTime,
+                accent: accent,
+                footnote: "The day this to-do is planned for."
+            ) { store.update(todo) { _ in } }
 
-                DateRow(
-                    label: "Deadline",
-                    symbol: "target",
-                    date: $todo.dueDate,
-                    hasTime: $todo.dueHasTime
-                ) { store.update(todo) { _ in } }
+            DateTimeSection(
+                title: "Deadline",
+                date: $todo.dueDate,
+                hasTime: $todo.dueHasTime,
+                accent: accent,
+                footnote: "A deadline is when the work is due, separate from the day you plan to do it."
+            ) { store.update(todo) { _ in } }
 
+            Section {
                 DurationRow(duration: $todo.duration) { store.save() }
             }
 
@@ -110,8 +125,21 @@ struct TodoDetailView: View {
 
             subtasksSection
             RemindersSection(todo: todo)
+
+            Section {
+                Button(role: .destructive) {
+                    isConfirmingDelete = true
+                } label: {
+                    Label(
+                        todo.isProject ? "Delete Project" : "Delete To-Do",
+                        systemImage: "trash"
+                    )
+                    .frame(maxWidth: .infinity, alignment: .center)
+                }
+            }
         }
         .formStyle(.grouped)
+        .tint(accent)
         // Swiping down over the form dismisses the keyboard, tracking the
         // gesture rather than snapping shut.
         .scrollDismissesKeyboard(.interactively)
@@ -120,15 +148,61 @@ struct TodoDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .suggestionBar(suggestionModel.suggestions) { accept($0) }
+        .confirmationDialog(
+            deletePrompt,
+            isPresented: $isConfirmingDelete,
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                // Leave the editor before the model goes away: dismissing after
+                // the delete leaves this view bound to a deleted object.
+                dismiss()
+                store.delete(todo)
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+        .sheet(isPresented: $isAddingExistingSubtask) {
+            NavigationStack {
+                ExistingTodoPickerView(parent: todo)
+            }
+        }
         .onAppear {
             refreshSuggestions(for: todo.title)
-            if todo.title.isEmpty { focusedField = .title }
+            if todo.title.isEmpty { isTitleFocused = true }
         }
         .onDisappear {
             Task {
                 await todo.summarizeNotes()
             }
         }
+    }
+
+    /// Gray context line in the header, mirroring how Calendar summarizes an
+    /// event above its title field.
+    private var headerSummary: String {
+        let name = todo.title.isEmpty
+            ? (todo.isProject ? "New Project" : "New To-Do")
+            : todo.title
+
+        guard let date = todo.assignedDate else {
+            if let space = todo.space { return "\(name) in \(space.name)" }
+            return "\(name) · \(todo.bucket.label)"
+        }
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = todo.assignedHasTime ? "MMM d 'at' h:mm a" : "MMM d"
+        return "\(name) on \(formatter.string(from: date))"
+    }
+
+    /// Spell out what a delete takes with it, since subtasks cascade.
+    private var deletePrompt: String {
+        let name = todo.title.isEmpty ? "this to-do" : "“\(todo.title)”"
+        let count = todo.subtaskList.count
+
+        guard count > 0 else {
+            return "Delete \(name)? This cannot be undone."
+        }
+        return "Deleting \(name) also deletes its \(count) subtask\(count == 1 ? "" : "s"). This cannot be undone."
     }
 
     // MARK: Notes
@@ -219,6 +293,16 @@ struct TodoDetailView: View {
                         set: { subtask.title = $0; store.save() }
                     ))
                 }
+                // Removing a subtask that came from elsewhere should be able to
+                // put it back rather than destroy it.
+                .swipeActions(edge: .leading) {
+                    Button {
+                        store.detachFromParent(subtask)
+                    } label: {
+                        Label("Detach", systemImage: "arrow.up.forward.square")
+                    }
+                    .tint(.orange)
+                }
             }
             .onDelete { offsets in
                 for index in offsets { store.delete(todo.orderedSubtasks[index]) }
@@ -228,6 +312,14 @@ struct TodoDetailView: View {
                 store.addSubtask(to: todo)
             } label: {
                 Label("Add Subtask", systemImage: "plus")
+            }
+
+            // Files an existing to-do here instead of creating a new one, so a
+            // captured Inbox item can join a project without being retyped.
+            Button {
+                isAddingExistingSubtask = true
+            } label: {
+                Label("Add Existing To-Do…", systemImage: "text.append")
             }
         }
     }
@@ -250,46 +342,6 @@ struct TodoDetailView: View {
 }
 
 // MARK: - Rows
-
-/// An optional date with an optional time, matching the model's split between
-/// "a day" and "a day at a time".
-private struct DateRow: View {
-    let label: String
-    let symbol: String
-    @Binding var date: Date?
-    @Binding var hasTime: Bool
-    let onChange: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Toggle(isOn: Binding(
-                get: { date != nil },
-                set: { enabled in
-                    date = enabled ? Calendar.current.startOfDay(for: Date()) : nil
-                    if !enabled { hasTime = false }
-                    onChange()
-                }
-            )) {
-                Label(label, systemImage: symbol)
-            }
-
-            if date != nil {
-                DatePicker(
-                    "",
-                    selection: Binding(get: { date ?? Date() }, set: { date = $0; onChange() }),
-                    displayedComponents: hasTime ? [.date, .hourAndMinute] : [.date]
-                )
-                .labelsHidden()
-
-                Toggle("Include time", isOn: Binding(
-                    get: { hasTime },
-                    set: { hasTime = $0; onChange() }
-                ))
-                .font(.caption)
-            }
-        }
-    }
-}
 
 /// Duration picker offering the common lengths plus "none".
 private struct DurationRow: View {

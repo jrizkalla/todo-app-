@@ -65,8 +65,14 @@ enum TodoQueries {
 
     /// Top-level items only — subtasks appear nested under their parent, not as
     /// separate rows.
+    ///
+    /// Also drops anything the active Focus is hiding. Filtering here rather
+    /// than in each destination means a Focus that hides a space keeps its work
+    /// out of Today and This Week too, not just out of the sidebar — a filter
+    /// that only hid the sidebar entry would still show the same to-dos in
+    /// every date-based list.
     static func topLevel(_ todos: [Todo]) -> [Todo] {
-        todos.filter { $0.parent == nil }
+        todos.filter { $0.parent == nil && !$0.isHiddenByFocus }
     }
 
     /// Unresolved, unscheduled, unfiled items.
@@ -93,6 +99,23 @@ enum TodoQueries {
             }
             .filter(includeResolved: includeResolved)
             .sorted(by: sortByDateThenOrder)
+    }
+
+    /// Today's work that has no time of day attached.
+    ///
+    /// The complement of what the schedule grid draws: anything with a time is
+    /// already laid out against the hours, so the summary's "Any Time" card and
+    /// the home screen widget list only what is left — work the user can slot
+    /// in whenever. Built on `today` rather than on `assignedDate` alone so
+    /// overdue and due-dated items are still included.
+    static func untimedToday(
+        _ todos: [Todo],
+        calendar: Calendar = .current,
+        now: Date = Date(),
+        includeResolved: Bool = false
+    ) -> [Todo] {
+        today(todos, calendar: calendar, now: now, includeResolved: includeResolved)
+            .filter { !$0.assignedHasTime }
     }
 
     /// Items landing in the current week, by the user's week-start preference.

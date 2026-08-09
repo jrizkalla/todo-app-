@@ -12,12 +12,22 @@ struct TodoListView: View {
 
     @Binding var selectedTodo: Todo?
 
+    /// Incremented by the app-wide create button. The list answers by adding a
+    /// row here and focusing its title — see `createTodoInCurrentList`.
+    ///
+    /// A counter rather than a flag so two taps in a row both register; the
+    /// button lives in `RootView` and has no way to know when this finished.
+    var createRequest: Binding<Int>?
+
     /// Set while waiting on the user's answer to the cascade prompt.
     @State private var pendingCascade: PendingCascade?
     /// Set while confirming a delete that would take other items with it.
     @State private var pendingDeletion: Todo?
     /// The to-do whose scheduling panel is open, from a leading swipe.
     @State private var schedulingTodo: Todo?
+
+    /// What the user has typed into the pull-down search field, if anything.
+    @State private var searchText = ""
 
     /// Suggestion chips for whichever row's title has focus.
     @State private var suggestionModel = TitleSuggestionModel()
@@ -29,9 +39,10 @@ struct TodoListView: View {
     private var store: TodoStore { TodoStore(context: context) }
 
     /// Pending reminders only surface in the Inbox, which is where the spec
-    /// says unorganized items collect.
+    /// says unorganized items collect — and not while searching, where the only
+    /// rows on screen should be ones that matched.
     private var showsPendingReminders: Bool {
-        destination == .inbox && !importer.pending.isEmpty
+        destination == .inbox && !importer.pending.isEmpty && !isSearching
     }
 
     /// A blocked state change awaiting confirmation, per the spec's rule that
@@ -44,9 +55,15 @@ struct TodoListView: View {
     }
 
     var body: some View {
-        ZStack(alignment: .bottomTrailing) {
-            listContent
-            createButton
+        searchableList
+        // The app-wide button asks; the list is what knows how to answer.
+        //
+        // Ignored while searching: the results are a filtered view, and
+        // something created into it would vanish the moment it failed to match
+        // what is still in the field.
+        .onChange(of: createRequest?.wrappedValue) { _, _ in
+            guard !isSearching else { return }
+            createTodoInCurrentList()
         }
         .navigationTitle(title)
         #if os(iOS)
@@ -55,8 +72,12 @@ struct TodoListView: View {
         // Visiting a list is what "viewing" means, so its dots clear on arrival.
         .task(id: destination) { markVisibleAsViewed() }
         // Switching lists drops focus, so the keyboard never follows the user
-        // to a screen they did not open it on.
-        .onChange(of: destination) { _, _ in focusedTodoID = nil }
+        // to a screen they did not open it on. The query goes with it: a search
+        // typed in one list has no meaning in the next.
+        .onChange(of: destination) { _, _ in
+            focusedTodoID = nil
+            searchText = ""
+        }
         .onChange(of: focusedTodoID) { previous, current in
             handleFocusChange(from: previous, to: current)
         }
@@ -121,9 +142,35 @@ struct TodoListView: View {
         }
     }
 
-    @ViewBuilder
+    /// The list, plus its search field.
+    ///
+    /// `searchable` is attached here rather than to the `ZStack` in `body`: the
+    /// floating create button is the ZStack's other child, and hanging the
+    /// field off the stack leaves the revealed search bar unable to take focus.
+    /// Bound to the scroll view directly it behaves normally, and the
+    /// pull-down gesture has the right scroll view to attach to.
+    private var searchableList: some View {
+        listContent
+            // Hidden by default and revealed by pulling the list down, so the
+            // field costs nothing until it is wanted.
+            .pullDownSearchable(text: $searchText, prompt: searchPrompt)
+    }
+
     private var listContent: some View {
-        if visibleTodos.isEmpty && !showsPendingReminders {
+        // Resolved once per redraw and passed down.
+        //
+        // `visibleTodos` runs the destination's whole query chain — several
+        // passes over every to-do in the store — and the body referred to it
+        // five separate times, so a list of any size paid that cost five times
+        // for a single frame.
+        rows(visibleTodos)
+    }
+
+    @ViewBuilder
+    private func rows(_ visibleTodos: [Todo]) -> some View {
+        if visibleTodos.isEmpty && isSearching {
+            SearchEmptyState(query: searchText, scopeDescription: searchScopeDescription)
+        } else if visibleTodos.isEmpty && !showsPendingReminders {
             emptyState
         } else {
             List {
@@ -163,6 +210,10 @@ struct TodoListView: View {
                             onSubmitTitle: { createTodoAfterSubmit(from: todo) },
                             onShowDetail: { showDetail(for: todo) }
                         )
+                        // On macOS the editor opens as a popover pointing at
+                        // this row; on iOS this is a no-op and the detail page
+                        // is pushed instead.
+                        .todoDetailPopover(for: todo, selection: $selectedTodo)
 
                         // Subtasks nest under their parent rather than
                         // appearing as separate top-level rows — except in the
@@ -184,6 +235,7 @@ struct TodoListView: View {
                                 onShowDetail: { showDetail(for: subtask) }
                             )
                             .padding(.leading, 28)
+                            .todoDetailPopover(for: subtask, selection: $selectedTodo)
                         }
                     }
                     .listRowInsets(EdgeInsets())
@@ -207,16 +259,30 @@ struct TodoListView: View {
                         .tint(.blue)
                     }
                 }
+                // Dragging is disabled while searching: results are ranked by
+                // relevance and are a subset of several lists, so a drop
+                // position there does not describe an order worth saving.
                 .onMove { indices, newOffset in
+                    guard !isSearching else { return }
                     var reordered = visibleTodos
                     reordered.move(fromOffsets: indices, toOffset: newOffset)
                     store.reorder(reordered)
                 }
 
                 // Breathing room so the floating button never covers a row.
-                Color.clear.frame(height: 72).listRowSeparator(.hidden)
+                Color.clear
+                    .frame(height: Theme.Metrics.listBottomClearance)
+                    .listRowSeparator(.hidden)
             }
             .listStyle(.plain)
+            // A plain list on macOS draws flush to the pane edges, which puts
+            // the checkboxes hard against the sidebar divider. The inset gives
+            // the rows the same margin AppKit lists have.
+            .contentMargins(
+                .horizontal,
+                Theme.Metrics.listContentMargin,
+                for: .scrollContent
+            )
             // Swiping down over the list dismisses the keyboard raised by
             // inline title editing.
             .scrollDismissesKeyboard(.interactively)
@@ -224,36 +290,20 @@ struct TodoListView: View {
         }
     }
 
+    /// The "nothing here" screen.
+    ///
+    /// Explicitly stretched to fill the pane. `ContentUnavailableView` sizes
+    /// itself to its content, and the create button is an overlay aligned to
+    /// this view's frame — so without the stretch the button pinned itself to
+    /// the bottom-right of the *message*, leaving it floating mid-pane instead
+    /// of in the corner of the window.
     private var emptyState: some View {
         ContentUnavailableView {
             Label(emptyTitle, systemImage: destination.symbolName)
         } description: {
             Text(emptyMessage)
         }
-    }
-
-    /// Floating create button.
-    ///
-    /// Creating a to-do adds it to the current list and puts the cursor in its
-    /// title. The detail page is reached from the long-press menu instead.
-    private var createButton: some View {
-        Button {
-            createTodoInCurrentList()
-        } label: {
-            Image(systemName: "plus")
-                .font(.title2.weight(.semibold))
-                .foregroundStyle(.white)
-                .frame(width: 52, height: 52)
-                .background {
-                    Circle().fill(Color.accentColor)
-                        .shadow(color: .black.opacity(0.22), radius: 9, y: 4)
-                }
-        }
-        .buttonStyle(.plain)
-        .padding(.trailing, 22)
-        .padding(.bottom, 22)
-        .accessibilityLabel("New To-Do")
-        .keyboardShortcut("n", modifiers: .command)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     /// Create a to-do belonging to the list currently on screen, and put the
@@ -377,7 +427,11 @@ struct TodoListView: View {
 
     /// Subtasks to draw beneath a row, empty where the list is already flat.
     private func nestedSubtasks(of todo: Todo) -> [Todo] {
-        destination == .logbook ? [] : todo.orderedSubtasks
+        ListRowComposition.nestedSubtasks(
+            of: todo,
+            destination: destination,
+            isSearching: isSearching
+        )
     }
 
     /// Clear the new flag on everything this list is showing, including the
@@ -408,11 +462,25 @@ struct TodoListView: View {
     /// Leaving a row is the moment to refile it and to discard it if it was
     /// never given a title — the empty row a user creates and then abandons.
     private func handleFocusChange(from previous: UUID?, to current: UUID?) {
-        if let previous, let todo = todos.first(where: { $0.uuid == previous }) {
-            if todo.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                store.delete(todo)
-            } else {
-                store.update(todo) { _ in }
+        if let previous {
+            // Deferred, because the title blurring does not by itself mean the
+            // user left the row: tapping the row's inline notes field blurs the
+            // title one turn before the notes field takes focus. Discarding an
+            // untitled row on that transient reading would delete the to-do out
+            // from under someone who was only reaching for its notes.
+            DispatchQueue.main.async {
+                guard focusedTodoID != previous else { return }
+                guard let todo = todos.first(where: { $0.uuid == previous }) else { return }
+                // Notes typed into a still-untitled row are content too, so the
+                // row has earned its place even without a title.
+                let isBlank = todo.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    && todo.notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+
+                if isBlank {
+                    store.delete(todo)
+                } else {
+                    store.update(todo) { _ in }
+                }
             }
         }
 
@@ -455,16 +523,30 @@ struct TodoListView: View {
 
     // MARK: Content
 
-    private var visibleTodos: [Todo] {
-        var result = filteredTodos
+    /// Whether the search field currently holds something worth filtering on.
+    private var isSearching: Bool {
+        TodoSearch.isActive(searchText)
+    }
 
-        // Keep the focused row on screen even once it stops matching this list
-        // — accepting "Schedule tomorrow" in Today would otherwise yank the row
-        // out from under the cursor mid-word. It drops out once focus leaves.
-        if let focused = focusedTodo, !result.contains(where: { $0.uuid == focused.uuid }) {
-            result.append(focused)
+    private var visibleTodos: [Todo] {
+        // A search replaces the list rather than narrowing what is already
+        // there: the destination decides the *pool* to search, so searching
+        // inside a project finds work anywhere in it, not only the handful of
+        // rows that happened to pass the date filter.
+        if isSearching {
+            return TodoSearch.matches(todos, query: searchText, in: destination)
         }
-        return result
+
+        // Keeps the focused row on screen even once it stops matching this list
+        // — accepting "Schedule tomorrow" in Today would otherwise yank the row
+        // out from under the cursor mid-word — without duplicating a focused
+        // subtask that is already drawn nested under its parent.
+        return ListRowComposition.rows(
+            filtered: filteredTodos,
+            focused: focusedTodo,
+            destination: destination,
+            isSearching: isSearching
+        )
     }
 
     private var filteredTodos: [Todo] {
@@ -490,10 +572,33 @@ struct TodoListView: View {
         }
     }
 
+    /// Placeholder naming what this field searches, since the same gesture in
+    /// two different lists searches two different things.
+    private var searchPrompt: String {
+        switch destination {
+        case .logbook: "Search Logbook"
+        case .space, .project: "Search \(title)"
+        default: "Search \(destination.title)"
+        }
+    }
+
+    /// Fills the blank in "Nothing ⟨…⟩ matches" on the no-results screen.
+    private var searchScopeDescription: String {
+        switch destination {
+        case .logbook: "in the Logbook"
+        case .space, .project: "in “\(title)”"
+        default: "in \(destination.title)"
+        }
+    }
+
     /// Show the space badge on cross-cutting lists where items come from
     /// several places.
     private var showsSpaceBadge: Bool {
-        switch destination {
+        // Results from the Inbox's field can come from anywhere, so the badge
+        // earns its place there too while a search is running.
+        if isSearching { return true }
+
+        return switch destination {
         case .today, .thisWeek, .anytime, .logbook: true
         default: false
         }

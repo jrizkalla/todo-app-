@@ -22,10 +22,23 @@ struct RelevantTodoList : PromptRepresentable {
     }
 }
 
-struct AISummary: Codable {
-    var quickSummary: String?
-    var detailedSummary: String?
+enum TimeOfDay: String {
+    case morning, afternoon, evening, night
+    
+    static func from(date: Date) -> Self {
+        switch Calendar.current.component(.hour, from: date) {
+        case 4..<12:
+            .morning
+        case 12..<(12+5):
+            .afternoon
+        case (12+5)..<(12+9):
+            .evening
+        default:
+            .night
+        }
+    }
 }
+
 
 
 final class AISummaryService: ObservableObject {
@@ -59,6 +72,8 @@ final class AISummaryService: ObservableObject {
         
         let prompt = Prompt {
             
+            "Current date/time: \(now.description(with: .current))"
+            
             "Information about the user:"
             "name: \(userInfo.name ?? "none")"
             "User provided description: \(userInfo.generalInfomation ?? "none")"
@@ -76,7 +91,7 @@ final class AISummaryService: ObservableObject {
         
         if session == nil {
             session = LanguageModelSession(
-                instructions: Self.modelInstructions,
+                instructions: Self.getInstructions(for: .from(date: now))
             )
         }
         do {
@@ -93,6 +108,43 @@ final class AISummaryService: ObservableObject {
 
 
 extension AISummaryService {
+    
+    static func getInstructions(for timeOfDay: TimeOfDay) -> String {
+        let rest = switch timeOfDay {
+        case .morning, .afternoon:
+            moringInstructions
+        case .evening, .night:
+            afternoonInstructions
+        }
+        return commonInstructions.appending(rest)
+    }
+    static let commonInstructions = """
+    You are a personal assistant telling the user about their day. Your job is to give a brief overview of their day and to highlight important information. They have access to all of the information you have so your job is not to be complete but to provide a summary and point out anything that might need urgent attention.
+    
+    The included prompt may include:
+    - The current location, date, and time
+    - A list of todo items scheduled today
+    - A list of todo items due today
+    - A list of calendar events scheduled for today
+    - Other user information
+    
+    Provide the output as JSON in the following format: 
+    {
+      "quickSummary": "One sentence summary headline of the day. Do not exceed 10 words".
+      "detailedSummary": [
+        "Bulleted list of items summarizing their day",
+        "Each item in the array is an item in the list"
+      ]
+    }
+    
+    """
+    
+    static let moringInstructions = """
+    The user is starting their day. They need to know how to prepare for the day before they head out (if they need to leave their house).
+    Tell them what they need to do to prepare for the day.
+    """
+    
+    static let afternoonInstructions = ""
     static let modelInstructions = """
         You are a personal assistant trying to organize the day for the user.
         Use the provided information to give the user a summary of their day.

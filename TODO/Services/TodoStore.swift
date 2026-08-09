@@ -67,6 +67,7 @@ struct TodoStore {
         let all = (try? context.fetch(FetchDescriptor<Todo>())) ?? []
         return (all.filter { $0.space == nil && $0.parent == nil }.map(\.sortIndex).max() ?? -1) + 1
     }
+    
 
     // MARK: Completion
 
@@ -150,6 +151,31 @@ struct TodoStore {
         return subtask
     }
 
+    /// Re-file an existing todo as a subtask of `parent`.
+    ///
+    /// Unlike `addSubtask(to:)` this creates nothing — it moves a todo that
+    /// already exists, which is how an item captured in the Inbox later becomes
+    /// part of a project. Returns `false` without changing anything when the
+    /// move would make the tree circular.
+    @discardableResult
+    func adopt(_ todo: Todo, asSubtaskOf parent: Todo) -> Bool {
+        guard parent.canAdopt(todo) else { return false }
+
+        parent.addSubtask(todo)
+        // Adopting is a placement change, so the item re-flags as new in the
+        // project the user is about to see it in.
+        todo.refreshNewFlagAfterPlacementChange()
+        parent.touch()
+        save()
+        return true
+    }
+
+    /// Detach a subtask from its parent, leaving it as a standalone todo.
+    func detachFromParent(_ todo: Todo) {
+        todo.move(toParent: nil)
+        save()
+    }
+
     // MARK: Reminders
 
     @discardableResult
@@ -215,6 +241,20 @@ struct TodoStore {
             space.sortIndex = index
         }
         save()
+    }
+    
+    // MARK: AI Summary
+    
+    func updateAISummary(_ summary: SavedAISummary) {
+        do {
+            try context.delete(model: SavedAISummary.self, where: #Predicate { _ in
+                true
+            })
+            context.insert(summary)
+            try context.save()
+        } catch {
+            AppLog.data.error("Save failed: \(error, privacy: .public)")
+        }
     }
 
     // MARK: Persistence
