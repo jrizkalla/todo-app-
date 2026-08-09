@@ -34,8 +34,19 @@ struct CalendarView: View {
     /// The to-do being dragged to a new time, and how far it has moved.
     @State private var draggingTodoID: UUID?
     @State private var dragTranslation: CGFloat = 0
-    /// Where a long press landed, cleared when the press ends.
-    @State private var pendingCreationPoint: CGPoint?
+    /// A block sketched under the finger while a long press is held, before the
+    /// to-do is actually created. Mirrors the placeholder Calendar.app shows.
+    @State private var draft: DraftBlock?
+    /// Width of one day column, measured from the laid-out grid so overlapping
+    /// blocks can be positioned as fractions of it.
+    @State private var columnWidth: CGFloat = 0
+
+    /// A not-yet-created to-do being sketched by a long press.
+    private struct DraftBlock: Equatable {
+        let day: Date
+        /// Start time, snapped to the grid.
+        var start: Date
+    }
 
     /// Page currently shown, as an offset from `pageOrigin`.
     @State private var pageIndex = 0
@@ -283,28 +294,29 @@ struct CalendarView: View {
     }
 
     private func chip(for todo: Todo) -> some View {
-        Button {
-            selectedTodo = todo
-        } label: {
-            InlineMarkdownText(markdown: todo.title.isEmpty ? "Untitled" : todo.title)
-                .font(.caption)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 3)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background {
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(tint(for: todo).opacity(0.2))
-                }
-        }
-        .buttonStyle(.plain)
-        // Dragging an all-day chip onto the grid gives it a time. The grid
-        // receives it via `dropDestination` below.
-        .draggable(todo.uuid.uuidString) {
-            Text(todo.title.isEmpty ? "Untitled" : todo.title)
-                .font(.caption)
-                .padding(6)
-                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 5))
-        }
+        // A plain view rather than a `Button` so `draggable` can claim the
+        // long press: a button consumes the touch first and the chip never
+        // lifts. Tapping is restored by the explicit tap gesture below.
+        InlineMarkdownText(markdown: todo.title.isEmpty ? "Untitled" : todo.title)
+            .font(.caption)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(tint(for: todo).opacity(0.2))
+            }
+            .contentShape(Rectangle())
+            // Dragging an all-day chip onto the grid gives it a time. The grid
+            // receives it via `dropDestination` below.
+            .draggable(todo.uuid.uuidString) {
+                Text(todo.title.isEmpty ? "Untitled" : todo.title)
+                    .font(.caption)
+                    .padding(6)
+                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 5))
+            }
+            .onTapGesture { selectedTodo = todo }
+            .accessibilityAddTraits(.isButton)
     }
 
     // MARK: Timed grid
@@ -344,68 +356,81 @@ struct CalendarView: View {
         let eventsOnDay = timedEvents(on: day)
         let slots = layoutSlots(todos: todosOnDay, events: eventsOnDay)
 
-        return GeometryReader { proxy in
-            ZStack(alignment: .topLeading) {
-                // Hour grid lines.
-                VStack(spacing: 0) {
-                    ForEach(0..<24, id: \.self) { _ in
-                        Divider().frame(height: hourHeight, alignment: .top)
-                    }
-                }
-
-                // System events sit behind to-dos, since to-dos are the app's
-                // own content and stay tappable.
-                ForEach(eventsOnDay) { event in
-                    eventBlock(
-                        for: event,
-                        on: day,
-                        slot: slots["event-\(event.id)"] ?? fullWidth,
-                        columnWidth: proxy.size.width
-                    )
-                }
-
-                if calendar.isDateInToday(day) {
-                    currentTimeIndicator
-                }
-
-                ForEach(todosOnDay) { todo in
-                    eventBlock(
-                        for: todo,
-                        on: day,
-                        slot: slots["todo-\(todo.uuid.uuidString)"] ?? fullWidth,
-                        columnWidth: proxy.size.width
-                    )
+        // Width is measured from a background reader rather than by wrapping the
+        // column in a `GeometryReader`: a wrapping one reports no intrinsic
+        // height to the enclosing ScrollView, which silently stops the day
+        // scrolling.
+        return ZStack(alignment: .topLeading) {
+            // Hour grid lines. These give the column its height, which is what
+            // the ScrollView measures.
+            VStack(spacing: 0) {
+                ForEach(0..<24, id: \.self) { _ in
+                    Divider().frame(height: hourHeight, alignment: .top)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-            // Long-pressing empty space creates a to-do at that time, the way
-            // Calendar.app creates an event.
-            .contentShape(Rectangle())
-            .onLongPressGesture(minimumDuration: 0.45) {
-            } onPressingChanged: { pressing in
-                if !pressing { pendingCreationPoint = nil }
-            }
-            .simultaneousGesture(
-                LongPressGesture(minimumDuration: 0.45)
-                    .sequenced(before: DragGesture(minimumDistance: 0))
-                    .onEnded { value in
-                        guard case .second(_, let drag?) = value else { return }
-                        createTodo(at: drag.location.y, on: day)
-                    }
-            )
-            // Accepts all-day chips dragged down onto the grid, scheduling them
-            // for the time they were dropped at.
-            .dropDestination(for: String.self) { items, location in
-                guard let identifier = items.first,
-                      let uuid = UUID(uuidString: identifier),
-                      let todo = todos.first(where: { $0.uuid == uuid })
-                else { return false }
 
-                schedule(todo, at: location.y, on: day)
-                return true
+            // System events sit behind to-dos, since to-dos are the app's
+            // own content and stay tappable.
+            ForEach(eventsOnDay) { event in
+                eventBlock(
+                    for: event,
+                    on: day,
+                    slot: slots["event-\(event.id)"] ?? fullWidth,
+                    columnWidth: columnWidth
+                )
+            }
+
+            if calendar.isDateInToday(day) {
+                currentTimeIndicator
+            }
+
+            ForEach(todosOnDay) { todo in
+                eventBlock(
+                    for: todo,
+                    on: day,
+                    slot: slots["todo-\(todo.uuid.uuidString)"] ?? fullWidth,
+                    columnWidth: columnWidth
+                )
+            }
+
+            // The placeholder for a long press in progress, drawn last so
+            // it sits above whatever is already on the grid.
+            if let draft, calendar.isDate(draft.day, inSameDayAs: day) {
+                draftBlock(draft)
             }
         }
-        .frame(height: hourHeight * 24)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        // Measured in the background so the reader contributes no layout of its
+        // own; a `GeometryReader` wrapped around the column instead reports no
+        // intrinsic height and silently stops the day scrolling.
+        .background {
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear { columnWidth = proxy.size.width }
+                    .onChange(of: proxy.size.width) { _, new in columnWidth = new }
+            }
+        }
+        // Long-pressing empty space creates a to-do at that time, the way
+        // Calendar.app creates an event.
+        //
+        // The press targets are a stack of per-slot strips rather than one
+        // gesture over the whole column, because every location-reporting
+        // gesture available here is drag-based, and a `DragGesture` — even a
+        // simultaneous one — claims the enclosing ScrollView's pan and stops
+        // the day scrolling. A strip knows its own time, so a plain long press
+        // is enough and scrolling is untouched.
+        .overlay { creationStrips(for: day) }
+        // Accepts all-day chips dragged down onto the grid, scheduling them
+        // for the time they were dropped at.
+        .dropDestination(for: String.self) { items, location in
+            guard let identifier = items.first,
+                  let uuid = UUID(uuidString: identifier),
+                  let todo = todos.first(where: { $0.uuid == uuid })
+            else { return false }
+
+            schedule(todo, at: location.y, on: day)
+            return true
+        }
         .padding(.horizontal, 3)
     }
 
@@ -465,9 +490,70 @@ struct CalendarView: View {
         #endif
     }
 
+    /// Invisible long-press targets, one per creation slot.
+    ///
+    /// Laid out as a plain `VStack` so each strip's position *is* its time —
+    /// no gesture needs to report a touch location, which is what keeps the
+    /// enclosing ScrollView scrollable.
+    private func creationStrips(for day: Date) -> some View {
+        let slotHeight = hourHeight / CGFloat(60 / Self.creationSlotMinutes)
+        let slotCount = 24 * (60 / Self.creationSlotMinutes)
+
+        return VStack(spacing: 0) {
+            ForEach(0..<slotCount, id: \.self) { index in
+                let start = calendar.date(
+                    byAdding: .minute,
+                    value: index * Self.creationSlotMinutes,
+                    to: calendar.startOfDay(for: day)
+                ) ?? day
+
+                // A press on an occupied slot belongs to the block there,
+                // which has its own drag-to-move gesture, so that slot is left
+                // transparent to touches.
+                if isOccupied(at: start, on: day) {
+                    Color.clear
+                        .frame(height: slotHeight)
+                        .allowsHitTesting(false)
+                } else {
+                    // Not `Color.clear`: a fully transparent shape is not hit
+                    // tested, so the press target needs a real (if invisible)
+                    // fill.
+                    Rectangle()
+                        .fill(.black.opacity(0.0001))
+                        .frame(height: slotHeight)
+                        .contentShape(Rectangle())
+                        .onLongPressGesture(minimumDuration: 0.4) {
+                            createTodo(startingAt: start)
+                        } onPressingChanged: { pressing in
+                            draft = pressing ? DraftBlock(day: day, start: start) : nil
+                        }
+                }
+            }
+        }
+    }
+
+    /// Granularity of long-press creation, in minutes.
+    private static let creationSlotMinutes = 15
+
+    /// Whether a timed to-do already covers this moment.
+    ///
+    /// System events are ignored: they are read-only here, so creating a to-do
+    /// alongside a meeting is a reasonable thing to want.
+    private func isOccupied(at time: Date, on day: Date) -> Bool {
+        TodoQueries.timed(
+            scopedTodos, on: day, calendar: calendar, includeResolved: settings.showResolved
+        ).contains { todo in
+            guard let start = todo.assignedDate else { return false }
+            let end = start.addingTimeInterval(
+                todo.effectiveDuration(defaultDuration: settings.defaultEventDuration)
+            )
+            return time >= start && time < end
+        }
+    }
+
     /// Create a to-do at the pressed time and open it for editing.
-    private func createTodo(at y: CGFloat, on day: Date) {
-        let start = time(atY: y, on: day)
+    private func createTodo(startingAt start: Date) {
+        draft = nil
 
         let todo = store.createTodo(
             space: creationSpace,
@@ -484,6 +570,41 @@ struct CalendarView: View {
         #endif
 
         selectedTodo = todo
+    }
+
+    /// The placeholder drawn under the finger during a long press.
+    private func draftBlock(_ draft: DraftBlock) -> some View {
+        let minutes = CGFloat(calendar.component(.hour, from: draft.start) * 60
+            + calendar.component(.minute, from: draft.start))
+        let height = max(
+            CGFloat(settings.defaultEventDuration / 3600) * hourHeight,
+            18
+        )
+
+        return VStack(alignment: .leading, spacing: 2) {
+            Text("New To-Do")
+                .font(.caption)
+                .foregroundStyle(Color.accentColor)
+            if height > 30 {
+                Text(draft.start.formatted(date: .omitted, time: .shortened))
+                    .font(.caption2)
+                    .foregroundStyle(Color.accentColor.opacity(0.75))
+            }
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .frame(maxWidth: .infinity, minHeight: height, alignment: .topLeading)
+        .background {
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(Color.accentColor.opacity(0.22))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .strokeBorder(Color.accentColor, lineWidth: 1.5)
+                }
+        }
+        .offset(y: minutes / 60 * hourHeight)
+        .allowsHitTesting(false)
+        .zIndex(2)
     }
 
     /// A to-do created on a scoped calendar belongs to that container.
@@ -515,46 +636,53 @@ struct CalendarView: View {
         let isDragging = draggingTodoID == todo.uuid
         let dragOffset = isDragging ? dragTranslation : 0
 
-        return Button {
-            selectedTodo = todo
-        } label: {
-            VStack(alignment: .leading, spacing: 2) {
-                InlineMarkdownText(
-                    markdown: todo.title.isEmpty ? "Untitled" : todo.title,
-                    strikethrough: todo.state == .completed
-                )
-                .font(.caption)
+        // Deliberately not a `Button`: a button swallows the touch before the
+        // long-press-then-drag sequence can recognize, which left blocks
+        // untappable to drag. Tap and drag are attached as explicit gestures
+        // instead, so both work on the same block.
+        return VStack(alignment: .leading, spacing: 2) {
+            InlineMarkdownText(
+                markdown: todo.title.isEmpty ? "Untitled" : todo.title,
+                strikethrough: todo.state == .completed
+            )
+            .font(.caption)
 
-                if height > 30, let assigned = todo.assignedDate {
-                    Text(assigned.formatted(date: .omitted, time: .shortened))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
+            if height > 30, let assigned = todo.assignedDate {
+                Text(assigned.formatted(date: .omitted, time: .shortened))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 3)
-            .frame(maxWidth: .infinity, minHeight: height, alignment: .topLeading)
-            .background {
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(tint(for: todo).opacity(isDragging ? 0.38 : 0.22))
-                    .overlay(alignment: .leading) {
-                        Rectangle()
-                            .fill(tint(for: todo))
-                            .frame(width: 2.5)
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-            }
-            .opacity(todo.state.isResolved ? 0.55 : 1)
         }
-        .buttonStyle(.plain)
-        // Overlapping blocks share the column instead of stacking.
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .frame(maxWidth: .infinity, minHeight: height, alignment: .topLeading)
+        .background {
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(tint(for: todo).opacity(isDragging ? 0.38 : 0.22))
+                .overlay(alignment: .leading) {
+                    Rectangle()
+                        .fill(tint(for: todo))
+                        .frame(width: 2.5)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+        }
+        .opacity(todo.state.isResolved ? 0.55 : 1)
+        .contentShape(Rectangle())
+        // Overlapping blocks cascade rather than stacking invisibly; `depth`
+        // keeps the later start drawn on top of the one it insets from.
         .frame(width: max(columnWidth * slot.width - 2, 1), alignment: .topLeading)
         .offset(x: columnWidth * slot.offset, y: baseOffset + dragOffset)
         .shadow(color: .black.opacity(isDragging ? 0.2 : 0), radius: isDragging ? 8 : 0)
-        .zIndex(isDragging ? 1 : 0)
-        // Long press then drag reschedules, so a plain drag still scrolls the
-        // grid vertically.
-        .gesture(
+        .zIndex(isDragging ? 100 : Double(slot.depth))
+        // Tap opens the to-do; long press then drag reschedules it, so a plain
+        // drag still scrolls the grid vertically. The tap is registered at high
+        // priority because the long-press sequence otherwise claims the touch
+        // down and a quick tap never resolves.
+        .highPriorityGesture(TapGesture().onEnded { selectedTodo = todo })
+        // Simultaneous for the same reason as the grid's create gesture: an
+        // exclusive drag here would stop the day scrolling whenever the finger
+        // started on a block.
+        .simultaneousGesture(
             LongPressGesture(minimumDuration: 0.3)
                 .sequenced(before: DragGesture(minimumDistance: 0))
                 .onChanged { value in
@@ -573,24 +701,36 @@ struct CalendarView: View {
                     dragTranslation = 0
                 }
         )
+        .accessibilityAddTraits(.isButton)
     }
 
     /// Move a to-do by however far it was dragged, snapped to a quarter hour.
+    ///
+    /// The move is clamped to the day rather than dropped when it would spill
+    /// past midnight, so an overshoot lands at the edge instead of silently
+    /// doing nothing.
     private func reschedule(_ todo: Todo, on day: Date, by translation: CGFloat) {
         guard let current = todo.assignedDate, translation != 0 else { return }
 
         let minutesMoved = Double(translation / hourHeight) * 60
         let snapped = (minutesMoved / 15).rounded() * 15
-        guard snapped != 0 else { return }
-
-        guard let moved = calendar.date(byAdding: .minute, value: Int(snapped), to: current),
-              calendar.isDate(moved, inSameDayAs: day)
+        guard snapped != 0,
+              let moved = calendar.date(byAdding: .minute, value: Int(snapped), to: current)
         else { return }
 
+        let dayStart = calendar.startOfDay(for: day)
+        let duration = todo.effectiveDuration(defaultDuration: settings.defaultEventDuration)
+        let lastStart = dayStart.addingTimeInterval(24 * 3600 - duration)
+        let clamped = min(max(moved, dayStart), max(lastStart, dayStart))
+
         store.update(todo) {
-            $0.assignedDate = moved
+            $0.assignedDate = clamped
             $0.assignedHasTime = true
         }
+
+        #if os(iOS)
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        #endif
     }
 
     private var currentTimeIndicator: some View {
@@ -617,9 +757,12 @@ struct CalendarView: View {
 
     /// Height from the todo's duration, falling back to the configured default
     /// — 15 minutes unless the user changed it.
+    ///
+    /// Floored at a comfortable tap target: at the default duration a block is
+    /// only about 13pt tall, which is too small to reliably hit or drag.
     private func blockHeight(for todo: Todo) -> CGFloat {
         let seconds = todo.effectiveDuration(defaultDuration: settings.defaultEventDuration)
-        return max(CGFloat(seconds / 3600) * hourHeight, 18)
+        return max(CGFloat(seconds / 3600) * hourHeight, 24)
     }
 
     /// Same resolution as the list rows, so a color change shows up in both.
@@ -727,6 +870,7 @@ struct CalendarView: View {
         }
         .frame(width: max(columnWidth * slot.width - 2, 1), alignment: .topLeading)
         .offset(x: columnWidth * slot.offset, y: minutes / 60 * hourHeight)
+        .zIndex(Double(slot.depth))
         .allowsHitTesting(false)
         .accessibilityLabel("Calendar event: \(event.title)")
     }

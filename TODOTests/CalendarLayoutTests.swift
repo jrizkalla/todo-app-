@@ -92,6 +92,65 @@ struct CalendarLayoutTests {
         #expect(slots["b"]?.width == 0.5)
     }
 
+    /// A block starting inside another one cascades: inset from the left and
+    /// drawn on top, the way Calendar.app stacks a later start.
+    @Test func laterStartCascadesOverTheBlockItOverlaps() throws {
+        let slots = CalendarLayout.slots(for: [
+            block("first", startHour: 15, hours: 1),
+            block("second", startHour: 15.5, hours: 1),
+        ])
+
+        let first = try #require(slots["first"])
+        let second = try #require(slots["second"])
+
+        // The earlier block keeps the left edge and the lower stacking order.
+        #expect(first.offset < second.offset)
+        #expect(first.depth == 0)
+        #expect(second.depth == 1)
+    }
+
+    /// Simultaneous starts split rather than cascade — neither is on top.
+    @Test func simultaneousStartsDoNotCascade() {
+        let slots = CalendarLayout.slots(for: [
+            block("a", startHour: 9, hours: 1),
+            block("b", startHour: 9, hours: 1),
+        ])
+
+        #expect(slots["a"]?.depth == 0)
+        #expect(slots["b"]?.depth == 0)
+    }
+
+    /// Each successive later start steps further in, so three nested blocks
+    /// stack in a readable cascade instead of two of them sharing an edge.
+    @Test func successiveOverlapsStepFurtherIn() throws {
+        let slots = CalendarLayout.slots(for: [
+            block("a", startHour: 15, hours: 2),
+            block("b", startHour: 15.5, hours: 2),
+            block("c", startHour: 16, hours: 2),
+        ])
+
+        let a = try #require(slots["a"])
+        let b = try #require(slots["b"])
+        let c = try #require(slots["c"])
+
+        #expect(a.depth == 0)
+        #expect(b.depth == 1)
+        #expect(c.depth == 2)
+        #expect(a.offset < b.offset)
+        #expect(b.offset < c.offset)
+    }
+
+    /// Cascading insets a block but must never collapse it to nothing.
+    @Test func cascadedBlocksKeepAUsableWidth() {
+        let blocks = (0..<5).map { block("b\($0)", startHour: 9 + Double($0) * 0.1, hours: 3) }
+        let slots = CalendarLayout.slots(for: blocks)
+
+        for slot in slots.values {
+            #expect(slot.width > 0)
+            #expect(slot.offset + slot.width <= 1.0001)
+        }
+    }
+
     /// Every block gets a slot, and none escapes the column.
     @Test func slotsStayWithinTheColumn() {
         let blocks = (0..<6).map { block("b\($0)", startHour: 9 + Double($0) * 0.25, hours: 1) }
