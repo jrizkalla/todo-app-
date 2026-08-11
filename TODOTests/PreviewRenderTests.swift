@@ -54,6 +54,22 @@ struct PreviewRenderTests {
         )
     }
 
+    // MARK: Summary cards
+
+    /// The card shown when today holds neither a schedule nor loose work. It
+    /// builds its own glass panel rather than going through `SummaryCard`, so it
+    /// is the one card whose chrome is not covered by rendering the others.
+    @Test func allClearCardRenders() {
+        render(AllClearCard())
+    }
+
+    /// Both cards on an empty day, where each one draws nothing at all. A card
+    /// that hides itself still has to have a valid `body`.
+    @Test func summaryCardsRenderWithNothingToShow() {
+        render(InlineCalendarCard(todos: [], events: [], defaultDuration: 15 * 60))
+        render(TodoListCard(todos: []))
+    }
+
     // MARK: Screens
 
     @Test func todoListRendersEveryDestination() {

@@ -97,9 +97,10 @@ struct TodoQueriesTests {
 
     // MARK: Any Time
 
-    /// The summary's Any Time card and the home screen widget both list work
-    /// with no time of day. Timed work belongs on the schedule grid, and
-    /// showing it in both places would list the same to-do twice on one screen.
+    /// The summary's Any Time card lists work with no time of day. Timed work
+    /// belongs to the schedule grid sitting beside it, and showing it in both
+    /// places would list the same to-do twice on one screen. (The home screen
+    /// widget has no such neighbor and uses `today` instead.)
     @Test func untimedTodayExcludesTimedWork() throws {
         let context = try makeContext()
         let timed = Todo(title: "Timed", assignedDate: day(offset: 0))

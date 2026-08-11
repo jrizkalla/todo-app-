@@ -5,6 +5,11 @@ import WidgetKit
 
 /// Home screen widget listing today's unfinished work.
 ///
+/// Shows the whole Today list, timed work included — unlike the summary's "Any
+/// Time" card, which sits next to a schedule grid that already draws the timed
+/// items. On the home screen there is no such neighbor, so leaving timed work
+/// out would just hide part of the day.
+///
 /// Reads the app's SwiftData store directly out of the shared app group rather
 /// than caching a snapshot in `UserDefaults`, so the widget can never show a
 /// list the app has already moved on from. Completing an item goes through the
@@ -18,8 +23,8 @@ struct TodayWidget: Widget {
             TodayWidgetView(entry: entry)
                 .containerBackground(.fill.tertiary, for: .widget)
         }
-        .configurationDisplayName("Any Time")
-        .description("Today's unfinished to-dos that aren't tied to a time.")
+        .configurationDisplayName("Today")
+        .description("Everything on today's list, including timed work.")
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
     }
 }
@@ -39,6 +44,7 @@ struct TodayEntry: TimelineEntry {
     static let placeholder = TodayEntry(
         date: .now,
         items: [
+            .init(id: UUID(), title: "Standup", time: "9:30 AM", colorHex: nil),
             .init(id: UUID(), title: "Water the plants", time: nil, colorHex: nil),
             .init(id: UUID(), title: "Reply to Sam", time: nil, colorHex: nil),
             .init(id: UUID(), title: "Renew the lease", time: nil, colorHex: nil),
@@ -56,6 +62,9 @@ struct TodayEntry: TimelineEntry {
 struct TodoSnapshot: Identifiable, Hashable {
     let id: UUID
     let title: String
+    /// Formatted time of day, or `nil` for work not pinned to one. Preformatted
+    /// here because the entry has to stay a plain value, and because the
+    /// provider is the last place that still holds the `Date`.
     let time: String?
     let colorHex: String?
 }
@@ -81,11 +90,11 @@ struct TodayTimelineProvider: TimelineProvider {
         completion(Timeline(entries: [entry], policy: .after(midnight)))
     }
 
-    /// Read today's unfinished, untimed work from the shared store.
+    /// Read today's unfinished work from the shared store.
     ///
-    /// Timed work is left out: it belongs on a calendar, where its position in
-    /// the day is the information. What is left is the list the user can pick
-    /// up at any point — which is what this widget is for.
+    /// The full Today list, timed items included — `TodoQueries.today` is the
+    /// same rule the app's Today destination uses, so the widget and the list it
+    /// stands in for can never disagree about what counts as today.
     @MainActor
     private func loadEntry() -> TodayEntry {
         guard let container = try? ModelContainer.widgetContainer() else {
@@ -93,13 +102,13 @@ struct TodayTimelineProvider: TimelineProvider {
         }
 
         let todos = (try? container.mainContext.fetch(FetchDescriptor<Todo>())) ?? []
-        let today = TodoQueries.untimedToday(todos)
+        let today = TodoQueries.today(todos)
 
         let snapshots = today.prefix(Self.maxItems).map { todo in
             TodoSnapshot(
                 id: todo.uuid,
                 title: todo.title.isEmpty ? "Untitled" : todo.title,
-                time: nil,
+                time: Self.timeLabel(for: todo),
                 colorHex: todo.resolvedColorHex
             )
         }
@@ -110,6 +119,16 @@ struct TodayTimelineProvider: TimelineProvider {
             overflow: max(today.count - Self.maxItems, 0),
             isUnavailable: false
         )
+    }
+
+    /// The time of day an item is pinned to, or `nil` for untimed work.
+    ///
+    /// Only `assignedHasTime` items get a label: a due date without a time says
+    /// nothing about when in the day to act, and stamping midnight on it would
+    /// invent a schedule the user never set.
+    private static func timeLabel(for todo: Todo) -> String? {
+        guard todo.assignedHasTime, let assigned = todo.assignedDate else { return nil }
+        return assigned.formatted(date: .omitted, time: .shortened)
     }
 }
 
@@ -146,6 +165,10 @@ struct TodayWidgetView: View {
             } else {
                 VStack(alignment: .leading, spacing: Theme.RowScale.widget.rowGap) {
                     ForEach(entry.items.prefix(visibleCount)) { item in
+                        // The small family drops the times: its rows are about
+                        // 123pt wide, so a title of any ordinary length plus a
+                        // time truncates the title. Which item it is matters
+                        // more there than when it is due.
                         TodayWidgetRow(item: item, showsTime: family != .systemSmall)
                     }
                 }
@@ -167,9 +190,12 @@ struct TodayWidgetView: View {
         max(entry.items.count - visibleCount, 0) + entry.overflow
     }
 
+    /// Titled to match the app's Today destination, star and all — the widget is
+    /// that list on the home screen, so it carries the same name and symbol as
+    /// `ListDestination.today` rather than one of its own.
     private var header: some View {
         HStack {
-            Label("Any Time", systemImage: "checklist")
+            Label("Today", systemImage: "star")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.tint)
 
@@ -219,6 +245,11 @@ private struct TodayWidgetRow: View {
                 Text(time)
                     .font(scale.metadataFont)
                     .foregroundStyle(.secondary)
+                    // A time is short and fixed-width; the title is neither. Let
+                    // the title take the truncation so the time never arrives
+                    // half-drawn ("9:3…"), which would read as a wrong time
+                    // rather than a shortened one.
+                    .layoutPriority(1)
             }
         }
     }

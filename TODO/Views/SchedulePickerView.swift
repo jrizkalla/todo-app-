@@ -12,6 +12,13 @@ struct SchedulePickerView: View {
     let onAddReminder: () -> Void
     let onDismiss: () -> Void
 
+    /// Whether to show the typed-date field and focus it on open.
+    ///
+    /// True when the panel was raised from the keyboard (Cmd+S), where typing
+    /// is the reason it opened. A swipe opens it with the field hidden, since a
+    /// finger on a phone is not reaching for a keyboard next.
+    var acceptsTypedDate = false
+
     @Environment(AppSettings.self) private var settings
 
     /// First day of the month the grid is showing.
@@ -26,6 +33,13 @@ struct SchedulePickerView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
+
+            if acceptsTypedDate {
+                QuickDateField(onCommit: { date, hasTime in
+                    onPick(date, hasTime)
+                })
+                .padding(.bottom, 10)
+            }
 
             shortcut(
                 title: "Today",

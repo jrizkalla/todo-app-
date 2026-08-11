@@ -80,7 +80,7 @@ struct WeatherForecast: Equatable, Decodable, PromptRepresentable {
         }
         
         var promptRepresentation: Prompt {
-            "Hourly forcast:\n".appending(
+            "Daily forcast:\n".appending(
                 (0..<time.count).map{ i in
                     "\(time): temp \(temperatureMin[i]) - \(temperatureMax[i]), precipitation: \(precipitationProbabilityMax[i]?.description ?? "none")"
                 }.joined(separator: "\n")

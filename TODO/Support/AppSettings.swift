@@ -29,10 +29,41 @@ final class AppSettings {
 
     private let defaults: UserDefaults
 
+    /// Every preference is a *stored* property loaded here, not a computed one
+    /// reading `UserDefaults` on each access.
+    ///
+    /// `@Observable` only instruments stored properties: a computed preference
+    /// backed by defaults notifies nobody, so changing it left every view still
+    /// showing the old value until something unrelated forced a redraw. Each
+    /// `didSet` writes back, so values still survive a relaunch.
     init(defaults: UserDefaults? = nil) {
-        self.defaults = defaults
+        let resolved = defaults
             ?? UserDefaults(suiteName: AppSchema.appGroupIdentifier)
             ?? .standard
+        self.defaults = resolved
+
+        self.summaryBackground = Self.loadSummaryBackground(from: resolved)
+
+        // `object(forKey:) as? Bool` rather than `bool(forKey:)` wherever the
+        // default is `true`, since the latter cannot tell "never set" from
+        // "set to false".
+        self.showCalendarEvents = resolved.object(forKey: Key.showCalendarEvents) as? Bool ?? false
+        self.visibleCalendars = resolved.stringArray(forKey: Key.visibleCalendars)
+        let duration = resolved.double(forKey: Key.defaultEventDuration)
+        self.defaultEventDuration = duration > 0 ? duration : 15 * 60
+        self.importReminderLists = resolved.stringArray(forKey: Key.importReminderLists)
+        self.remindersImportEnabled = resolved.object(forKey: Key.remindersImportEnabled) as? Bool ?? false
+        self.vimBindingsEnabled = resolved.bool(forKey: Key.vimBindingsEnabled)
+        self.showSidePanel = resolved.object(forKey: Key.showSidePanel) as? Bool ?? true
+        self.weekStartsOnMonday = resolved.bool(forKey: Key.weekStartsOnMonday)
+        self.showResolved = resolved.object(forKey: Key.showResolved) as? Bool ?? true
+
+        if let data = resolved.data(forKey: Key.userInfo),
+           let decoded = try? JSONDecoder().decode(UserInfo.self, from: data) {
+            self.userInfo = decoded
+        } else {
+            self.userInfo = .default
+        }
     }
 
     private enum Key {
@@ -51,25 +82,37 @@ final class AppSettings {
 
     /// Backdrop behind the AI summary.
     ///
+    /// Unlike the other settings here this one is *stored*, not computed
+    /// straight off `UserDefaults`. `@Observable` only instruments stored
+    /// properties, so a computed one backed by defaults notifies nobody: the
+    /// value changes and every view showing it keeps rendering the old one.
+    /// The stored property is what SwiftUI observes; `didSet` keeps defaults in
+    /// step so the value still survives a relaunch.
+    ///
     /// Falls back to a built-in gradient when the user has selected their own
     /// photo but the file is gone — a deleted image should change how the
     /// screen looks, not leave it blank.
     var summaryBackground: SummaryBackground {
-        get {
-            guard let raw = defaults.string(forKey: Key.summaryBackground),
-                  let background = SummaryBackground(rawValue: raw)
-            else { return .dawn }
-
-            if background == .custom && !SummaryBackgroundStore.hasImage { return .dawn }
-            return background
+        didSet {
+            guard summaryBackground != oldValue else { return }
+            defaults.set(summaryBackground.rawValue, forKey: Key.summaryBackground)
         }
-        set { defaults.set(newValue.rawValue, forKey: Key.summaryBackground) }
+    }
+
+    /// The stored background as it was last written, resolved for a missing
+    /// custom photo.
+    private static func loadSummaryBackground(from defaults: UserDefaults) -> SummaryBackground {
+        guard let raw = defaults.string(forKey: Key.summaryBackground),
+              let background = SummaryBackground(rawValue: raw)
+        else { return .dawn }
+
+        if background == .custom && !SummaryBackgroundStore.hasImage { return .dawn }
+        return background
     }
 
     /// Whether system calendar events appear in the calendar view.
     var showCalendarEvents: Bool {
-        get { defaults.object(forKey: Key.showCalendarEvents) as? Bool ?? false }
-        set { defaults.set(newValue, forKey: Key.showCalendarEvents) }
+        didSet { write(showCalendarEvents, forKey: Key.showCalendarEvents, was: oldValue) }
     }
 
     /// Identifiers of the calendars to display.
@@ -79,24 +122,13 @@ final class AppSettings {
     /// birthdays, holidays, and shared calendars nobody asked for. An empty
     /// array is a real choice ("show none") and is preserved as such.
     var visibleCalendars: [String]? {
-        get { defaults.stringArray(forKey: Key.visibleCalendars) }
-        set {
-            if let newValue {
-                defaults.set(newValue, forKey: Key.visibleCalendars)
-            } else {
-                defaults.removeObject(forKey: Key.visibleCalendars)
-            }
-        }
+        didSet { writeOptional(visibleCalendars, forKey: Key.visibleCalendars, was: oldValue) }
     }
 
     /// Calendar length for a timed todo with no explicit duration. The spec
     /// calls for 15 minutes by default, configurable here.
     var defaultEventDuration: TimeInterval {
-        get {
-            let stored = defaults.double(forKey: Key.defaultEventDuration)
-            return stored > 0 ? stored : 15 * 60
-        }
-        set { defaults.set(newValue, forKey: Key.defaultEventDuration) }
+        didSet { write(defaultEventDuration, forKey: Key.defaultEventDuration, was: oldValue) }
     }
 
     /// Identifiers of the Reminders lists to scan.
@@ -104,37 +136,26 @@ final class AppSettings {
     /// `nil` means never chosen, which falls back to the system's default list.
     /// See `visibleCalendars` for why that beats scanning everything.
     var importReminderLists: [String]? {
-        get { defaults.stringArray(forKey: Key.importReminderLists) }
-        set {
-            if let newValue {
-                defaults.set(newValue, forKey: Key.importReminderLists)
-            } else {
-                defaults.removeObject(forKey: Key.importReminderLists)
-            }
-        }
+        didSet { writeOptional(importReminderLists, forKey: Key.importReminderLists, was: oldValue) }
     }
 
     /// Master switch for the launch-time Reminders scan.
     var remindersImportEnabled: Bool {
-        get { defaults.object(forKey: Key.remindersImportEnabled) as? Bool ?? false }
-        set { defaults.set(newValue, forKey: Key.remindersImportEnabled) }
+        didSet { write(remindersImportEnabled, forKey: Key.remindersImportEnabled, was: oldValue) }
     }
 
     /// Vim keybindings in text fields. macOS only.
     var vimBindingsEnabled: Bool {
-        get { defaults.bool(forKey: Key.vimBindingsEnabled) }
-        set { defaults.set(newValue, forKey: Key.vimBindingsEnabled) }
+        didSet { write(vimBindingsEnabled, forKey: Key.vimBindingsEnabled, was: oldValue) }
     }
 
     /// Right-hand Inbox/overdue panel on wide layouts.
     var showSidePanel: Bool {
-        get { defaults.object(forKey: Key.showSidePanel) as? Bool ?? true }
-        set { defaults.set(newValue, forKey: Key.showSidePanel) }
+        didSet { write(showSidePanel, forKey: Key.showSidePanel, was: oldValue) }
     }
 
     var weekStartsOnMonday: Bool {
-        get { defaults.bool(forKey: Key.weekStartsOnMonday) }
-        set { defaults.set(newValue, forKey: Key.weekStartsOnMonday) }
+        didSet { write(weekStartsOnMonday, forKey: Key.weekStartsOnMonday, was: oldValue) }
     }
 
     /// Calendar honoring the week-start preference, used by every week view.
@@ -143,26 +164,36 @@ final class AppSettings {
         calendar.firstWeekday = weekStartsOnMonday ? 2 : 1
         return calendar
     }
-    
+
     var showResolved: Bool {
-        get { defaults.object(forKey: Key.showResolved) as? Bool ?? true }
-        set { defaults.set(newValue, forKey: Key.showResolved) }
+        didSet { write(showResolved, forKey: Key.showResolved, was: oldValue) }
     }
-    
+
     var userInfo: UserInfo {
-        get {
-            let decoder = JSONDecoder()
-            if
-                let data = defaults.data(forKey: Key.userInfo),
-                let userInfo = try? decoder.decode(UserInfo.self, from: data) {
-                return userInfo
-            } else {
-                return .default
-            }
+        didSet {
+            guard let data = try? JSONEncoder().encode(userInfo) else { return }
+            defaults.set(data, forKey: Key.userInfo)
         }
-        set {
-            let encoder = JSONEncoder()
-            defaults.set(try! encoder.encode(newValue), forKey: Key.userInfo)
+    }
+
+    // MARK: Persistence
+
+    /// Mirror a changed value into `UserDefaults`.
+    private func write<Value: Equatable>(_ value: Value, forKey key: String, was oldValue: Value) {
+        guard value != oldValue else { return }
+        defaults.set(value, forKey: key)
+    }
+
+    /// As `write`, but `nil` removes the key so "never chosen" stays
+    /// distinguishable from an explicit empty selection.
+    private func writeOptional<Value: Equatable>(
+        _ value: Value?, forKey key: String, was oldValue: Value?
+    ) {
+        guard value != oldValue else { return }
+        if let value {
+            defaults.set(value, forKey: key)
+        } else {
+            defaults.removeObject(forKey: key)
         }
     }
 }

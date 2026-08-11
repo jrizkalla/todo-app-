@@ -464,6 +464,10 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = TODO/Info.plist;
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "TODO shows your calendar events alongside your to-dos in the calendar view.";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "TODO needs background location access to deliver location-based reminders even when the app is closed.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "TODO uses your location to remind you about tasks when you arrive at or leave a place.";
+				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "TODO imports your reminders into its Inbox so you can organize them alongside your other tasks.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -510,6 +514,10 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = TODO/Info.plist;
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "TODO shows your calendar events alongside your to-dos in the calendar view.";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "TODO needs background location access to deliver location-based reminders even when the app is closed.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "TODO uses your location to remind you about tasks when you arrive at or leave a place.";
+				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "TODO imports your reminders into its Inbox so you can organize them alongside your other tasks.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;

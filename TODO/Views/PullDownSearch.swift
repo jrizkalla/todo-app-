@@ -20,6 +20,22 @@ extension View {
         #endif
     }
 
+    /// `pullDownSearchable`, with the field's focus exposed so Cmd+F can put
+    /// the cursor in it.
+    ///
+    /// `searchFocused` is the only way to drive a `searchable` field's focus,
+    /// and it has to be applied to the same view the field is attached to —
+    /// which is why this is one modifier rather than something a caller can
+    /// bolt on afterwards.
+    func pullDownSearchable(
+        text: Binding<String>,
+        prompt: String,
+        isFocused: FocusState<Bool>.Binding
+    ) -> some View {
+        pullDownSearchable(text: text, prompt: prompt)
+            .searchFocused(isFocused)
+    }
+
     /// `pullDownSearchable`, but only on platforms that give this view a search
     /// bar of its own.
     ///

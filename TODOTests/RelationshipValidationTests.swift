@@ -44,7 +44,7 @@ struct RelationshipValidationTests {
     /// The app must still open a working store with sync off.
     @Test func localStoreOpensWithoutCloudKit() throws {
         let container = try ModelContainer.appContainer(inMemory: true, cloudKit: false)
-        #expect(container.schema.entities.count == 3)
+        #expect(container.schema.entities.count == AppSchema.models.count)
     }
 
     /// The store's parent directory is missing on a fresh install, so opening a

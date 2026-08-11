@@ -22,7 +22,7 @@ struct ModelTests {
     @Test func schemaLoadsWithAllEntities() throws {
         let container = try ModelContainer.appContainer(inMemory: true)
         let names = Set(container.schema.entities.map(\.name))
-        #expect(names == ["Todo", "Space", "Reminder"])
+        #expect(names == ["Todo", "Space", "Reminder", "SavedAISummary"])
     }
 
     /// Every attribute must be optional or carry a default value, and none may

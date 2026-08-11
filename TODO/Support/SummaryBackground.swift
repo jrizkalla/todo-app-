@@ -67,12 +67,21 @@ enum SummaryBackgroundStore {
             .appendingPathComponent("summary-background.jpg")
     }
 
+    /// Longest edge kept when saving a picked photo.
+    ///
+    /// A modern camera roll image is far larger than any screen this is drawn
+    /// on, and it is blurred and dimmed on top of that. Downsampling once at
+    /// save time keeps every later read cheap rather than decoding several
+    /// megabytes on each redraw.
+    private static let maximumEdge: CGFloat = 2048
+
     /// Save picked image data, replacing whatever was there.
     @discardableResult
     static func save(_ data: Data) -> Bool {
         guard let url = imageURL else { return false }
         do {
-            try data.write(to: url, options: .atomic)
+            try (downsampled(data) ?? data).write(to: url, options: .atomic)
+            cached = nil
             return true
         } catch {
             AppLog.ui.error("Could not save summary background: \(error.localizedDescription)")
@@ -80,9 +89,61 @@ enum SummaryBackgroundStore {
         }
     }
 
+    /// Shrink to `maximumEdge` and re-encode as JPEG, or nil to store as-is.
+    private static func downsampled(_ data: Data) -> Data? {
+        #if canImport(UIKit)
+        guard let image = UIImage(data: data) else { return nil }
+
+        let longest = max(image.size.width, image.size.height)
+        guard longest > maximumEdge else { return image.jpegData(compressionQuality: 0.9) }
+
+        let scale = maximumEdge / longest
+        let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+
+        let renderer = UIGraphicsImageRenderer(size: size)
+        let resized = renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: size))
+        }
+        return resized.jpegData(compressionQuality: 0.9)
+        #else
+        return nil
+        #endif
+    }
+
+    /// The last read, held so redraws do not re-read and re-decode the file.
+    ///
+    /// `nonisolated(unsafe)` because access is confined to the main actor in
+    /// practice — this is only ever touched from view rendering and the picker.
+    nonisolated(unsafe) private static var cached: Data?
+
     static func load() -> Data? {
-        guard let url = imageURL else { return nil }
-        return try? Data(contentsOf: url)
+        if let cached { return cached }
+        guard let url = imageURL, let data = try? Data(contentsOf: url) else { return nil }
+        cached = data
+        return data
+    }
+
+    /// The decoded image for some data, held across redraws.
+    ///
+    /// Decoding is the expensive half — the background is rebuilt on every
+    /// change to the summary around it, and decoding a multi-megapixel photo
+    /// each time is what made the screen stutter.
+    nonisolated(unsafe) private static var decoded: (key: Int, image: Image)?
+
+    static func image(from data: Data) -> Image? {
+        let key = data.hashValue
+        if let decoded, decoded.key == key { return decoded.image }
+
+        #if canImport(UIKit)
+        guard let image = UIImage(data: data).map({ Image(uiImage: $0) }) else { return nil }
+        #elseif canImport(AppKit)
+        guard let image = NSImage(data: data).map({ Image(nsImage: $0) }) else { return nil }
+        #else
+        return nil
+        #endif
+
+        decoded = (key, image)
+        return image
     }
 
     static var hasImage: Bool {
@@ -93,6 +154,7 @@ enum SummaryBackgroundStore {
     static func clear() {
         guard let url = imageURL else { return }
         try? FileManager.default.removeItem(at: url)
+        cached = nil
     }
 }
 
@@ -115,10 +177,21 @@ struct SummaryBackgroundView: View {
     var body: some View {
         ZStack {
             if background == .custom, let image = customImage {
-                image
-                    .resizable()
-                    .scaledToFill()
-                    .blur(radius: 6)
+                // The image is an *overlay on a flexible shape*, not a view in
+                // the stack. A `resizable().scaledToFill()` image still reports
+                // the photo's own aspect ratio as its ideal size, so putting it
+                // in the stack directly lets a large photo size the container —
+                // which stretched the whole screen to the picture's dimensions.
+                // Attached this way it fills whatever it is given and nothing
+                // more, and the clip keeps the overflow off screen.
+                Color.clear
+                    .overlay {
+                        image
+                            .resizable()
+                            .scaledToFill()
+                            .blur(radius: 6)
+                    }
+                    .clipped()
             } else {
                 LinearGradient(
                     colors: background.colors,
@@ -153,13 +226,7 @@ struct SummaryBackgroundView: View {
 
     private var customImage: Image? {
         guard let data = customImageData ?? SummaryBackgroundStore.load() else { return nil }
-        #if canImport(UIKit)
-        return UIImage(data: data).map { Image(uiImage: $0) }
-        #elseif canImport(AppKit)
-        return NSImage(data: data).map { Image(nsImage: $0) }
-        #else
-        return nil
-        #endif
+        return SummaryBackgroundStore.image(from: data)
     }
 }
 

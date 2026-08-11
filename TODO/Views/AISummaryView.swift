@@ -103,12 +103,51 @@ struct AISummaryView : View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassCard()
+        .padding([.top], 10)
         .foregroundStyle(.white)
         .environment(\.colorScheme, .dark)
         // The panel grows as the generated text replaces the spinner; without
         // this the card snaps to its full height in one frame.
         .animation(Theme.Animation.listChange, value: summary?.quickSummary)
         .animation(Theme.Animation.listChange, value: summary?.detailedSummary)
+    }
+
+    /// The schedule and Any Time cards, or a single "All clear" in their place.
+    ///
+    /// Each card hides itself when it has nothing to show; this decides what to
+    /// do when that leaves nothing at all. The emptiness checks come from the
+    /// cards themselves (`hasContent`) rather than being reimplemented here, so
+    /// the placement and the card can never disagree about whether it is empty.
+    ///
+    /// Wrapped in a `TimelineView` because whether the schedule card has content
+    /// depends on the time of day: the last meeting ending has to make the card
+    /// give way to "All clear" on its own, not at the next redraw that happens
+    /// for some unrelated reason.
+    private var dayCards: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            let schedule = InlineCalendarCard(
+                todos: todos,
+                events: eventStore.events,
+                calendar: settings.calendar,
+                defaultDuration: settings.defaultEventDuration,
+                onOpen: onOpenSchedule
+            )
+            let hasSchedule = schedule.hasContent(now: context.date)
+            let hasAnyTime = TodoListCard.hasContent(todos: todos)
+
+            VStack(spacing: 14) {
+                if hasSchedule || hasAnyTime {
+                    if hasSchedule { schedule }
+                    if hasAnyTime { TodoListCard(todos: todos, onOpen: onOpenAnyTime) }
+                } else {
+                    AllClearCard()
+                }
+            }
+            // Finishing the last thing swaps the cards for "All clear" rather
+            // than making it appear where they were cut.
+            .animation(Theme.Animation.listChange, value: hasSchedule)
+            .animation(Theme.Animation.listChange, value: hasAnyTime)
+        }
     }
 
     var body: some View {
@@ -135,15 +174,7 @@ struct AISummaryView : View {
                     VStack(spacing: 14) {
                         WeatherSummaryCard(forecast: weatherService.weather)
 
-                        InlineCalendarCard(
-                            todos: todos,
-                            events: eventStore.events,
-                            calendar: settings.calendar,
-                            defaultDuration: settings.defaultEventDuration,
-                            onOpen: onOpenSchedule
-                        )
-
-                        TodoListCard(todos: todos, onOpen: onOpenAnyTime)
+                        dayCards
                     }
                 }
                 .padding([.leading, .trailing])

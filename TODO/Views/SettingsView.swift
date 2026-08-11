@@ -17,6 +17,15 @@ struct SettingsView: View {
     @State private var calendarStore = CalendarEventStore.shared
     @State private var availableCalendars: [EKCalendar] = []
 
+    /// Matches `RootView`'s gate, so the panel's switch is offered exactly where
+    /// the panel itself is shown.
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    private var isWideLayout: Bool { horizontalSizeClass == .regular }
+    #else
+    private var isWideLayout: Bool { true }
+    #endif
+
     /// The photo being picked for the summary background, if any.
     @State private var pickedBackground: PhotosPickerItem?
     /// Bumped after a save so the swatches redraw with the new photo.
@@ -140,6 +149,12 @@ struct SettingsView: View {
             }
             Section("TODOs") {
                 Toggle("Show completed TODOs", isOn: $settings.showResolved)
+
+                // Only offered where the panel can actually appear — a phone
+                // never shows it, so the switch would do nothing there.
+                if isWideLayout {
+                    Toggle("Show Inbox & overdue panel", isOn: $settings.showSidePanel)
+                }
             }
 
             backgroundSection
@@ -155,7 +170,6 @@ struct SettingsView: View {
                 .help("Length used for timed to-dos that have no duration of their own.")
 
                 Toggle("Week starts on Monday", isOn: $settings.weekStartsOnMonday)
-                Toggle("Show Inbox & overdue panel", isOn: $settings.showSidePanel)
             }
 
             #if os(macOS)

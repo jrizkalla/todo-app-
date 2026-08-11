@@ -86,15 +86,86 @@ struct RootView: View {
     #endif
 
     var body: some View {
+        // Wide layouts keep the Inbox panel beside *every* tab, so it is one
+        // persistent surface rather than something only the Lists tab has.
+        // Phones fall through to the bare tab view untouched.
+        Group {
+            if isWideLayout {
+                HStack(spacing: 0) {
+                    tabs
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                    if settings.showSidePanel {
+                        Divider()
+                        SidePanelView(
+                            selectedTodo: $selectedTodo,
+                            onHide: { settings.showSidePanel = false }
+                        )
+                        .frame(width: Theme.Metrics.sidePanelWidth)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                    }
+                }
+                .animation(Theme.Animation.panel, value: settings.showSidePanel)
+                // Bringing the panel back once hidden: the toggle in Settings
+                // still works, but a control on the shell itself means the user
+                // does not have to leave the screen to undo a collapse.
+                .overlay(alignment: .topTrailing) {
+                    if !settings.showSidePanel {
+                        showPanelButton
+                    }
+                }
+            } else {
+                tabs
+            }
+        }
+        // Showing the panel retires the Inbox tab, so anyone standing on it
+        // when that happens has to be moved somewhere that still exists —
+        // otherwise the selection points at a tab the bar no longer draws and
+        // the content area comes up blank.
+        .onChange(of: showsInboxTab) { _, showsTab in
+            if !showsTab && tab == .inbox { tab = .today }
+        }
+    }
+
+    /// Reveals the panel again after it has been collapsed.
+    private var showPanelButton: some View {
+        Button {
+            settings.showSidePanel = true
+        } label: {
+            Image(systemName: "sidebar.right")
+                .font(.body.weight(.medium))
+                .padding(8)
+                .background(.thinMaterial, in: Circle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .padding(.trailing, 12)
+        .padding(.top, 8)
+        .accessibilityLabel("Show Inbox Panel")
+        .help("Show the Inbox panel")
+        .transition(.opacity)
+    }
+
+    /// Whether the Inbox deserves a tab of its own.
+    ///
+    /// It does not when the side panel is already showing the Inbox: two ways
+    /// onto one screen, with no way to tell which one you are looking at. The
+    /// panel is the better of the two, since it is visible from every tab. A
+    /// phone never shows the panel, so the tab always survives there.
+    private var showsInboxTab: Bool { !(isWideLayout && settings.showSidePanel) }
+
+    private var tabs: some View {
         TabView(selection: $tab) {
-            Tab(AppTab.inbox.title, systemImage: AppTab.inbox.symbol, value: AppTab.inbox) {
-                NavigationStack {
-                    TodoListView(
-                        destination: .inbox,
-                        selectedTodo: $selectedTodo,
-                        createRequest: createCount(for: .inbox)
-                    )
-                    .todoDetailDestination(selection: $selectedTodo)
+            if showsInboxTab {
+                Tab(AppTab.inbox.title, systemImage: AppTab.inbox.symbol, value: AppTab.inbox) {
+                    NavigationStack {
+                        TodoListView(
+                            destination: .inbox,
+                            selectedTodo: $selectedTodo,
+                            createRequest: createCount(for: .inbox)
+                        )
+                        .todoDetailDestination(selection: $selectedTodo)
+                    }
                 }
             }
 
@@ -181,24 +252,12 @@ struct RootView: View {
                 )
         } detail: {
             NavigationStack {
-                HStack(spacing: 0) {
-                    TodoListView(
-                        destination: listSelection ?? .today,
-                        selectedTodo: $selectedTodo,
-                        createRequest: createCount(for: .lists)
-                    )
-                    .frame(maxWidth: .infinity)
-
-                    // Right-hand panel: wide layouts only, and only when the
-                    // user has it switched on.
-                    if isWideLayout && settings.showSidePanel {
-                        Divider()
-                        SidePanelView(selectedTodo: $selectedTodo)
-                            .frame(width: Theme.Metrics.sidePanelWidth)
-                            .transition(.move(edge: .trailing).combined(with: .opacity))
-                    }
-                }
-                .animation(Theme.Animation.panel, value: settings.showSidePanel)
+                TodoListView(
+                    destination: listSelection ?? .today,
+                    selectedTodo: $selectedTodo,
+                    createRequest: createCount(for: .lists)
+                )
+                .frame(maxWidth: .infinity)
                 .todoDetailDestination(selection: $selectedTodo)
             }
         }

@@ -49,7 +49,19 @@ extension Array where Element == Todo {
             return Calendar.current.isDateInToday(resolvedAt)
         }
     }
+    
+    func filterCycles() -> Self {
+        let uuidSet = Set(self.map { $0.uuid })
+        return self.filter { todo in
+            if let parent = todo.parent {
+                !uuidSet.contains(parent.uuid)
+            } else {
+                true
+            }
+        }
+    }
 }
+
 
 /// Filtering rules behind each destination.
 ///
@@ -72,15 +84,16 @@ enum TodoQueries {
     /// that only hid the sidebar entry would still show the same to-dos in
     /// every date-based list.
     static func topLevel(_ todos: [Todo]) -> [Todo] {
-        todos.filter { $0.parent == nil && !$0.isHiddenByFocus }
+        todos.filter { !$0.isHiddenByFocus }
     }
-
+    
     /// Unresolved, unscheduled, unfiled items.
     static func inbox(_ todos: [Todo], includeResolved: Bool = false) -> [Todo] {
         topLevel(todos)
             .filter { $0.bucket == .inbox && !$0.isProject }
             .filter(includeResolved: includeResolved)
             .filterResolved()
+            .filterCycles()
             .sorted(by: sortByOrder)
     }
 
@@ -98,6 +111,7 @@ enum TodoQueries {
                 return false
             }
             .filter(includeResolved: includeResolved)
+            .filterCycles()
             .sorted(by: sortByDateThenOrder)
     }
 
@@ -129,6 +143,7 @@ enum TodoQueries {
                 return false
             }
             .filter(includeResolved: includeResolved)
+            .filterCycles()
             .sorted(by: sortByDateThenOrder)
     }
 
@@ -138,6 +153,7 @@ enum TodoQueries {
             .filter { $0.bucket == .anytime && !$0.isProject }
             .filter(includeResolved: includeResolved)
             .filterResolved()
+            .filterCycles()
             .sorted(by: sortByDateThenOrder)
     }
 
@@ -156,6 +172,7 @@ enum TodoQueries {
     static func overdue(_ todos: [Todo], now: Date = Date()) -> [Todo] {
         topLevel(todos)
             .filter { $0.isOverdue }
+            .filterCycles()
             .sorted { ($0.dueDate ?? .distantFuture) < ($1.dueDate ?? .distantFuture) }
     }
 
@@ -196,6 +213,7 @@ enum TodoQueries {
             return assigned >= start && assigned < end
         }
         .filter(includeResolved: includeResolved)
+        .filterCycles()
         .filterResolved()
     }
 

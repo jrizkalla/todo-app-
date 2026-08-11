@@ -25,14 +25,42 @@ struct TodoListView: View {
     @State private var pendingDeletion: Todo?
     /// The to-do whose scheduling panel is open, from a leading swipe.
     @State private var schedulingTodo: Todo?
+    /// True when the scheduling panel was opened from the keyboard, which is
+    /// what earns it the typed-date field.
+    @State private var schedulingFromKeyboard = false
+    /// The to-do whose "move to" picker is open, from Cmd+M.
+    @State private var movingTodo: Todo?
+
+    /// Where the arrow keys are pointing.
+    ///
+    /// Separate from `focusedTodoID`, which is text-field focus: a row can be
+    /// keyboard-selected without the caret being in its title, and that
+    /// distinction is what lets Cmd+K toggle a row rather than typing into it.
+    @State private var cursor = KeyboardCursor()
+    /// The last row order the cursor was reconciled against, so a row vanishing
+    /// can be resolved to its nearest surviving neighbour.
+    @State private var lastRowOrder: [UUID] = []
 
     /// What the user has typed into the pull-down search field, if anything.
     @State private var searchText = ""
 
     /// Suggestion chips for whichever row's title has focus.
     @State private var suggestionModel = TitleSuggestionModel()
+    /// Debounces the save and suggestion refresh behind title editing.
+    @State private var titleEditTask: Task<Void, Never>?
     /// The row whose title field is focused. There is no separate edit mode.
     @FocusState private var focusedTodoID: UUID?
+    /// Whether the search field holds the keyboard, so Cmd+F can put it there.
+    @FocusState private var isSearchFocused: Bool
+
+    /// Whether the list pane itself holds the keyboard.
+    ///
+    /// `onKeyPress` only delivers to a *focused* view, and a `List` full of
+    /// text fields never takes focus on its own — so without somewhere for the
+    /// pane's own focus to live, the arrow keys were being dropped on the floor
+    /// whenever the caret was not in a title. Selecting a row hands focus here,
+    /// which is what makes the arrows work after a tap or a Cmd+F escape.
+    @FocusState private var isListFocused: Bool
 
     @State private var importer = RemindersImporter.shared
 
@@ -55,7 +83,7 @@ struct TodoListView: View {
     }
 
     var body: some View {
-        searchableList
+        droppableList
         // The app-wide button asks; the list is what knows how to answer.
         //
         // Ignored while searching: the results are a filtered view, and
@@ -80,7 +108,37 @@ struct TodoListView: View {
         }
         .onChange(of: focusedTodoID) { previous, current in
             handleFocusChange(from: previous, to: current)
+            // Typing in a row is also a way of choosing it, so the cursor
+            // follows the caret. Without this, Cmd+K after clicking into a
+            // title would act on whatever the arrows last pointed at.
+            if let current { cursor.select(current) }
         }
+        // The pane has to be focusable for `onKeyPress` to reach it at all; the
+        // key handlers below are attached to this same view so they fire while
+        // the list — rather than one of its title fields — holds the keyboard.
+        .focusable()
+        .focused($isListFocused)
+        // Arrow keys drive the cursor whenever the caret is not in a text
+        // field — in a field the arrows belong to the text, which is why this
+        // defers rather than competing for them.
+        .onKeyPress(.upArrow) { moveCursor(.up) }
+        .onKeyPress(.downArrow) { moveCursor(.down) }
+        // Return opens whatever the cursor is on, matching a double-click.
+        .onKeyPress(.return) {
+            guard focusedTodoID == nil, let todo = cursorTodo else { return .ignored }
+            showDetail(for: todo)
+            return .handled
+        }
+        .keyboardCommands(isActive: isKeyboardTarget) { command in
+            perform(command)
+        }
+        // Keeps the cursor on something real as rows come and go.
+        .onChange(of: visibleRowOrder) { previous, current in
+            cursor.reconcile(with: current, previousOrder: previous)
+            lastRowOrder = current
+        }
+        // A cursor from one list means nothing in the next.
+        .onChange(of: destination) { _, _ in cursor.select(nil) }
         // Chips for the focused title field sit above the keyboard on iOS and
         // at the window bottom on macOS, the same as in the detail editor.
         .suggestionBar(suggestionModel.suggestions) { suggestion in
@@ -120,9 +178,21 @@ struct TodoListView: View {
                     schedulingTodo = nil
                     selectedTodo = todo
                 },
-                onDismiss: { schedulingTodo = nil }
+                onDismiss: { schedulingTodo = nil },
+                acceptsTypedDate: schedulingFromKeyboard
             )
             .presentationDetents([.medium, .large])
+        }
+        .sheet(item: $movingTodo) { todo in
+            MoveDestinationView(
+                todo: todo,
+                onPick: { destination in
+                    apply(destination, to: todo)
+                    movingTodo = nil
+                },
+                onDismiss: { movingTodo = nil }
+            )
+            .presentationDetents([.medium])
         }
         .confirmationDialog(
             deletePrompt,
@@ -142,6 +212,22 @@ struct TodoListView: View {
         }
     }
 
+    /// The pane accepts drops too, so a to-do can be dragged from the Inbox
+    /// panel onto whatever list is open without aiming at its sidebar row.
+    ///
+    /// Attached to the whole pane rather than to the rows: dropping *between*
+    /// two rows is the same intent as dropping on the list, and a target that
+    /// only covered the rows would leave the empty space below them dead.
+    private var droppableList: some View {
+        searchableList
+            .todoDropTarget(
+                destination,
+                store: store,
+                allTodos: todos,
+                spaces: spaces
+            )
+    }
+
     /// The list, plus its search field.
     ///
     /// `searchable` is attached here rather than to the `ZStack` in `body`: the
@@ -153,7 +239,11 @@ struct TodoListView: View {
         listContent
             // Hidden by default and revealed by pulling the list down, so the
             // field costs nothing until it is wanted.
-            .pullDownSearchable(text: $searchText, prompt: searchPrompt)
+            .pullDownSearchable(
+                text: $searchText,
+                prompt: searchPrompt,
+                isFocused: $isSearchFocused
+            )
     }
 
     private var listContent: some View {
@@ -197,18 +287,18 @@ struct TodoListView: View {
 
                 ForEach(visibleTodos) { todo in
                     VStack(spacing: 0) {
-                        TodoRow(
+                        TodoRowV2(
                             todo: todo,
                             showsSpace: showsSpaceBadge,
-                            isSelected: selectedTodo?.uuid == todo.uuid,
-                            onToggle: { handleToggle(todo) },
+                            selectedTodo: $selectedTodo,
+//                            isCursor: cursor.selection == todo.uuid,
+                            onToggle: { _ in handleToggle(todo) },
                             onSelectState: { handleSetState(todo, to: $0) },
                             onTitleChange: { handleTitleChange($0, for: todo) },
-                            onNotesChange: { store.save() },
-                            focusedTodoID: $focusedTodoID,
+                            onNotesChange: { _ in store.save() },
                             menu: { AnyView(rowMenu(for: todo)) },
                             onSubmitTitle: { createTodoAfterSubmit(from: todo) },
-                            onShowDetail: { showDetail(for: todo) }
+                            onShowDetail: { _ in showDetail(for: todo) },
                         )
                         // On macOS the editor opens as a popover pointing at
                         // this row; on iOS this is a no-op and the detail page
@@ -223,6 +313,7 @@ struct TodoListView: View {
                             TodoRow(
                                 todo: subtask,
                                 isSelected: selectedTodo?.uuid == subtask.uuid,
+                                isCursor: cursor.selection == subtask.uuid,
                                 onToggle: { handleToggle(subtask) },
                                 onSelectState: { handleSetState(subtask, to: $0) },
                                 onTitleChange: { handleTitleChange($0, for: subtask) },
@@ -232,7 +323,8 @@ struct TodoListView: View {
                                 // Return inside a project adds another subtask
                                 // to the same parent.
                                 onSubmitTitle: { addSubtaskAfterSubmit(to: todo) },
-                                onShowDetail: { showDetail(for: subtask) }
+                                onShowDetail: { showDetail(for: subtask) },
+                                onSelect: { selectRow(subtask) }
                             )
                             .padding(.leading, 28)
                             .todoDetailPopover(for: subtask, selection: $selectedTodo)
@@ -350,6 +442,118 @@ struct TodoListView: View {
         selectedTodo = todo
     }
 
+    // MARK: Keyboard
+
+    /// A first tap on a row: select it, without putting the caret in its title.
+    ///
+    /// Selection and text focus are the same idea from the user's side — "this
+    /// is the to-do I mean" — so a tap moves the same cursor the arrow keys
+    /// drive rather than introducing a third notion of which row is current.
+    /// Any caret elsewhere is dropped, since the tap has moved on from it.
+    private func selectRow(_ todo: Todo) {
+        focusedTodoID = nil
+        cursor.select(todo.uuid)
+        // Taking the keyboard here is what lets the arrow keys continue from
+        // the row just tapped. Without it the pane has a cursor nothing is
+        // listening for, and the arrows do nothing until something else
+        // happens to focus the list.
+        isListFocused = true
+    }
+
+    /// Every row the arrow keys can land on, parents and their nested subtasks
+    /// in the order they are drawn.
+    ///
+    /// Built from the same composition the list renders, so the cursor walks
+    /// exactly what is on screen — including a subtask nested under its parent,
+    /// which is a row the user can see and therefore expects to reach.
+    private var visibleRowOrder: [UUID] {
+        visibleTodos.flatMap { [$0.uuid] + nestedSubtasks(of: $0).map(\.uuid) }
+    }
+
+    private var cursorTodo: Todo? {
+        guard let id = cursor.selection else { return nil }
+        return todos.first { $0.uuid == id }
+    }
+
+    /// The to-do a keyboard command should act on.
+    ///
+    /// The cursor first, falling back to the row being edited — someone who
+    /// clicked into a title and hit Cmd+S means *that* row, even if the arrows
+    /// were never used.
+    private var commandTarget: Todo? {
+        cursorTodo ?? focusedTodo ?? selectedTodo
+    }
+
+    /// Whether this list should be answering keyboard commands.
+    ///
+    /// A list that is off-screen still exists — every tab's view stays alive
+    /// once visited — so without a gate all of them would respond to one
+    /// keystroke at once.
+    private var isKeyboardTarget: Bool {
+        cursor.selection != nil || focusedTodoID != nil || selectedTodo != nil
+    }
+
+    /// Move the keyboard cursor, unless a text field wants the arrow key.
+    private func moveCursor(_ direction: KeyboardCursor.Direction) -> KeyPress.Result {
+        guard focusedTodoID == nil else { return .ignored }
+
+        var next = cursor
+        guard next.move(direction, in: visibleRowOrder) else { return .ignored }
+
+        cursor = next
+        // Selecting a row also makes it the detail target on macOS, where the
+        // popover is anchored to the selected row.
+        return .handled
+    }
+
+    /// Run a keyboard command against whatever the cursor is on.
+    private func perform(_ command: KeyboardCommand) {
+        switch command {
+        case .create:
+            guard !isSearching else { return }
+            createTodoInCurrentList()
+
+        case .search:
+            // Focus belongs to the field now, not to a row.
+            focusedTodoID = nil
+            isSearchFocused = true
+
+        case .schedule:
+            guard let todo = commandTarget else { return }
+            focusedTodoID = nil
+            schedulingFromKeyboard = true
+            schedulingTodo = todo
+
+        case .toggleDone:
+            guard let todo = commandTarget else { return }
+            handleToggle(todo)
+
+        case .showDetail:
+            guard let todo = commandTarget else { return }
+            showDetail(for: todo)
+
+        case .move:
+            guard let todo = commandTarget else { return }
+            focusedTodoID = nil
+            movingTodo = todo
+        }
+    }
+
+    /// Apply a picked move destination.
+    private func apply(_ destination: MoveDestinationView.Destination, to todo: Todo) {
+        switch destination {
+        case .none:
+            store.move(todo, toParent: nil)
+            store.move(todo, toSpace: nil)
+        case .space(let id):
+            store.move(todo, toParent: nil)
+            store.move(todo, toSpace: spaces.first { $0.uuid == id })
+        case .project(let id):
+            guard let project = todos.first(where: { $0.uuid == id }) else { return }
+            _ = store.adopt(todo, asSubtaskOf: project)
+        }
+    }
+
     @ViewBuilder
     private func rowMenu(for todo: Todo) -> some View {
         ControlGroup {
@@ -452,9 +656,25 @@ struct TodoListView: View {
     ///
     /// There is nothing to "commit": edits land in the store immediately, so
     /// leaving the screen mid-word loses nothing.
+    /// React to a keystroke in a row's title.
+    ///
+    /// Neither half of this runs inline any more. Saving wrote the whole
+    /// context to disk on *every character*, and refreshing the suggestions
+    /// rescanned every to-do to rebuild the parser's project list — together
+    /// they made typing visibly stutter. The edit is already live in the model
+    /// object; what is deferred is only persisting it and re-deriving the
+    /// chips, neither of which the next keystroke depends on.
+    ///
+    /// The row is still saved promptly on blur, via `handleFocusChange`.
     private func handleTitleChange(_ newTitle: String, for todo: Todo) {
-        suggestionModel.refresh(for: newTitle, todo: todo, allTodos: todos)
-        store.save()
+        titleEditTask?.cancel()
+        titleEditTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+
+            suggestionModel.refresh(for: newTitle, todo: todo, allTodos: todos)
+            store.save()
+        }
     }
 
     /// React to focus moving between rows.
@@ -462,6 +682,11 @@ struct TodoListView: View {
     /// Leaving a row is the moment to refile it and to discard it if it was
     /// never given a title — the empty row a user creates and then abandons.
     private func handleFocusChange(from previous: UUID?, to current: UUID?) {
+        // The debounced save is about to be superseded: leaving the row either
+        // saves it outright below or deletes it, and a queued write must not
+        // land against a to-do that no longer exists.
+        titleEditTask?.cancel()
+
         if let previous {
             // Deferred, because the title blurring does not by itself mean the
             // user left the row: tapping the row's inline notes field blurs the

@@ -7,6 +7,13 @@ struct TodoRow: View {
     @Bindable var todo: Todo
     var showsSpace: Bool = false
     var isSelected: Bool = false
+    /// True when the arrow-key cursor is on this row.
+    ///
+    /// Distinct from `isSelected`, which means the detail editor is open on it:
+    /// the cursor is a lighter thing that moves with every arrow press, and
+    /// drawing the two the same way would make a row being merely passed over
+    /// look like a row that had been opened.
+    var isCursor: Bool = false
     let onToggle: () -> Void
     let onSelectState: (CompletionState) -> Void
     /// Called as the title changes, so the parser can re-run and the store save.
@@ -51,6 +58,36 @@ struct TodoRow: View {
         focusedTodoID == todo.uuid || focusedField != nil
     }
 
+    /// Whether this row can currently be picked up.
+    ///
+    /// A row being edited is not draggable: inside a text field a press-and-move
+    /// means "select this text", and letting the drag session claim it would
+    /// make the title unselectable by mouse.
+    private var isDraggable: Bool {
+        !hasFieldFocus
+    }
+
+    /// Whether taps on the title should select the row instead of editing it.
+    ///
+    /// This is the first half of the two-stage tap. While the row is not the
+    /// selected one, a transparent catcher sits over the title and turns a tap
+    /// into `onSelect`. Once the row *is* selected the catcher comes down, so
+    /// the next tap lands on the real field and behaves like an ordinary click
+    /// into text — caret where you clicked, drag to select.
+    ///
+    /// A row already holding focus never blocks, or committing an edit and
+    /// tapping elsewhere in the same row would bounce the caret out.
+    private var blocksTitleFocus: Bool {
+        !hasFieldFocus && !isCursor
+    }
+
+    /// Border colour: the to-do's own tint while editing, the accent while the
+    /// cursor rests on it, and nothing otherwise.
+    private var strokeColor: Color {
+        if isFocused { return todo.color.opacity(0.45) }
+        return isCursor ? Color.accentColor.opacity(0.5) : .clear
+    }
+
     /// True when the row should draw in its expanded form.
     ///
     /// The selected row counts as expanded too. On macOS the editor opens in a
@@ -63,7 +100,11 @@ struct TodoRow: View {
 
     private var backgroundFill: Color {
         if isFocused { return Color.secondary.opacity(0.10) }
-        return isSelected ? Color.accentColor.opacity(0.12) : .clear
+        if isSelected { return Color.accentColor.opacity(0.12) }
+        // The cursor tint is deliberately fainter than the selection's, so
+        // arrowing through a list is legible without looking like six rows are
+        // open at once.
+        return isCursor ? Color.accentColor.opacity(0.07) : .clear
     }
 
     /// The row's long-press menu.
@@ -81,6 +122,16 @@ struct TodoRow: View {
 
     /// Called from the expanded row's button to open the full editor.
     var onShowDetail: () -> Void = {}
+
+    /// Called by a tap on a row that is not yet the selected one.
+    ///
+    /// The list answers by moving its keyboard cursor here. That is the whole
+    /// of the first stage: the row becomes the selected one, and the title
+    /// field is deliberately *not* focused, so a tap to look at something does
+    /// not raise a keyboard or put a caret in text the user had no intention of
+    /// editing. A second tap, once this row is already selected, is what
+    /// reaches the field — see `blocksTitleFocus`.
+    var onSelect: () -> Void = {}
 
     /// Sizes and fonts for this surface. See `Theme.RowScale`.
     private let scale = Theme.RowScale.regular
@@ -136,6 +187,14 @@ struct TodoRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
             .contextMenu { menu() }
+            // Dragging moves the to-do to another list, space, project, or onto
+            // the calendar. Attached to the content rather than the whole row
+            // for the same reason the menu is: the checkbox keeps its own
+            // gestures.
+            //
+            // Suppressed while this row's fields hold the keyboard, so a drag
+            // to select a word of the title is not stolen by the drag session.
+            .todoDraggable(todo, isEnabled: isDraggable)
 
             // Only while focused: a way into the full editor. Replaces the old
             // tap-to-open, which fought the text field for the same tap.
@@ -164,7 +223,10 @@ struct TodoRow: View {
                 .fill(backgroundFill)
                 .overlay {
                     RoundedRectangle(cornerRadius: Theme.Metrics.cornerRadius, style: .continuous)
-                        .stroke(todo.color.opacity(isFocused ? 0.45 : 0), lineWidth: 1.5)
+                        .stroke(
+                            strokeColor,
+                            lineWidth: isFocused || isCursor ? 1.5 : 0
+                        )
                 }
                 .padding([.leading, .trailing], Theme.Metrics.listRowCardInset)
                 .shadow(
@@ -174,6 +236,7 @@ struct TodoRow: View {
                 )
         }
         .animation(Theme.Animation.toggle, value: isFocused)
+        .animation(Theme.Animation.quick, value: isCursor)
         .contentShape(Rectangle())
         .opacity(todo.state.isResolved ? 0.5 : 1)
         .animation(Theme.Animation.toggle, value: todo.state)
@@ -253,7 +316,7 @@ struct TodoRow: View {
             }
         }
     }
-    
+
     /// Inline notes, for capturing a thought without opening the editor.
     ///
     /// Stretched to the row's full width so a click anywhere on the line lands
@@ -275,7 +338,7 @@ struct TodoRow: View {
             // moved focus to the title and collapsed the row.
             #if os(macOS)
             .overlay {
-                ClickCatcher { focusedField = .notes }
+                ClickCatcher(onClick: { focusedField = .notes })
                     .opacity(focusedField == .notes ? 0 : 1)
                     .allowsHitTesting(focusedField != .notes)
             }
@@ -343,22 +406,38 @@ struct TodoRow: View {
             // the one row being edited.
             #if os(macOS)
             .focusEffectDisabled()
-            // Makes the dead space beside the text clickable.
-            //
-            // A `TextField` accepts clicks only where its glyphs are — widening
-            // its SwiftUI frame does not widen the field's hit area — and the
-            // enclosing `List` claims everything else for row selection. So on
-            // a Mac, clicking to the right of a short title did nothing at all.
-            // This overlay sits in front, ahead of the List's own handling, and
-            // hands focus to the field.
-            .overlay {
-                ClickCatcher { focusedTodoID = todo.uuid }
-                    // Uncovers the field once it is being edited, so
-                    // click-to-position-caret and drag-to-select keep working.
-                    .opacity(focusedTodoID == todo.uuid ? 0 : 1)
-                    .allowsHitTesting(focusedTodoID != todo.uuid)
-            }
             #endif
+            // Intercepts taps over the title, on both platforms.
+            //
+            // Two jobs in one overlay. The first is the two-stage tap: while
+            // `blocksTitleFocus` is true the catcher is in front of the field
+            // and a tap only selects the row, so looking at a to-do never puts
+            // a caret in it or raises a keyboard. Once the row is selected the
+            // catcher stops taking hits and the next tap reaches the real
+            // field.
+            //
+            // The second is macOS-specific and predates this: a `TextField`
+            // accepts clicks only where its glyphs are — widening its SwiftUI
+            // frame does not widen the field's hit area — and the enclosing
+            // `List` claims everything else for row selection, so clicking to
+            // the right of a short title used to do nothing at all. The
+            // catcher covers that dead space and hands focus over explicitly.
+            .overlay {
+                TitleTapCatcher(
+                    focusesField: !blocksTitleFocus,
+                    onTap: {
+                        if blocksTitleFocus {
+                            onSelect()
+                        } else {
+                            focusedTodoID = todo.uuid
+                        }
+                    }
+                )
+                // Uncovers the field once it is being edited, so
+                // click-to-position-caret and drag-to-select keep working.
+                .opacity(focusedTodoID == todo.uuid ? 0 : 1)
+                .allowsHitTesting(focusedTodoID != todo.uuid)
+            }
     }
 
     private func badge(for badge: Badge) -> some View {
@@ -439,6 +518,32 @@ struct TodoRow: View {
 }
 
 
+/// Catches taps over a row's title.
+///
+/// Wraps the platform difference so the row itself does not have to: a Mac
+/// needs an `NSView` in the responder chain to beat the `List` to the click
+/// (see `ClickCatcher`), while on iOS an ordinary tap gesture is enough,
+/// because a `TextField` there does not compete for the same touch until it is
+/// actually first responder.
+private struct TitleTapCatcher: View {
+    /// Whether this tap is meant to put the caret in the field, as opposed to
+    /// only selecting the row. Drives the cursor shown on macOS and the
+    /// caret-collapsing that follows a programmatic focus.
+    let focusesField: Bool
+    let onTap: () -> Void
+
+    var body: some View {
+        #if os(macOS)
+        ClickCatcher(collapsesCaret: focusesField, onClick: onTap)
+        #else
+        // A clear colour rather than `EmptyView`, so there is something to hit.
+        Color.clear
+            .contentShape(Rectangle())
+            .onTapGesture(perform: onTap)
+        #endif
+    }
+}
+
 #if os(macOS)
 /// A transparent AppKit view that turns a click into a callback.
 ///
@@ -448,23 +553,44 @@ struct TodoRow: View {
 /// row's text is simply swallowed. An `NSView` that implements `mouseDown`
 /// sits in the responder chain itself and gets the event first.
 private struct ClickCatcher: NSViewRepresentable {
+    /// Whether the click will focus the field, which is the only case where the
+    /// caret needs fixing up afterwards.
+    var collapsesCaret = true
     let onClick: () -> Void
 
     func makeNSView(context: Context) -> NSView {
         let view = ClickView()
         view.onClick = onClick
+        view.collapsesCaret = collapsesCaret
         return view
     }
 
     func updateNSView(_ view: NSView, context: Context) {
-        (view as? ClickView)?.onClick = onClick
+        guard let view = view as? ClickView else { return }
+        view.onClick = onClick
+
+        // Only when the value actually changed.
+        //
+        // `invalidateCursorRects` schedules `resetCursorRects`, which AppKit
+        // services on the next pass through the run loop; that in turn feeds
+        // back into SwiftUI and brings `updateNSView` round again. Calling it
+        // unconditionally made that cycle self-sustaining and hung the app the
+        // moment anything else in the row redrew.
+        guard view.collapsesCaret != collapsesCaret else { return }
+        view.collapsesCaret = collapsesCaret
+        // The I-beam is a promise that a click will edit; a first click that
+        // only selects should not make one.
+        view.window?.invalidateCursorRects(for: view)
     }
 
     private final class ClickView: NSView {
         var onClick: (() -> Void)?
+        var collapsesCaret = true
 
         override func mouseDown(with event: NSEvent) {
             onClick?()
+
+            guard collapsesCaret else { return }
 
             // Drop the select-all that comes with being focused
             // programmatically, and leave the caret at the end instead.
@@ -480,8 +606,12 @@ private struct ClickCatcher: NSViewRepresentable {
             }
         }
 
-        /// Keeps the I-beam over the area, so it still reads as editable text.
+        /// Shows the I-beam only where a click would actually start editing.
+        ///
+        /// On an unselected row the first click just selects, so an I-beam
+        /// there would promise a caret the click does not deliver.
         override func resetCursorRects() {
+            guard collapsesCaret else { return }
             addCursorRect(bounds, cursor: .iBeam)
         }
     }
@@ -586,7 +716,7 @@ private struct TodoRowPreviewHost: View {
             PreviewData.todo(titled: "Standup"),
             PreviewData.todo(titled: "Pay the"),
             PreviewData.todo(titled: "Renew passport"),
-            
+
             PreviewData.project,
             PreviewData.imported,
             Todo(title: "")

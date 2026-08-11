@@ -7,13 +7,27 @@
 		<string>remote-notification</string>
 		<string>location</string>
 	</array>
-	<key>NSRemindersFullAccessUsageDescription</key>
-	<string>TODO imports your reminders into its Inbox so you can organize them alongside your other tasks.</string>
-	<key>NSCalendarsFullAccessUsageDescription</key>
-	<string>TODO shows your calendar events alongside your to-dos in the calendar view.</string>
-	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>TODO uses your location to remind you about tasks when you arrive at or leave a place.</string>
-	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>TODO needs background location access to deliver location-based reminders even when the app is closed.</string>
+	<!--
+	  The drag payload used to move a to-do between lists and onto the
+	  calendar. Declared as its own type, conforming to `public.data`, so a
+	  drag from the Inbox is offered only to the app's own drop targets — a
+	  plain-text payload would be accepted by every text field on screen, and
+	  any text dragged in from another app would look like a to-do.
+	-->
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.johnrizkalla.app.TODO.todo-item</string>
+			<key>UTTypeDescription</key>
+			<string>To-Do</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict/>
+		</dict>
+	</array>
 </dict>
 </plist>

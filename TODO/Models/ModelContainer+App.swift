@@ -6,10 +6,17 @@ import SwiftData
 /// The app's schema, in one place so the widget extension and the macOS CLI can
 /// open the same store without duplicating the model list.
 enum AppSchema {
+    /// Every `@Model` in the app.
+    ///
+    /// A model missing from this list is not in the store's schema, so anything
+    /// that queries or writes it fails at the CoreData layer rather than at
+    /// compile time — persistent history hits "not a valid entity name" and
+    /// takes the app down with it. Adding an `@Model` means adding it here.
     static let models: [any PersistentModel.Type] = [
         Todo.self,
         Space.self,
         Reminder.self,
+        SavedAISummary.self,
     ]
 
     static var schema: Schema { Schema(models) }
@@ -23,7 +30,7 @@ enum AppSchema {
     static let appGroupIdentifier = "group.com.johnrizkalla.app.TODO"
 
     /// CloudKit container backing sync.
-    static let cloudKitContainerIdentifier = "iCloud.com.johnrizkalla.app.TODO"
+    static let cloudKitContainerIdentifier = "iCloud.johnrizkalla.app.todo"
 
     /// Location of the shared SwiftData store, inside the app group.
     ///
@@ -113,7 +120,7 @@ extension ModelContainer {
     /// signature at runtime this is a compile-time switch that must be flipped
     /// together with the entitlement file. It is off because a free Apple team
     /// cannot provision iCloud; see `TODO.entitlements` for how to enable both.
-    static let hasCloudKitEntitlement = false
+    static let hasCloudKitEntitlement = true
 
     /// Whether CloudKit mirroring can be requested safely.
     ///

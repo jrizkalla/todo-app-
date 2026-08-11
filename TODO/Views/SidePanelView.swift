@@ -4,9 +4,15 @@ import SwiftData
 /// Right-hand panel on wide layouts showing the Inbox and overdue work.
 ///
 /// The spec asks for this on macOS and iPadOS only; `RootView` gates it on the
-/// horizontal size class so it never appears on a phone.
+/// horizontal size class so it never appears on a phone. It sits beside the
+/// whole tab view rather than inside any one tab, so the Inbox stays reachable
+/// from Today, Lists, and Calendar alike.
 struct SidePanelView: View {
     @Binding var selectedTodo: Todo?
+
+    /// Collapses the panel. Supplied by whoever owns the visibility state —
+    /// the panel draws the control but does not decide what hiding means.
+    var onHide: (() -> Void)?
 
     @Environment(AppSettings.self) private var settings
     @Environment(\.modelContext) private var context
@@ -18,6 +24,10 @@ struct SidePanelView: View {
     private var store: TodoStore { TodoStore(context: context) }
 
     var body: some View {
+        // The hide control rides in the Inbox section's own header rather than
+        // in a bar of its own. A separate header row sat outside the window's
+        // title bar on macOS and read as a tall empty white band above the
+        // list, which is exactly the thing it was supposed to be labelling.
         List {
             let overdue = TodoQueries.overdue(todos)
             if !overdue.isEmpty {
@@ -43,10 +53,27 @@ struct SidePanelView: View {
                     }
                 }
             } header: {
-                Label("Inbox", systemImage: "tray")
+                HStack {
+                    Label("Inbox", systemImage: "tray")
+
+                    if let onHide {
+                        Spacer()
+                        Button(action: onHide) {
+                            Image(systemName: "sidebar.right")
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("Hide Inbox Panel")
+                        .help("Hide the Inbox panel")
+                    }
+                }
             }
         }
-        .listStyle(.sidebar)
+        // `.plain` over `.sidebar`: the sidebar style paints the gray material
+        // backdrop AppKit gives source lists, which fought with the content
+        // beside it. Plain inherits the window's own background instead.
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
         .scrollDismissesKeyboard(.interactively)
         .frame(minWidth: 240, idealWidth: Theme.Metrics.sidePanelWidth)
     }

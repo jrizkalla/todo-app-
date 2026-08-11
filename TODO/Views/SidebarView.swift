@@ -156,6 +156,16 @@ struct SidebarView: View {
                             .foregroundStyle(color(for: destination))
                     }
                 }
+                // Dropping a to-do here files it as that list implies — Today
+                // dates it for today, Inbox strips its home and date. The
+                // Logbook refuses, since completing work by dropping it would
+                // be too easy to do by accident.
+                .todoDropTarget(
+                    destination,
+                    store: store,
+                    allTodos: todos,
+                    spaces: spaces
+                )
             }
         }
 
@@ -193,6 +203,12 @@ struct SidebarView: View {
                             .foregroundStyle(Color(hex: space.colorHex))
                     }
                 }
+                .todoDropTarget(
+                    .space(space.uuid),
+                    store: store,
+                    allTodos: todos,
+                    spaces: spaces
+                )
                 // Menu and confirmation both hang off the space's own row,
                 // so the dialog is anchored beside the space it is about.
                 // Attached to the Section instead, it points at the whole
@@ -274,6 +290,13 @@ struct SidebarView: View {
                     .foregroundStyle(project.resolvedColorHex.map { Color(hex: $0) } ?? .secondary)
             }
         }
+        // Dropping onto a project adopts the to-do as one of its subtasks.
+        .todoDropTarget(
+            .project(project.uuid),
+            store: store,
+            allTodos: todos,
+            spaces: spaces
+        )
     }
 
     /// Inbox is deliberately absent: it is its own tab, and listing it here too

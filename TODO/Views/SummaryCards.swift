@@ -206,12 +206,16 @@ struct WeatherSummaryCard: View {
 
 /// The next couple of hours, drawn as a miniature calendar.
 ///
-/// Scoped to *now* rather than the whole day on purpose: this card answers
-/// "what is coming up", so an empty morning or a finished evening is wasted
-/// height. Untimed work is left out entirely — the Any Time card below is where
-/// that belongs — and what remains is the same block layout `CalendarView`
-/// draws, sharing `CalendarLayout` so overlapping work cascades here exactly as
-/// it does there.
+/// Scoped to a short window rather than the whole day on purpose: this card
+/// answers "what is coming up", so an empty morning or a finished evening is
+/// wasted height. When nothing falls in the next two hours the window skips
+/// ahead to the first stretch that has something in it, and when nothing is left
+/// today the card draws nothing at all and lets the summary drop it.
+///
+/// Untimed work is left out entirely — the Any Time card below is where that
+/// belongs — and what remains is the same block layout `CalendarView` draws,
+/// sharing `CalendarLayout` so overlapping work cascades here exactly as it does
+/// there.
 struct InlineCalendarCard: View {
     let todos: [Todo]
     let events: [CalendarEvent]
@@ -242,21 +246,43 @@ struct InlineCalendarCard: View {
         }
     }
 
+    /// Whether this card would draw anything at `now`, for callers deciding
+    /// whether to place it at all. Runs the same `Window` the card draws from,
+    /// so a caller cannot disagree with the card about whether it is empty.
+    ///
+    /// `now` is required rather than defaulted: the caller is already inside a
+    /// `TimelineView` and must ask about the same instant it is drawing, not
+    /// about whenever this happens to be evaluated.
+    func hasContent(now: Date) -> Bool {
+        !Window(card: self, now: now).blocks.isEmpty
+    }
+
     /// Everything the card draws, worked out once per redraw.
     ///
     /// `TodoQueries.timed` walks every to-do, so the window, its hours, and its
     /// blocks are resolved together and passed down rather than recomputed by
     /// each part of the view that happens to need them.
+    @ViewBuilder
     private func content(now: Date) -> some View {
         let window = Window(card: self, now: now)
 
-        return SummaryCard(title: "Schedule", symbol: "calendar.day.timeline.left", action: onOpen) {
-            if window.blocks.isEmpty {
-                Text("Nothing in the next two hours")
-                    .font(.callout)
-                    .foregroundStyle(.white.opacity(0.7))
-            } else {
-                grid(window: window, now: now)
+        // Nothing timed left today means no grid worth drawing — an empty card
+        // is just a labelled void taking up a screenful of height. The summary
+        // drops the card entirely instead. See `AISummaryView`.
+        if !window.blocks.isEmpty {
+            SummaryCard(title: "Schedule", symbol: "calendar.day.timeline.left", action: onOpen) {
+                VStack(alignment: .leading, spacing: 8) {
+                    // A window that skipped ahead looks exactly like the live
+                    // one, so say which it is rather than making the user read
+                    // the hour gutter to find out.
+                    if window.isAhead, let first = window.blocks.map(\.start).min() {
+                        Text("Next up · \(first.formatted(date: .omitted, time: .shortened))")
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.7))
+                    }
+
+                    grid(window: window, now: now)
+                }
             }
         }
     }
@@ -297,7 +323,12 @@ struct InlineCalendarCard: View {
                         )
                     }
 
-                    currentTimeIndicator(now: now, windowStart: windowStart)
+                    // Only when now is actually on this grid. On a jumped-ahead
+                    // window the line would sit above the first hour — reading
+                    // as "this is starting now" for something hours away.
+                    if !window.isAhead {
+                        currentTimeIndicator(now: now, windowStart: windowStart)
+                    }
                 }
             }
             .frame(height: height)
@@ -336,24 +367,26 @@ struct InlineCalendarCard: View {
         let start: Date
         let hours: [Date]
         let blocks: [PositionedBlock]
+        /// True when the window had to skip ahead past an empty stretch to find
+        /// something. The card uses this to label itself and to drop the "now"
+        /// marker, which no longer falls inside the hours on screen.
+        let isAhead: Bool
 
         init(card: InlineCalendarCard, now: Date) {
             let calendar = card.calendar
-            let start = calendar.startOfHour(for: now.addingTimeInterval(-card.lookbehind))
-            self.start = start
+            let live = calendar.startOfHour(for: now.addingTimeInterval(-card.lookbehind))
 
-            // Everything timed that overlaps the window. Untimed work is
-            // deliberately absent: it has no place on an hour grid, and the Any
-            // Time card already lists it.
-            let end = start.addingTimeInterval(Double(max(Int(card.lookahead / 3600) + 2, 3)) * 3600)
-            var candidates: [(id: String, title: String, start: Date, duration: TimeInterval, color: Color)] = []
+            // Every timed item on the day, not just the ones near now: an empty
+            // live window has to look further out for the next thing scheduled.
+            // Untimed work is deliberately absent — it has no place on an hour
+            // grid, and the Any Time card already lists it.
+            var all: [(id: String, title: String, start: Date, duration: TimeInterval, color: Color)] = []
 
             for todo in TodoQueries.timed(card.todos, on: card.day, calendar: calendar) {
                 guard let todoStart = todo.assignedDate else { continue }
                 let duration = todo.effectiveDuration(defaultDuration: card.defaultDuration)
-                guard todoStart < end, todoStart.addingTimeInterval(duration) > start else { continue }
 
-                candidates.append((
+                all.append((
                     id: "todo-\(todo.uuid.uuidString)",
                     title: todo.title.isEmpty ? "Untitled" : todo.title,
                     start: todoStart,
@@ -363,8 +396,7 @@ struct InlineCalendarCard: View {
             }
 
             for event in card.events where !event.isAllDay {
-                guard event.start < end, event.end > start else { continue }
-                candidates.append((
+                all.append((
                     id: "event-\(event.id)",
                     title: event.title,
                     start: event.start,
@@ -373,6 +405,34 @@ struct InlineCalendarCard: View {
                 ))
             }
 
+            // The window the card would draw if something is coming up right
+            // now; otherwise the first two-hour stretch that has anything in it.
+            let span = Double(max(Int(card.lookahead / 3600) + 2, 3)) * 3600
+            func overlapping(_ windowStart: Date) -> [(id: String, title: String, start: Date, duration: TimeInterval, color: Color)] {
+                let end = windowStart.addingTimeInterval(span)
+                return all.filter { $0.start < end && $0.start.addingTimeInterval($0.duration) > windowStart }
+            }
+
+            var candidates = overlapping(live)
+            if candidates.isEmpty,
+               // Only work still ahead of us: something that ended this morning
+               // is not "next up".
+               let next = all
+                   .filter({ $0.start.addingTimeInterval($0.duration) > now })
+                   .min(by: { $0.start < $1.start }) {
+                // Anchor on the hour containing the next block so it sits near
+                // the top of the grid rather than wherever the clock happens to
+                // fall, and so the hour labels stay whole hours.
+                let anchor = calendar.startOfHour(for: next.start)
+                candidates = overlapping(anchor)
+                self.start = anchor
+                self.isAhead = true
+            } else {
+                self.start = live
+                self.isAhead = false
+            }
+
+            let start = self.start
             let slots = CalendarLayout.slots(
                 for: candidates.map {
                     .init(id: $0.id, start: $0.start, end: $0.start.addingTimeInterval($0.duration))
@@ -393,8 +453,12 @@ struct InlineCalendarCard: View {
             // block running past it so a long meeting is not silently clipped,
             // and never past midnight. At least three, so the card keeps a
             // stable shape whether or not anything is scheduled.
+            //
+            // Measured from the window's own start rather than from `now` — a
+            // jumped-ahead window that still sized itself against the clock
+            // would grow an hour taller for every hour of empty day it skipped.
             let minimumEnd = calendar
-                .startOfHour(for: now.addingTimeInterval(card.lookahead))
+                .startOfHour(for: start.addingTimeInterval(card.lookahead))
                 .addingTimeInterval(3600)
             let latest = self.blocks
                 .map { $0.start.addingTimeInterval($0.duration) }
@@ -490,6 +554,13 @@ struct TodoListCard: View {
 
     private var store: TodoStore { TodoStore(context: context) }
 
+    /// Whether this card would draw anything, for callers deciding whether to
+    /// place it at all. Same query the card itself runs, so a caller cannot end
+    /// up disagreeing with the card about whether it is empty.
+    static func hasContent(todos: [Todo]) -> Bool {
+        !TodoQueries.untimedToday(todos).isEmpty
+    }
+
     /// Today's work with no time of day. See `TodoQueries.untimedToday`.
     private var allItems: [Todo] {
         TodoQueries.untimedToday(todos)
@@ -503,13 +574,13 @@ struct TodoListCard: View {
         max(allItems.count - limit, 0)
     }
 
+    @ViewBuilder
     var body: some View {
-        SummaryCard(title: "Any Time", symbol: "checklist", action: onOpen) {
-            if items.isEmpty {
-                Text("Nothing to do")
-                    .font(.callout)
-                    .foregroundStyle(.white.opacity(0.7))
-            } else {
+        // An empty list means no card: "Nothing to do" on its own panel is a
+        // whole card spent saying there is nothing to show. The summary drops it
+        // and, if the schedule went too, says so once. See `AISummaryView`.
+        if !items.isEmpty {
+            SummaryCard(title: "Any Time", symbol: "checklist", action: onOpen) {
                 VStack(alignment: .leading, spacing: scale.rowGap) {
                     ForEach(items) { todo in
                         row(for: todo)
@@ -522,10 +593,11 @@ struct TodoListCard: View {
                     }
                 }
             }
+            // Ticking something off here removes its row and shrinks the card;
+            // the same curve the real list uses for the same change. Ticking the
+            // last one removes the card itself, which the summary animates.
+            .animation(Theme.Animation.listChange, value: items.map(\.uuid))
         }
-        // Ticking something off here removes its row and shrinks the card; the
-        // same curve the real list uses for the same change.
-        .animation(Theme.Animation.listChange, value: items.map(\.uuid))
     }
 
     /// Sizes and fonts for this surface. See `Theme.RowScale`.
@@ -557,6 +629,61 @@ struct TodoListCard: View {
     }
 }
 
+// MARK: All clear
+
+/// Shown in place of the schedule and Any Time cards when today holds neither.
+///
+/// One card rather than two empty ones: two panels each saying "nothing" reads
+/// as a broken screen, while a single deliberate one reads as an answer. It is
+/// not tappable — there is nothing on the other side of it.
+struct AllClearCard: View {
+    var body: some View {
+        VStack(spacing: 10) {
+            graphic
+
+            Text("All clear")
+                .font(.title3.weight(.semibold))
+
+            Text("Nothing scheduled, nothing waiting.")
+                .font(.callout)
+                .foregroundStyle(.white.opacity(0.75))
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 22)
+        .padding(.horizontal, 14)
+        .glassCard()
+        .foregroundStyle(.white)
+        .environment(\.colorScheme, .dark)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("All clear. Nothing scheduled, nothing waiting.")
+    }
+
+    /// A checkmark inside two haloes.
+    ///
+    /// Drawn from shapes rather than shipped as an asset so it picks up the
+    /// card's white-on-photo treatment automatically, and so it stays crisp at
+    /// any size. The haloes are what keep it from reading as one more checkbox
+    /// on a screen already full of them.
+    private var graphic: some View {
+        ZStack {
+            Circle()
+                .fill(.white.opacity(0.10))
+                .frame(width: 74, height: 74)
+
+            Circle()
+                .stroke(.white.opacity(0.28), lineWidth: 1)
+                .frame(width: 56, height: 56)
+
+            Image(systemName: "checkmark")
+                .font(.system(size: 26, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.95))
+        }
+        // Decorative: the text below already carries the meaning.
+        .accessibilityHidden(true)
+    }
+}
+
 #if DEBUG
 #Preview("Summary cards") {
     ZStack {
@@ -567,6 +694,7 @@ struct TodoListCard: View {
                 WeatherSummaryCard(forecast: nil)
                 InlineCalendarCard(todos: [], events: [], defaultDuration: 15 * 60)
                 TodoListCard(todos: [])
+                AllClearCard()
             }
             .padding()
         }

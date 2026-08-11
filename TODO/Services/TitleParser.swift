@@ -71,18 +71,15 @@ struct ParsedSuggestion: Identifiable, Equatable, Sendable {
 
 /// Scans a title for dates, durations, and project names as the user types.
 ///
-/// Dates come from `NSDataDetector`, which already handles relative phrasing
-/// ("tomorrow", "next friday") and localization. Durations and project names
-/// are matched separately, since the detector does not cover them.
+/// Dates come from `DatePhraseParser`, which wraps `NSDataDetector` for fluent
+/// phrasing and adds the clipped forms people type ("weds", "aug 10", "8/10").
+/// Durations and project names are matched separately, since neither engine
+/// covers them.
 struct TitleParser {
     /// Names of existing projects to match against, paired with their ids.
     var projectNames: [(name: String, uuid: UUID)] = []
     var referenceDate: Date = Date()
     var calendar: Calendar = .current
-
-    private static let dateDetector: NSDataDetector? = {
-        try? NSDataDetector(types: NSTextCheckingResult.CheckingType.date.rawValue)
-    }()
 
     /// `5m`, `5 min`, `1.5 hours`, `2h`. Requires a word boundary so "5m" in
     /// "5mm bolt" does not match.
@@ -110,35 +107,16 @@ struct TitleParser {
     // MARK: Dates
 
     private func dateSuggestions(in title: String) -> [ParsedSuggestion] {
-        guard let detector = Self.dateDetector else { return [] }
-        let range = NSRange(title.startIndex..., in: title)
-        let matches = detector.matches(in: title, options: [], range: range)
+        let parser = DatePhraseParser(referenceDate: referenceDate, calendar: calendar)
 
-        return matches.flatMap { match -> [ParsedSuggestion] in
-            guard let date = match.date else { return [] }
-            let text = (title as NSString).substring(with: match.range)
-
-            // `NSDataDetector` reports a default time of noon for bare days; a
-            // real time in the text makes the match longer than the day alone.
-            let hasTime = Self.matchIncludesTime(match: match, text: text)
-            let resolved = hasTime ? date : calendar.startOfDay(for: date)
-
-            return [
-                ParsedSuggestion(kind: .schedule(resolved, hasTime: hasTime),
-                                 matchedText: text, matchedRange: match.range),
-                ParsedSuggestion(kind: .deadline(resolved, hasTime: hasTime),
-                                 matchedText: text, matchedRange: match.range),
+        return parser.matches(in: title).flatMap { match in
+            [
+                ParsedSuggestion(kind: .schedule(match.date, hasTime: match.hasTime),
+                                 matchedText: match.matchedText, matchedRange: match.matchedRange),
+                ParsedSuggestion(kind: .deadline(match.date, hasTime: match.hasTime),
+                                 matchedText: match.matchedText, matchedRange: match.matchedRange),
             ]
         }
-    }
-
-    /// Whether a detected date carried an explicit time of day.
-    ///
-    /// `NSDataDetector` exposes this only indirectly, so this checks the matched
-    /// text for a clock-like token ("3pm", "15:30", "at 3").
-    private static func matchIncludesTime(match: NSTextCheckingResult, text: String) -> Bool {
-        let timePattern = #"(\d{1,2}:\d{2})|(\b\d{1,2}\s*(am|pm)\b)|\bnoon\b|\bmidnight\b"#
-        return text.range(of: timePattern, options: [.regularExpression, .caseInsensitive]) != nil
     }
 
     // MARK: Durations
