@@ -28,8 +28,7 @@ struct TodoDropActionTests {
 
         let applied = TodoDropAction.apply(
             .today, to: todo,
-            store: TodoStore(context: context),
-            allTodos: [todo], spaces: []
+            store: TodoStore(context: context)
         )
 
         #expect(applied)
@@ -48,8 +47,7 @@ struct TodoDropActionTests {
 
         let applied = TodoDropAction.apply(
             .tomorrow, to: todo,
-            store: TodoStore(context: context),
-            allTodos: [todo], spaces: []
+            store: TodoStore(context: context)
         )
 
         #expect(applied)
@@ -69,8 +67,7 @@ struct TodoDropActionTests {
 
         TodoDropAction.apply(
             .tomorrow, to: todo,
-            store: TodoStore(context: context),
-            allTodos: [todo], spaces: []
+            store: TodoStore(context: context)
         )
 
         let moved = try #require(todo.assignedDate)
@@ -91,7 +88,7 @@ struct TodoDropActionTests {
 
         let applied = TodoDropAction.apply(
             .inbox, to: todo,
-            store: store, allTodos: [todo], spaces: [space]
+            store: store
         )
 
         #expect(applied)
@@ -111,7 +108,7 @@ struct TodoDropActionTests {
 
         TodoDropAction.apply(
             .anytime, to: todo,
-            store: store, allTodos: [todo], spaces: [space]
+            store: store
         )
 
         #expect(todo.assignedDate == nil)
@@ -135,7 +132,7 @@ struct TodoDropActionTests {
 
         TodoDropAction.apply(
             .today, to: todo,
-            store: store, allTodos: [todo], spaces: []
+            store: store
         )
 
         let moved = try #require(todo.assignedDate)
@@ -154,8 +151,7 @@ struct TodoDropActionTests {
 
         TodoDropAction.apply(
             .today, to: todo,
-            store: TodoStore(context: context),
-            allTodos: [todo], spaces: []
+            store: TodoStore(context: context)
         )
 
         let moved = try #require(todo.assignedDate)
@@ -173,8 +169,7 @@ struct TodoDropActionTests {
 
         TodoDropAction.apply(
             .thisWeek, to: todo,
-            store: TodoStore(context: context),
-            allTodos: [todo], spaces: []
+            store: TodoStore(context: context)
         )
 
         let moved = try #require(todo.assignedDate)
@@ -190,8 +185,7 @@ struct TodoDropActionTests {
 
         TodoDropAction.apply(
             .thisWeek, to: todo,
-            store: TodoStore(context: context),
-            allTodos: [todo], spaces: []
+            store: TodoStore(context: context)
         )
 
         #expect(todo.assignedDate != nil)
@@ -209,7 +203,7 @@ struct TodoDropActionTests {
 
         let applied = TodoDropAction.apply(
             .space(space.uuid), to: todo,
-            store: store, allTodos: [todo], spaces: [space]
+            store: store
         )
 
         #expect(applied)
@@ -228,7 +222,7 @@ struct TodoDropActionTests {
 
         TodoDropAction.apply(
             .space(space.uuid), to: todo,
-            store: store, allTodos: [project, todo], spaces: [space]
+            store: store
         )
 
         #expect(todo.parent == nil)
@@ -244,7 +238,7 @@ struct TodoDropActionTests {
 
         let applied = TodoDropAction.apply(
             .project(project.uuid), to: todo,
-            store: store, allTodos: [project, todo], spaces: []
+            store: store
         )
 
         #expect(applied)
@@ -259,8 +253,7 @@ struct TodoDropActionTests {
 
         let applied = TodoDropAction.apply(
             .project(project.uuid), to: project,
-            store: TodoStore(context: context),
-            allTodos: [project], spaces: []
+            store: TodoStore(context: context)
         )
 
         #expect(applied == false)
@@ -282,7 +275,7 @@ struct TodoDropActionTests {
 
         let applied = TodoDropAction.apply(
             .space(home.uuid), to: todo,
-            store: store, allTodos: [todo], spaces: [work, home]
+            store: store
         )
 
         #expect(applied)
@@ -303,7 +296,7 @@ struct TodoDropActionTests {
 
         TodoDropAction.apply(
             .today, to: subtask,
-            store: store, allTodos: [project, subtask], spaces: []
+            store: store
         )
 
         // Today is a date, not a home: the subtask keeps its parent and simply
@@ -324,7 +317,7 @@ struct TodoDropActionTests {
 
         let applied = TodoDropAction.apply(
             .project(second.uuid), to: todo,
-            store: store, allTodos: [first, second, todo], spaces: []
+            store: store
         )
 
         #expect(applied)
@@ -344,8 +337,7 @@ struct TodoDropActionTests {
 
         let applied = TodoDropAction.apply(
             .logbook, to: todo,
-            store: TodoStore(context: context),
-            allTodos: [todo], spaces: []
+            store: TodoStore(context: context)
         )
 
         #expect(applied == false)
@@ -372,8 +364,7 @@ struct TodoDropActionTests {
 
         let applied = TodoDropAction.apply(
             .space(UUID()), to: todo,
-            store: TodoStore(context: context),
-            allTodos: [todo], spaces: []
+            store: TodoStore(context: context)
         )
 
         #expect(applied == false)

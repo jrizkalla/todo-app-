@@ -17,10 +17,23 @@ struct AISummaryView : View {
     @State var summary: AISummary?
     /// Shared with the calendar so both read the same loaded range.
     @State private var eventStore = CalendarEventStore.shared
+    @State private var showAIDebugView = false
     
     @Query private var savedSummaries: [SavedAISummary]
 
-    @Query var todos: [Todo]
+    /// Dated, unresolved work — the pool behind every card on this screen.
+    ///
+    /// The summary asks three questions of it (today, tomorrow, overdue) and
+    /// all three are windows on the same set, so one predicate serves them all.
+    /// Undated capture and resolved history can never answer any of them, and
+    /// are now excluded by SQLite rather than by three separate in-memory
+    /// passes over the whole store.
+    ///
+    /// `TodoQueries.today`/`tomorrow`/`overdue` still run over this, which is
+    /// what keeps their exact date and Focus rules — they are just running over
+    /// the dated rows instead of every row.
+    @Query(TodoQueries.datedUnresolvedDescriptor())
+    var todos: [Todo]
 
     /// Tapping the schedule card. The Today tab wires this to the calendar.
     var onOpenSchedule: (() -> Void)?
@@ -65,9 +78,19 @@ struct AISummaryView : View {
     /// unrelated notes.
     private var summaryPanel: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Good \(timeOfDay)\(nameGreeting)")
-                .font(.largeTitle)
-                .fontWeight(.medium)
+            HStack {
+                Text("Good \(timeOfDay)\(nameGreeting)")
+                    .font(.largeTitle)
+                    .fontWeight(.medium)
+                Spacer()
+                if settings.developerDebugMode || true {
+                    Button {
+                        showAIDebugView = true
+                    } label: {
+                        Image(systemName: "gear")
+                    }
+                }
+            }
 
             if let summary {
                 if let quickSummary = summary.quickSummary {
@@ -99,6 +122,9 @@ struct AISummaryView : View {
                         .font(.subheadline)
                 }
             }
+        }
+        .sheet(isPresented: $showAIDebugView) {
+            DebugAISummaryView(aiSummaryService: aiSummaryService)
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -201,7 +227,7 @@ struct AISummaryView : View {
     private func refreshSummary() async {
         let now = Date()
         let filterPast: (Todo) -> Bool = { todo in
-            todo.endDate.map { $0 <= now } ?? true
+            todo.endDate.map { now <= $0 } ?? true
         }
         aiSummaryService.userInfo = settings.userInfo
         aiSummaryService.weather = weatherService.weather
@@ -228,8 +254,20 @@ struct AISummaryView : View {
     }
 }
 
+struct DebugAISummaryView: View {
+    var aiSummaryService: AISummaryService
+    var body: some View {
+        Text(aiSummaryService.fingerprint().instructions.description)
+            .lineLimit(1...)
+    }
+}
+
 
 #if DEBUG
+
+#Preview("AISummary") {
+    DebugAISummaryView(aiSummaryService: .init(userInfo: .default))
+}
 
 #Preview {
     AISummaryView(

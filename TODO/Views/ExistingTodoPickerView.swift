@@ -14,7 +14,12 @@ struct ExistingTodoPickerView: View {
 
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
-    @Query private var todos: [Todo]
+    /// Projects are excluded in the fetch rather than by `canAdopt` afterwards:
+    /// a project never becomes a subtask, so there is no reason to read one out
+    /// of the store to reject it. The rest of `canAdopt` — the ancestor walk —
+    /// still runs in `candidates`, since it cannot be a predicate.
+    @Query(filter: #Predicate<Todo> { !$0.isProject }, sort: \Todo.modifiedAt, order: .reverse)
+    private var todos: [Todo]
 
     @State private var query = ""
     @State private var selected: Set<UUID> = []

@@ -51,6 +51,10 @@ final class AppSettings {
         self.visibleCalendars = resolved.stringArray(forKey: Key.visibleCalendars)
         let duration = resolved.double(forKey: Key.defaultEventDuration)
         self.defaultEventDuration = duration > 0 ? duration : 15 * 60
+        let nudge = resolved.double(forKey: Key.calendarNudgeMinutes)
+        self.calendarNudgeMinutes = nudge > 0 ? Int(nudge) : 30
+        let fineNudge = resolved.double(forKey: Key.calendarFineNudgeMinutes)
+        self.calendarFineNudgeMinutes = fineNudge > 0 ? Int(fineNudge) : 15
         self.importReminderLists = resolved.stringArray(forKey: Key.importReminderLists)
         self.remindersImportEnabled = resolved.object(forKey: Key.remindersImportEnabled) as? Bool ?? false
         self.vimBindingsEnabled = resolved.bool(forKey: Key.vimBindingsEnabled)
@@ -68,6 +72,8 @@ final class AppSettings {
 
     private enum Key {
         static let defaultEventDuration = "defaultEventDuration"
+        static let calendarNudgeMinutes = "calendarNudgeMinutes"
+        static let calendarFineNudgeMinutes = "calendarFineNudgeMinutes"
         static let importReminderLists = "importReminderLists"
         static let remindersImportEnabled = "remindersImportEnabled"
         static let vimBindingsEnabled = "vimBindingsEnabled"
@@ -78,6 +84,7 @@ final class AppSettings {
         static let showResolved = "showResolved"
         static let userInfo = "userInfo"
         static let summaryBackground = "summaryBackground"
+        static let developerDebugMode = "developerDebugMode"
     }
 
     /// Backdrop behind the AI summary.
@@ -131,6 +138,21 @@ final class AppSettings {
         didSet { write(defaultEventDuration, forKey: Key.defaultEventDuration, was: oldValue) }
     }
 
+    /// How far an arrow key moves or resizes a calendar block, in minutes.
+    ///
+    /// Stored as minutes rather than as a `TimeInterval` because that is the
+    /// unit the grid actually works in — every other snap in the calendar is
+    /// expressed in minutes, and going through seconds only invited rounding
+    /// between the two.
+    var calendarNudgeMinutes: Int {
+        didSet { write(calendarNudgeMinutes, forKey: Key.calendarNudgeMinutes, was: oldValue) }
+    }
+
+    /// The same, with Shift held: the finer step for lining a block up exactly.
+    var calendarFineNudgeMinutes: Int {
+        didSet { write(calendarFineNudgeMinutes, forKey: Key.calendarFineNudgeMinutes, was: oldValue) }
+    }
+
     /// Identifiers of the Reminders lists to scan.
     ///
     /// `nil` means never chosen, which falls back to the system's default list.
@@ -175,6 +197,12 @@ final class AppSettings {
             defaults.set(data, forKey: Key.userInfo)
         }
     }
+    
+    var developerDebugMode: Bool = false {
+        didSet {
+            write(developerDebugMode, forKey: Key.developerDebugMode, was: oldValue)
+        }
+    }
 
     // MARK: Persistence
 
@@ -195,5 +223,5 @@ final class AppSettings {
         } else {
             defaults.removeObject(forKey: key)
         }
-    }
+    } 
 }

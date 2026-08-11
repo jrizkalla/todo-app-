@@ -28,7 +28,12 @@ struct MoveDestinationView: View {
     }
 
     @Query private var spaces: [Space]
-    @Query private var todos: [Todo]
+
+    /// Only projects can be moved into, so only projects are fetched — the
+    /// picker used to pull every to-do in the store to keep the handful that
+    /// are containers.
+    @Query(filter: #Predicate<Todo> { $0.isProject }, sort: \Todo.title)
+    private var projects: [Todo]
 
     @State private var query = ""
     /// Which row Return will pick.
@@ -173,8 +178,8 @@ struct MoveDestinationView: View {
             .filter { matches($0.name) }
             .map { .space($0.uuid) }
 
-        results += todos
-            .filter { $0.isProject && $0.uuid != todo.uuid && !isDescendant($0, of: todo) }
+        results += projects
+            .filter { $0.uuid != todo.uuid && !isDescendant($0, of: todo) }
             .filter { matches($0.title) }
             .sorted { $0.title < $1.title }
             .map { .project($0.uuid) }
@@ -219,7 +224,7 @@ struct MoveDestinationView: View {
         switch option {
         case .none: "None (Inbox)"
         case .space(let id): spaces.first { $0.uuid == id }?.name ?? "Space"
-        case .project(let id): todos.first { $0.uuid == id }?.title ?? "Project"
+        case .project(let id): projects.first { $0.uuid == id }?.title ?? "Project"
         }
     }
 
@@ -237,7 +242,7 @@ struct MoveDestinationView: View {
         case .space(let id):
             spaces.first { $0.uuid == id }.map { Color(hex: $0.colorHex) } ?? .secondary
         case .project(let id):
-            todos.first { $0.uuid == id }?.color ?? .secondary
+            projects.first { $0.uuid == id }?.color ?? .secondary
         }
     }
 }

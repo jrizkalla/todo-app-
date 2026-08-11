@@ -67,7 +67,7 @@ struct TodoDetailCompactView: View {
         .tint(accent)
         .suggestionBar(suggestionModel.suggestions) { suggestion in
             withAnimation(Theme.Animation.suggestion) {
-                _ = suggestionModel.apply(suggestion, to: todo, allTodos: allTodos, store: store)
+                _ = suggestionModel.apply(suggestion, to: todo, context: context, store: store)
             }
         }
         .confirmationDialog(
@@ -83,7 +83,7 @@ struct TodoDetailCompactView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
-        .onAppear { suggestionModel.refresh(for: todo.title, todo: todo, allTodos: allTodos) }
+        .onAppear { suggestionModel.refresh(for: todo.title, todo: todo, context: context) }
         .onDisappear { Task { await todo.summarizeNotes() } }
     }
 
@@ -105,7 +105,7 @@ struct TodoDetailCompactView: View {
                     .lineLimit(1...3)
                     .focused($focusedField, equals: .title)
                     .onChange(of: todo.title) { _, newValue in
-                        suggestionModel.refresh(for: newValue, todo: todo, allTodos: allTodos)
+                        suggestionModel.refresh(for: newValue, todo: todo, context: context)
                         store.save()
                     }
 
@@ -405,16 +405,6 @@ struct TodoDetailCompactView: View {
             content()
             Spacer(minLength: 0)
         }
-    }
-
-    /// Every to-do, for the title parser's project matching.
-    ///
-    /// Fetched on demand rather than through an `@Query`: the parser needs the
-    /// list only when the title changes, and a standing query here re-ran — and
-    /// re-rendered the whole editor — on every unrelated edit anywhere in the
-    /// store.
-    private var allTodos: [Todo] {
-        (try? context.fetch(FetchDescriptor<Todo>())) ?? []
     }
 
     private var deletePrompt: String {

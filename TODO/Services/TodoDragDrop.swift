@@ -36,13 +36,15 @@ enum TodoDropAction {
     ///
     /// - Returns: `false` when the destination cannot accept a drop, so the
     ///   caller can refuse it rather than silently doing nothing.
+    /// Resolves the drop target by predicate through `store.context`, rather
+    /// than by scanning caller-supplied arrays of every to-do and space — a
+    /// drop needs exactly one row, and fetching it is what the identifier is
+    /// for.
     @discardableResult
     static func apply(
         _ destination: ListDestination,
         to todo: Todo,
         store: TodoStore,
-        allTodos: [Todo],
-        spaces: [Space],
         calendar: Calendar = .current,
         now: Date = Date()
     ) -> Bool {
@@ -97,7 +99,7 @@ enum TodoDropAction {
             return true
 
         case .space(let id):
-            guard let space = spaces.first(where: { $0.uuid == id }) else { return false }
+            guard let space = TodoQueries.space(uuid: id, in: store.context) else { return false }
             // Leaves any parent behind: a to-do belongs to one container, and
             // keeping the old parent would file it into a project that may sit
             // in a different space entirely.
@@ -106,7 +108,7 @@ enum TodoDropAction {
             return true
 
         case .project(let id):
-            guard let project = allTodos.first(where: { $0.uuid == id }),
+            guard let project = TodoQueries.todo(uuid: id, in: store.context),
                   project.uuid != todo.uuid
             else { return false }
             return store.adopt(todo, asSubtaskOf: project)
@@ -166,16 +168,12 @@ extension View {
     func todoDropTarget(
         _ destination: ListDestination,
         store: TodoStore,
-        allTodos: [Todo],
-        spaces: [Space],
         isTargeted: Binding<Bool>? = nil
     ) -> some View {
         modifier(
             TodoDropTargetModifier(
                 destination: destination,
                 store: store,
-                allTodos: allTodos,
-                spaces: spaces,
                 externalTargeting: isTargeted
             )
         )
@@ -243,8 +241,6 @@ private struct TodoDraggableModifier: ViewModifier {
 private struct TodoDropTargetModifier: ViewModifier {
     let destination: ListDestination
     let store: TodoStore
-    let allTodos: [Todo]
-    let spaces: [Space]
     let externalTargeting: Binding<Bool>?
 
     @State private var isTargeted = false
@@ -261,14 +257,11 @@ private struct TodoDropTargetModifier: ViewModifier {
             .dropDestination(for: TodoTransfer.self) { items, _ in
                 var handled = false
                 for item in items {
-                    guard let todo = allTodos.first(where: { $0.uuid == item.uuid }) else { continue }
-                    if TodoDropAction.apply(
-                        destination,
-                        to: todo,
-                        store: store,
-                        allTodos: allTodos,
-                        spaces: spaces
-                    ) {
+                    // The transfer carries a `uuid`, so the dragged row is a
+                    // point fetch rather than a scan of every to-do on screen.
+                    guard let todo = TodoQueries.todo(uuid: item.uuid, in: store.context)
+                    else { continue }
+                    if TodoDropAction.apply(destination, to: todo, store: store) {
                         handled = true
                     }
                 }

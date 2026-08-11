@@ -332,7 +332,7 @@ struct InlineCalendarCard: View {
                 }
             }
             .frame(height: height)
-        }
+        }.clipped()
         .frame(height: height)
     }
 

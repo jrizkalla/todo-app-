@@ -170,6 +170,20 @@ struct SettingsView: View {
                 .help("Length used for timed to-dos that have no duration of their own.")
 
                 Toggle("Week starts on Monday", isOn: $settings.weekStartsOnMonday)
+
+                Picker("Arrow key step", selection: $settings.calendarNudgeMinutes) {
+                    ForEach(Self.nudgeChoices, id: \.self) { minutes in
+                        Text(Self.minutesLabel(minutes)).tag(minutes)
+                    }
+                }
+                .help("How far the arrow keys move or resize the selected block.")
+
+                Picker("With Shift held", selection: $settings.calendarFineNudgeMinutes) {
+                    ForEach(Self.nudgeChoices, id: \.self) { minutes in
+                        Text(Self.minutesLabel(minutes)).tag(minutes)
+                    }
+                }
+                .help("The finer step, for lining a block up exactly.")
             }
 
             #if os(macOS)
@@ -282,6 +296,10 @@ struct SettingsView: View {
             }
 
             DataExportSection()
+            
+            Section("Developer") {
+                Toggle("Debug mode", isOn: $settings.developerDebugMode)
+            }
         }
         .formStyle(.grouped)
         #if os(macOS)
@@ -310,6 +328,17 @@ struct SettingsView: View {
                 availableCalendars = calendarStore.availableCalendars()
             }
         }
+    }
+
+    /// Steps offered for the two calendar nudge settings.
+    ///
+    /// One list for both pickers rather than a coarse set and a fine one: which
+    /// is which is the user's business — someone working in 5-minute blocks may
+    /// well want plain arrows to move by 5 and Shift by 1.
+    private static let nudgeChoices = [1, 5, 10, 15, 30, 60]
+
+    private static func minutesLabel(_ minutes: Int) -> String {
+        minutes == 60 ? "1 hour" : "\(minutes) min"
     }
 
     /// Refresh the pending list. Read-only — importing happens in the Inbox.

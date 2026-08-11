@@ -20,7 +20,7 @@ struct TitleSuggestionModelTests {
         context.insert(todo)
 
         let model = TitleSuggestionModel()
-        model.refresh(for: todo.title, todo: todo, allTodos: [todo])
+        model.refresh(for: todo.title, todo: todo, context: context)
 
         #expect(model.suggestions.count == 2)
     }
@@ -33,7 +33,7 @@ struct TitleSuggestionModelTests {
         let store = TodoStore(context: context)
 
         let model = TitleSuggestionModel()
-        model.refresh(for: todo.title, todo: todo, allTodos: [todo])
+        model.refresh(for: todo.title, todo: todo, context: context)
 
         guard let schedule = model.suggestions.first(where: {
             if case .schedule = $0.kind { return true } else { return false }
@@ -42,7 +42,7 @@ struct TitleSuggestionModelTests {
             return
         }
 
-        let rewritten = model.apply(schedule, to: todo, allTodos: [todo], store: store)
+        let rewritten = model.apply(schedule, to: todo, context: context, store: store)
 
         #expect(rewritten == "Clean car")
         #expect(todo.title == "Clean car")
@@ -58,7 +58,7 @@ struct TitleSuggestionModelTests {
         let store = TodoStore(context: context)
 
         let model = TitleSuggestionModel()
-        model.refresh(for: todo.title, todo: todo, allTodos: [todo])
+        model.refresh(for: todo.title, todo: todo, context: context)
 
         guard let deadline = model.suggestions.first(where: {
             if case .deadline = $0.kind { return true } else { return false }
@@ -67,7 +67,7 @@ struct TitleSuggestionModelTests {
             return
         }
 
-        model.apply(deadline, to: todo, allTodos: [todo], store: store)
+        model.apply(deadline, to: todo, context: context, store: store)
 
         #expect(todo.title == "File taxes")
         #expect(todo.dueDate != nil)
@@ -82,7 +82,7 @@ struct TitleSuggestionModelTests {
         let store = TodoStore(context: context)
 
         let model = TitleSuggestionModel()
-        model.refresh(for: todo.title, todo: todo, allTodos: [todo])
+        model.refresh(for: todo.title, todo: todo, context: context)
 
         guard let duration = model.suggestions.first(where: {
             if case .duration = $0.kind { return true } else { return false }
@@ -91,7 +91,7 @@ struct TitleSuggestionModelTests {
             return
         }
 
-        model.apply(duration, to: todo, allTodos: [todo], store: store)
+        model.apply(duration, to: todo, context: context, store: store)
 
         #expect(todo.title == "Stretch")
         #expect(todo.duration == 1200)
@@ -104,7 +104,7 @@ struct TitleSuggestionModelTests {
         context.insert(project)
 
         let model = TitleSuggestionModel()
-        model.refresh(for: "Kitchen", todo: project, allTodos: [project])
+        model.refresh(for: "Kitchen", todo: project, context: context)
 
         #expect(model.suggestions.contains {
             if case .project = $0.kind { return true } else { return false }
@@ -120,7 +120,7 @@ struct TitleSuggestionModelTests {
         let store = TodoStore(context: context)
 
         let model = TitleSuggestionModel()
-        model.refresh(for: todo.title, todo: todo, allTodos: [project, todo])
+        model.refresh(for: todo.title, todo: todo, context: context)
 
         guard let match = model.suggestions.first(where: {
             if case .project = $0.kind { return true } else { return false }
@@ -129,7 +129,7 @@ struct TitleSuggestionModelTests {
             return
         }
 
-        model.apply(match, to: todo, allTodos: [project, todo], store: store)
+        model.apply(match, to: todo, context: context, store: store)
 
         #expect(todo.parent === project)
         #expect(todo.title == "Paint walls")
@@ -144,13 +144,13 @@ struct TitleSuggestionModelTests {
         let store = TodoStore(context: context)
 
         let model = TitleSuggestionModel()
-        model.refresh(for: todo.title, todo: todo, allTodos: [todo])
+        model.refresh(for: todo.title, todo: todo, context: context)
 
         guard let first = model.suggestions.first else {
             Issue.record("expected a suggestion")
             return
         }
-        model.apply(first, to: todo, allTodos: [todo], store: store)
+        model.apply(first, to: todo, context: context, store: store)
 
         // "tomorrow" is gone, so no date chips should remain.
         #expect(model.suggestions.isEmpty)
@@ -162,7 +162,7 @@ struct TitleSuggestionModelTests {
         context.insert(todo)
 
         let model = TitleSuggestionModel()
-        model.refresh(for: todo.title, todo: todo, allTodos: [todo])
+        model.refresh(for: todo.title, todo: todo, context: context)
         #expect(!model.suggestions.isEmpty)
 
         model.clear()

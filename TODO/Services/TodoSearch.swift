@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 
 /// Text search over to-dos.
 ///
@@ -39,6 +40,37 @@ enum TodoSearch {
     /// emptying it.
     static func isActive(_ query: String) -> Bool {
         !normalize(query).isEmpty
+    }
+
+    /// To-dos matching `query` anywhere in the store, restricted to `scope`.
+    ///
+    /// The state and Focus rules are predicates; the text matching itself is
+    /// not, so it runs over the rows those two rules left. For the sidebar's
+    /// field that is every unresolved to-do — this is a genuinely global
+    /// search — but resolved history and Focus-hidden spaces no longer have to
+    /// be faulted in to be discarded.
+    static func matches(
+        query: String,
+        scope: Scope = .unresolved,
+        context: ModelContext
+    ) -> [Todo] {
+        guard isActive(query) else { return [] }
+
+        let resolvedRaws = [
+            CompletionState.completed.rawValue,
+            CompletionState.cancelled.rawValue,
+        ]
+        let wantsResolved = scope == .resolved
+
+        let descriptor = FetchDescriptor<Todo>(
+            predicate: #Predicate<Todo> { todo in
+                (todo.space == nil || todo.space?.isHiddenByFocus == false)
+                    && (wantsResolved
+                        ? resolvedRaws.contains(todo.stateRaw)
+                        : !resolvedRaws.contains(todo.stateRaw))
+            }
+        )
+        return matches(TodoQueries.fetch(descriptor, in: context), query: query, scope: scope)
     }
 
     /// To-dos in `todos` matching `query`, restricted to `scope`.
@@ -162,6 +194,74 @@ extension TodoSearch {
     /// Which side of the completion line `destination` searches.
     static func scope(for destination: ListDestination) -> Scope {
         destination == .logbook ? .resolved : .unresolved
+    }
+
+    /// `pool(_:for:)` as a fetch, so the rows a search scans come out of SQLite
+    /// rather than out of the whole store.
+    ///
+    /// Only the membership half moves: the text matching itself — case and
+    /// diacritic folding, multi-term AND, the title-first ranking — has no
+    /// predicate equivalent and still runs over the fetched pool. That pool is
+    /// the destination's contents, not the database.
+    ///
+    /// The resolved `scope` folds in here too, since it is a plain state test.
+    static func poolDescriptor(for destination: ListDestination) -> FetchDescriptor<Todo> {
+        let resolvedRaws = [
+            CompletionState.completed.rawValue,
+            CompletionState.cancelled.rawValue,
+        ]
+        let wantsResolved = scope(for: destination) == .resolved
+        let inboxRaw = Bucket.inbox.rawValue
+        let anytimeRaw = Bucket.anytime.rawValue
+
+        // The Focus rule from `matches`, applied in the fetch.
+        let membership: Predicate<Todo>
+        switch destination {
+        case .space(let id):
+            membership = #Predicate<Todo> { $0.space?.uuid == id }
+        case .project:
+            // Nesting is an `ancestors` walk, so this one cannot be a
+            // predicate; `pool(_:for:)` still narrows it after the fetch.
+            membership = #Predicate<Todo> { _ in true }
+        case .inbox:
+            membership = #Predicate<Todo> { $0.bucketRaw == inboxRaw && !$0.isProject }
+        case .today, .tomorrow, .thisWeek:
+            membership = #Predicate<Todo> { $0.assignedDate != nil || $0.dueDate != nil }
+        case .anytime:
+            membership = #Predicate<Todo> { $0.bucketRaw == anytimeRaw && !$0.isProject }
+        case .logbook:
+            membership = #Predicate<Todo> { _ in true }
+        }
+
+        return FetchDescriptor<Todo>(
+            predicate: #Predicate<Todo> { todo in
+                membership.evaluate(todo)
+                    && (todo.space == nil || todo.space?.isHiddenByFocus == false)
+                    && (wantsResolved
+                        ? resolvedRaws.contains(todo.stateRaw)
+                        : !resolvedRaws.contains(todo.stateRaw))
+            }
+        )
+    }
+
+    /// Search the store as `destination`'s search field would.
+    ///
+    /// The fetch-backed counterpart of `matches(_:query:in:)`.
+    static func matches(
+        query: String,
+        in destination: ListDestination,
+        context: ModelContext
+    ) -> [Todo] {
+        guard isActive(query) else { return [] }
+        let fetched = TodoQueries.fetch(poolDescriptor(for: destination), in: context)
+        // `pool` re-runs for `.project`, whose containment the fetch could not
+        // express; for every other destination it is already satisfied and this
+        // is a no-op pass.
+        return matches(
+            pool(fetched, for: destination),
+            query: query,
+            scope: scope(for: destination)
+        )
     }
 
     /// Search `todos` as the given destination's search field would.

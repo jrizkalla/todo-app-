@@ -11,7 +11,6 @@ struct TodoDetailView: View {
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
     @Environment(AppSettings.self) private var settings
-    @Query private var todos: [Todo]
     @Query private var spaces: [Space]
 
     @State private var suggestionModel = TitleSuggestionModel()
@@ -330,13 +329,13 @@ struct TodoDetailView: View {
     /// animating the enclosing layout from inside the field being typed into is
     /// what used to steal focus. The bar animates its own appearance instead.
     private func refreshSuggestions(for title: String) {
-        suggestionModel.refresh(for: title, todo: todo, allTodos: todos)
+        suggestionModel.refresh(for: title, todo: todo, context: context)
     }
 
     /// Apply a suggestion, then clear its text from the title.
     private func accept(_ suggestion: ParsedSuggestion) {
         withAnimation(Theme.Animation.suggestion) {
-            suggestionModel.apply(suggestion, to: todo, allTodos: todos, store: store)
+            suggestionModel.apply(suggestion, to: todo, context: context, store: store)
         }
     }
 }

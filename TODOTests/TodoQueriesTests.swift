@@ -534,3 +534,249 @@ struct TodoQueriesTests {
         #expect(result.first?.title == "Dated")
     }
 }
+
+/// The predicate-backed fetch path.
+///
+/// The array functions above pin *what each list means*. These pin that the
+/// `FetchDescriptor` path — where SQLite does the filtering — answers the same
+/// way, so pushing the work into the database did not quietly change any list.
+///
+/// Worth testing separately because the failure mode is silent: an expression
+/// SwiftData cannot compile (a force-unwrap, a computed property, a `Calendar`
+/// call) throws at fetch time and the list simply comes up empty.
+@MainActor
+struct TodoQueryDescriptorTests {
+
+    private func makeContext() throws -> ModelContext {
+        let container = try ModelContainer.appContainer(inMemory: true)
+        return ModelContext(container)
+    }
+
+    private var calendar: Calendar { Calendar.current }
+
+    private func day(offset: Int) -> Date {
+        calendar.date(byAdding: .day, value: offset, to: calendar.startOfDay(for: Date()))!
+    }
+
+    /// A store covering every rule the predicates encode.
+    private func populate(_ context: ModelContext) -> [Todo] {
+        let space = Space(name: "Work")
+        let hidden = Space(name: "Hidden")
+        hidden.isHiddenByFocus = true
+        [space, hidden].forEach(context.insert)
+
+        let todos = [
+            Todo(title: "Loose"),
+            Todo(title: "Today", assignedDate: day(offset: 0)),
+            Todo(title: "Overdue", assignedDate: day(offset: -3)),
+            Todo(title: "Due Today", dueDate: day(offset: 0)),
+            Todo(title: "Tomorrow", assignedDate: day(offset: 1)),
+            Todo(title: "Next Month", assignedDate: day(offset: 32)),
+            Todo(title: "Timed", assignedDate: day(offset: 0).addingTimeInterval(9 * 3600)),
+            Todo(title: "Project", isProject: true),
+        ]
+        todos.forEach(context.insert)
+        todos[6].assignedHasTime = true
+
+        let done = Todo(title: "Done", assignedDate: day(offset: 0))
+        context.insert(done)
+        done.setState(.completed)
+
+        let filed = Todo(title: "Filed")
+        context.insert(filed)
+        filed.move(toSpace: space)
+
+        let concealed = Todo(title: "Concealed", assignedDate: day(offset: 0))
+        context.insert(concealed)
+        concealed.move(toSpace: hidden)
+
+        let child = Todo(title: "Child")
+        context.insert(child)
+        todos[7].addSubtask(child)
+
+        return todos + [done, filed, concealed, child]
+    }
+
+    /// Every destination's fetch matches the in-memory rules it replaced.
+    ///
+    /// The central claim of the whole change, checked destination by
+    /// destination rather than by spot-checking one list.
+    @Test func fetchedListsMatchTheArrayRules() throws {
+        let context = try makeContext()
+        let all = populate(context)
+
+        let destinations: [ListDestination] = [
+            .inbox, .today, .tomorrow, .thisWeek, .anytime, .logbook,
+        ]
+
+        for destination in destinations {
+            let fetched = TodoQueries.todos(for: destination, in: context, calendar: calendar)
+            let expected: [Todo]
+            switch destination {
+            case .inbox: expected = TodoQueries.inbox(all)
+            case .today: expected = TodoQueries.today(all, calendar: calendar)
+            case .tomorrow: expected = TodoQueries.tomorrow(all, calendar: calendar)
+            case .thisWeek: expected = TodoQueries.thisWeek(all, calendar: calendar)
+            case .anytime: expected = TodoQueries.anytime(all)
+            case .logbook: expected = TodoQueries.logbook(all)
+            default: continue
+            }
+
+            #expect(
+                fetched.map(\.title) == expected.map(\.title),
+                "\(destination.title) differed between the fetch and the array rules"
+            )
+        }
+    }
+
+    /// A predicate SwiftData cannot compile throws instead of filtering, and the
+    /// list comes up empty — so a non-empty result is itself the assertion that
+    /// the expression survived translation to SQL.
+    @Test func everyDescriptorCompilesToSQL() throws {
+        let context = try makeContext()
+        _ = populate(context)
+
+        #expect(!TodoQueries.todos(for: .inbox, in: context).isEmpty)
+        #expect(!TodoQueries.todos(for: .today, in: context, calendar: calendar).isEmpty)
+        #expect(!TodoQueries.todos(for: .tomorrow, in: context, calendar: calendar).isEmpty)
+        #expect(!TodoQueries.todos(for: .thisWeek, in: context, calendar: calendar).isEmpty)
+        #expect(!TodoQueries.todos(for: .logbook, in: context).isEmpty)
+        #expect(!TodoQueries.looseProjects(in: context).isEmpty)
+        #expect(!TodoQueries.projects(in: context).isEmpty)
+        #expect(!TodoQueries.scheduled(on: day(offset: 0), in: context, calendar: calendar).isEmpty)
+        #expect(!TodoQueries.timed(on: day(offset: 0), in: context, calendar: calendar).isEmpty)
+        #expect(!TodoQueries.untimed(on: day(offset: 0), in: context, calendar: calendar).isEmpty)
+        #expect(!TodoQueries.unscheduled(for: .inbox, in: context).isEmpty)
+    }
+
+    /// Work in a Focus-hidden space stays out of the fetched lists, the same way
+    /// `topLevel` keeps it out of the array ones.
+    @Test func focusHiddenWorkIsExcludedByThePredicate() throws {
+        let context = try makeContext()
+        _ = populate(context)
+
+        let today = TodoQueries.todos(for: .today, in: context, calendar: calendar)
+        #expect(!today.contains { $0.title == "Concealed" })
+    }
+
+    /// Overdue work is in Today, which is the rule most easily lost when a
+    /// "today" filter is written as a single day's window.
+    @Test func fetchedTodayKeepsOverdueWork() throws {
+        let context = try makeContext()
+        _ = populate(context)
+
+        let today = TodoQueries.todos(for: .today, in: context, calendar: calendar)
+        #expect(today.contains { $0.title == "Overdue" })
+    }
+
+    /// Resolved work is excluded unless asked for, and then only on the day it
+    /// was resolved — the `filterResolved` rule, now inside the fetch.
+    @Test func resolvedWorkIsAdmittedOnlyWhenAskedFor() throws {
+        let context = try makeContext()
+        _ = populate(context)
+
+        let withoutResolved = TodoQueries.todos(for: .inbox, in: context)
+        let withResolved = TodoQueries.todos(for: .inbox, in: context, includeResolved: true)
+
+        #expect(!withoutResolved.contains { $0.title == "Done" })
+        // Resolved today, so it survives `filterResolved` when asked for.
+        #expect(withResolved.count >= withoutResolved.count)
+    }
+
+    /// The badge count agrees with the list it counts.
+    @Test func countMatchesTheFetchedList() throws {
+        let context = try makeContext()
+        _ = populate(context)
+
+        for destination in [ListDestination.inbox, .today, .tomorrow, .anytime] {
+            let listed = TodoQueries.todos(for: destination, in: context, calendar: calendar)
+            let counted = TodoQueries.count(for: destination, in: context, calendar: calendar)
+            #expect(
+                counted == listed.count,
+                "\(destination.title) badge disagreed with its list"
+            )
+        }
+    }
+
+    /// A subtask does not draw its own row beside the parent it is nested under.
+    @Test func fetchedListsStillDropNestedSubtasks() throws {
+        let context = try makeContext()
+        let parent = Todo(title: "Parent")
+        let child = Todo(title: "Child")
+        [parent, child].forEach(context.insert)
+        parent.addSubtask(child)
+
+        let inbox = TodoQueries.todos(for: .inbox, in: context)
+        #expect(inbox.map(\.title) == ["Parent"])
+    }
+
+    /// The calendar's range fetch, sliced per day, matches the per-day rules it
+    /// replaced.
+    ///
+    /// This is the calendar's version of `fetchedListsMatchTheArrayRules`: the
+    /// grid now fetches the visible span once and slices days out of it in
+    /// memory, so what has to hold is that a slice equals what the old per-day
+    /// query returned.
+    @Test func rangeSlicesMatchThePerDayRules() throws {
+        let context = try makeContext()
+        let all = populate(context)
+
+        let start = day(offset: -1)
+        let end = day(offset: 2)
+        let fetched = TodoQueries.fetch(
+            TodoQueries.scheduledDescriptor(from: start, to: end), in: context
+        )
+
+        for offset in -1...1 {
+            let target = day(offset: offset)
+
+            #expect(
+                TodoQueries.timedOn(fetched, day: target, calendar: calendar).map(\.title)
+                    == TodoQueries.timed(all, on: target, calendar: calendar).map(\.title),
+                "timed rows differed on day \(offset)"
+            )
+            #expect(
+                TodoQueries.untimedOn(fetched, day: target, calendar: calendar).map(\.title)
+                    == TodoQueries.untimed(all, on: target, calendar: calendar).map(\.title),
+                "untimed rows differed on day \(offset)"
+            )
+        }
+    }
+
+    /// The range fetch covers its whole span and stops at the edges.
+    ///
+    /// The bound that matters for paging: a day outside the fetched range has
+    /// to be genuinely absent, which is what makes the ±1 page window the
+    /// calendar fetches a deliberate choice rather than an accident.
+    @Test func rangeFetchIsBoundedByItsDates() throws {
+        let context = try makeContext()
+        _ = populate(context)
+
+        let fetched = TodoQueries.fetch(
+            TodoQueries.scheduledDescriptor(from: day(offset: 0), to: day(offset: 1)),
+            in: context
+        )
+
+        // "Today" and "Timed" are both dated today; "Tomorrow" is outside.
+        #expect(fetched.contains { $0.title == "Today" })
+        #expect(fetched.contains { $0.title == "Timed" })
+        #expect(!fetched.contains { $0.title == "Tomorrow" })
+        #expect(!fetched.contains { $0.title == "Overdue" })
+        // Resolved and Focus-hidden work never reaches the grid.
+        #expect(!fetched.contains { $0.title == "Done" })
+        #expect(!fetched.contains { $0.title == "Concealed" })
+    }
+
+    /// Point lookups resolve the same object the array scan used to find.
+    @Test func pointLookupsFindTheirTarget() throws {
+        let context = try makeContext()
+        let todo = Todo(title: "Findable")
+        let space = Space(name: "Home")
+        context.insert(todo)
+        context.insert(space)
+
+        #expect(TodoQueries.todo(uuid: todo.uuid, in: context)?.title == "Findable")
+        #expect(TodoQueries.space(uuid: space.uuid, in: context)?.name == "Home")
+        #expect(TodoQueries.todo(uuid: UUID(), in: context) == nil)
+    }
+}

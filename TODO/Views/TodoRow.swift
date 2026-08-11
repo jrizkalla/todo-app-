@@ -150,7 +150,8 @@ struct TodoRow : View {
         .contextMenu {
             menu()
         }
-        .padding(.init(top: 10, leading: 7, bottom: 10, trailing: 7))
+        .padding([.leading, .trailing], 7)
+        .padding([.top, .bottom], isSelected ? 8 : 1)
         // Clipping is what turns the height change into a reveal: the notes
         // field is full-size throughout and simply spends the animation outside
         // the row's bounds, so the text slides into view instead of stretching.
@@ -170,8 +171,15 @@ struct TodoRow : View {
             // field.
             RoundedRectangle(cornerRadius: Theme.Metrics.cornerRadius)
                 .fill(Color.rowCard)
-                .shadow(color: .black.opacity(0.1), radius: 20)
-                .shadow(color: todo.color.opacity(0.1), radius: 10)
+                .shadow(
+                    color: .black.opacity(Theme.Metrics.rowShadowOpacity),
+                    radius: Theme.Metrics.rowShadowRadius,
+                    y: Theme.Metrics.rowShadowOffset
+                )
+                .shadow(
+                    color: todo.color.opacity(0.1),
+                    radius: Theme.Metrics.rowShadowRadius / 2
+                )
                 .opacity(isSelected ? 1 : 0)
         }
         .onAppear {
@@ -260,7 +268,7 @@ struct TodoRow : View {
     private var badges: [Badge] {
         var badges: [Badge] = []
         
-        if let date = todo.assignedDate ?? todo.dueDate, date < Date() && !Calendar.current.isDateInToday(date) {
+        if let date = todo.assignedDate ?? todo.dueDate, date < Date() && !Calendar.current.isDateInToday(date) && todo.state != .completed {
             badges.append(.init(
                 text: "Overdue",
                 symbol: "exclamationmark.triangle",

@@ -96,6 +96,10 @@ enum KeyboardCommand: String, CaseIterable {
     case create
     /// Cmd+M — move to a space or project.
     case move
+    /// Cmd+D — copy the selected to-do.
+    case duplicate
+    /// Cmd+Delete — delete the selected to-do.
+    case delete
 
     var notificationName: Notification.Name {
         Notification.Name("keyboardCommand.\(rawValue)")
@@ -110,6 +114,8 @@ enum KeyboardCommand: String, CaseIterable {
         case .showDetail: "Show Details"
         case .create: "New To-Do"
         case .move: "Move to…"
+        case .duplicate: "Duplicate"
+        case .delete: "Delete"
         }
     }
 }

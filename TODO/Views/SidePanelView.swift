@@ -14,6 +14,12 @@ import SwiftData
 /// and the panel together show the whole list: what has a slot, and what is
 /// still waiting for one. Which is also what makes the pair usable — an
 /// undated item is one drag from the day it belongs on.
+/// The panel, wrapped so its queries can be rebuilt.
+///
+/// Same reason as `TodoListView`: a `@Query`'s predicate is fixed at
+/// initialization, but the panel's scope and the Show Resolved preference both
+/// change while the app runs. The identity below recreates the inner view — and
+/// its queries — whenever either does.
 struct SidePanelView: View {
     @Binding var selectedTodo: Todo?
 
@@ -21,15 +27,83 @@ struct SidePanelView: View {
     /// previews and wherever nothing has claimed it.
     var scope: SidePanelScope = .inbox
 
+    /// A to-do just captured with Cmd+N, to be expanded with its title focused.
+    ///
+    /// Set only while the panel is showing the Inbox, which is where a captured
+    /// to-do lands. The panel clears it once it has taken the focus, so the
+    /// request is answered exactly once.
+    var capturedTodo: Binding<UUID?>?
+
     /// Collapses the panel. Supplied by whoever owns the visibility state —
     /// the panel draws the control but does not decide what hiding means.
     var onHide: (() -> Void)?
 
+    @Environment(AppSettings.self) private var settings
+
+    var body: some View {
+        ScopedSidePanel(
+            scope: scope,
+            includeResolved: settings.showResolved,
+            selectedTodo: $selectedTodo,
+            capturedTodo: capturedTodo,
+            onHide: onHide
+        )
+        .id(QueryIdentity(scope: scope, includeResolved: settings.showResolved))
+    }
+
+    private struct QueryIdentity: Hashable {
+        let scope: SidePanelScope
+        let includeResolved: Bool
+    }
+}
+
+private struct ScopedSidePanel: View {
+    let scope: SidePanelScope
+
+    @Binding var selectedTodo: Todo?
+    var capturedTodo: Binding<UUID?>?
+    var onHide: (() -> Void)?
 
     @Environment(AppSettings.self) private var settings
     @Environment(\.modelContext) private var context
-    @Query private var todos: [Todo]
+
+    /// The panel's rows, already narrowed by the scope's predicate.
+    ///
+    /// For `.inbox` that is the Inbox rule; for a list it is every undated,
+    /// unresolved to-do, which `unscheduledRemainder` then narrows to the
+    /// container. The container walk cannot be a predicate — see `TodoQueries`.
+    @Query private var panelTodos: [Todo]
+
+    /// Late work, fetched by its own predicate rather than filtered out of a
+    /// full-store array.
+    @Query private var overdueTodos: [Todo]
+
     @Query private var spaces: [Space]
+
+    init(
+        scope: SidePanelScope,
+        includeResolved: Bool,
+        selectedTodo: Binding<Todo?>,
+        capturedTodo: Binding<UUID?>? = nil,
+        onHide: (() -> Void)? = nil
+    ) {
+        self.scope = scope
+        self._selectedTodo = selectedTodo
+        self.capturedTodo = capturedTodo
+        self.onHide = onHide
+
+        switch scope {
+        case .inbox:
+            _panelTodos = Query(
+                TodoQueries.descriptor(for: .inbox, includeResolved: includeResolved)
+            )
+        case .list:
+            _panelTodos = Query(
+                TodoQueries.unscheduledDescriptor(includeResolved: includeResolved)
+            )
+        }
+        _overdueTodos = Query(TodoQueries.overdueDescriptor())
+    }
 
     /// Titles are editable here too, so the panel owns its own focus.
     @FocusState private var focusedTodoID: UUID?
@@ -83,6 +157,16 @@ struct SidePanelView: View {
             }
         }
         .listStyle(.sidebar)
+        // Cmd+N created a to-do into the Inbox this panel is showing. Expanding
+        // it and taking the caret is what makes the shortcut usable: the row is
+        // untitled, and an untitled row nobody types into is discarded when it
+        // loses focus.
+        .onChange(of: capturedTodo?.wrappedValue) { _, captured in
+            guard let captured else { return }
+            withAnimation(Theme.Animation.rowExpand) { expandedTodoID = captured }
+            focusedTodoID = captured
+            capturedTodo?.wrappedValue = nil
+        }
         // The panel is one surface changing what it holds, not two surfaces
         // swapping places, so the rows cross-fade in place rather than the
         // whole card sliding.
@@ -128,19 +212,20 @@ struct SidePanelView: View {
     // MARK: Scope
 
     /// The rows under the main header.
+    ///
+    /// Both branches come from `panelTodos`, whose predicate already matches the
+    /// scope — the Inbox rules for `.inbox`, undated work for a list. What is
+    /// left here is only what a predicate cannot say: the container walk for a
+    /// scoped panel, and the residual passes. See `TodoQueries`.
     private var contents: [Todo] {
         switch scope {
         case .inbox:
-            TodoQueries.inbox(todos, includeResolved: settings.showResolved)
+            return TodoQueries.finish(panelTodos, for: .inbox)
         case .list(let destination):
             // Overdue items are drawn in their own section above, so they are
             // held back here rather than appearing twice in one panel.
-            TodoQueries.unscheduled(
-                todos,
-                for: destination,
-                includeResolved: settings.showResolved
-            )
-            .filter { !$0.isOverdue }
+            return TodoQueries.unscheduledRemainder(panelTodos, for: destination)
+                .filter { !$0.isOverdue }
         }
     }
 
@@ -149,9 +234,9 @@ struct SidePanelView: View {
     private var overdue: [Todo] {
         switch scope {
         case .inbox:
-            TodoQueries.overdue(todos)
+            return overdueTodos.filterCycles()
         case .list(let destination):
-            TodoQueries.overdue(TodoQueries.calendarScope(todos, for: destination))
+            return TodoQueries.calendarScope(overdueTodos, for: destination).filterCycles()
         }
     }
 
@@ -186,7 +271,7 @@ struct SidePanelView: View {
         case .space(let id):
             spaces.first { $0.uuid == id }?.name ?? "Space"
         case .project(let id):
-            todos.first { $0.uuid == id }?.title ?? "Project"
+            TodoQueries.todo(uuid: id, in: context)?.title ?? "Project"
         default:
             destination.title
         }

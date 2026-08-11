@@ -1,6 +1,7 @@
 import Foundation
 import OSLog
 import SwiftData
+import WidgetKit
 
 /// Every mutation the app performs on todos, in one place.
 ///
@@ -64,12 +65,98 @@ struct TodoStore {
         return space
     }
 
+    /// Copy a todo, placing the copy directly after the original.
+    ///
+    /// Deliberately shallow: the copy takes the original's own fields — title,
+    /// notes, dates, duration, colour, and its place in the tree — but not its
+    /// subtasks or reminders. Duplicating a project would otherwise clone an
+    /// arbitrary amount of work, and a duplicated reminder is a second
+    /// notification the user never asked for.
+    ///
+    /// The copy is *not* resolved even when the original is: duplicating a
+    /// finished to-do is how the same work gets done again, so the point of the
+    /// copy is that it is still open.
+    @discardableResult
+    func duplicate(_ todo: Todo) -> Todo {
+        let copy = Todo(
+            title: todo.title,
+            notes: todo.notes,
+            assignedDate: todo.assignedDate,
+            assignedHasTime: todo.assignedHasTime,
+            duration: todo.duration,
+            dueDate: todo.dueDate,
+            dueHasTime: todo.dueHasTime,
+            isProject: todo.isProject,
+            space: todo.space,
+            parent: todo.parent
+        )
+        copy.colorHex = todo.colorHex
+        context.insert(copy)
+
+        // Slotted immediately after the original rather than appended, so the
+        // copy appears next to what it was made from instead of at the bottom
+        // of a list the user may have to scroll to find.
+        insert(copy, after: todo)
+
+        copy.refileForCurrentScheduling()
+        save()
+        return copy
+    }
+
+    /// Renumber a container so `moved` sits directly after `anchor`.
+    private func insert(_ moved: Todo, after anchor: Todo) {
+        var siblings = self.siblings(of: anchor).filter { $0.uuid != moved.uuid }
+        guard let index = siblings.firstIndex(where: { $0.uuid == anchor.uuid }) else { return }
+
+        siblings.insert(moved, at: index + 1)
+        for (index, todo) in siblings.enumerated() {
+            todo.sortIndex = index
+        }
+    }
+
+    /// Todos sharing a container with `todo`, in display order.
+    ///
+    /// Fetched by container rather than by scanning every to-do in the store:
+    /// this runs on every reorder and every drag, and a sibling set is a
+    /// handful of rows however large the database is.
+    private func siblings(of todo: Todo) -> [Todo] {
+        let parentID = todo.parent?.uuid
+        let spaceID = todo.space?.uuid
+
+        var descriptor = FetchDescriptor<Todo>(
+            predicate: #Predicate<Todo> { candidate in
+                candidate.parent?.uuid == parentID && candidate.space?.uuid == spaceID
+            }
+        )
+        descriptor.sortBy = [SortDescriptor(\Todo.sortIndex)]
+        return (try? context.fetch(descriptor)) ?? []
+    }
+
+    /// Take a scheduled todo off the calendar, leaving it otherwise untouched.
+    ///
+    /// Clears the assigned date rather than the due date: the calendar lays out
+    /// `assignedDate`, so that is the one that decides whether a to-do appears
+    /// on a day at all. A deadline is a fact about the work, not a placement,
+    /// and unscheduling should not quietly discard it.
+    func unschedule(_ todo: Todo) {
+        update(todo) {
+            $0.assignedDate = nil
+            $0.assignedHasTime = false
+        }
+    }
+
     /// Append position for a new todo within its container.
     private func nextSortIndex(inSpace space: Space?, parent: Todo?) -> Int {
         if let parent { return (parent.subtaskList.map(\.sortIndex).max() ?? -1) + 1 }
         if let space { return (space.todoList.map(\.sortIndex).max() ?? -1) + 1 }
-        let all = (try? context.fetch(FetchDescriptor<Todo>())) ?? []
-        return (all.filter { $0.space == nil && $0.parent == nil }.map(\.sortIndex).max() ?? -1) + 1
+        // Top-level rows only, and the largest index first, so the append
+        // position is one row rather than a scan of the whole store.
+        var descriptor = FetchDescriptor<Todo>(
+            predicate: #Predicate<Todo> { $0.space == nil && $0.parent == nil }
+        )
+        descriptor.sortBy = [SortDescriptor(\Todo.sortIndex, order: .reverse)]
+        descriptor.fetchLimit = 1
+        return ((try? context.fetch(descriptor))?.first?.sortIndex ?? -1) + 1
     }
     
 
@@ -267,6 +354,12 @@ struct TodoStore {
     /// app down mid-edit.
     func save() {
         guard context.hasChanges else { return }
+        let dirtyTodos = (context.insertedModelsArray + context.changedModelsArray + context.deletedModelsArray).compactMap {
+            $0 as? Todo
+        }
+        if TodoQueries.today(dirtyTodos, includeResolved: true).count > 0 {
+            WidgetCenter.shared.reloadAllTimelines()
+        }
         do {
             try context.save()
         } catch {

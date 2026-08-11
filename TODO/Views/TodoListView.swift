@@ -11,12 +11,60 @@ struct CalendarRoute: Hashable {
 }
 
 /// The main list pane for a sidebar destination.
+/// The list pane, wrapped so its query can be rebuilt.
+///
+/// A `@Query`'s predicate is fixed when the view is initialized, but two things
+/// it depends on — the destination and the Show Resolved preference — both
+/// change while the app is running. This wrapper gives the inner view an
+/// identity built from those, so SwiftUI recreates it (and with it the query)
+/// whenever either moves. Without this the list would keep answering with the
+/// previous destination's predicate.
 struct TodoListView: View {
+    let destination: ListDestination
+
+    @Environment(AppSettings.self) private var settings
+
+    @Binding var selectedTodo: Todo?
+    var createRequest: Binding<Int>?
+    var capturedTodo: Binding<UUID?>?
+
+    var body: some View {
+        DestinationTodoList(
+            destination: destination,
+            includeResolved: settings.showResolved,
+            selectedTodo: $selectedTodo,
+            createRequest: createRequest,
+            capturedTodo: capturedTodo
+        )
+        .id(QueryIdentity(destination: destination, includeResolved: settings.showResolved))
+    }
+
+    /// What the row query is built from. A change to either rebuilds it.
+    private struct QueryIdentity: Hashable {
+        let destination: ListDestination
+        let includeResolved: Bool
+    }
+}
+
+private struct DestinationTodoList: View {
     let destination: ListDestination
 
     @Environment(\.modelContext) private var context
     @Environment(AppSettings.self) private var settings
-    @Query private var todos: [Todo]
+
+    /// This destination's rows, filtered and sorted by SQLite.
+    ///
+    /// The query carries the destination's `#Predicate` (see `TodoQueries`)
+    /// rather than fetching every to-do in the store and narrowing it in the
+    /// body. It stays a `@Query` rather than becoming a plain `context.fetch`
+    /// because that is what keeps the list live: SwiftUI re-runs a `@Query`
+    /// when the store changes, and a fetch in a computed property would go
+    /// stale after every edit.
+    ///
+    /// The residual in-memory passes that no predicate can express — cycle
+    /// filtering, and the `assignedDate ?? dueDate` ordering — are applied to
+    /// this already-narrowed page in `filteredTodos`.
+    @Query private var destinationTodos: [Todo]
     @Query private var spaces: [Space]
 
     @Binding var selectedTodo: Todo?
@@ -27,6 +75,38 @@ struct TodoListView: View {
     /// A counter rather than a flag so two taps in a row both register; the
     /// button lives in `RootView` and has no way to know when this finished.
     var createRequest: Binding<Int>?
+
+    /// A to-do just captured with Cmd+N, to be selected with its title focused.
+    ///
+    /// Only the Inbox is given this, since that is where Cmd+N puts things —
+    /// see `RootView.captureIntoInbox`. Cleared once claimed.
+    var capturedTodo: Binding<UUID?>?
+
+    /// Builds the row query from the destination and the resolved preference.
+    ///
+    /// A `@Query`'s descriptor is fixed at initialization, which is why the
+    /// wrapper above gives this view an identity that changes whenever either
+    /// input does — that is what recreates it, and rebuilds the query.
+    init(
+        destination: ListDestination,
+        includeResolved: Bool,
+        selectedTodo: Binding<Todo?>,
+        createRequest: Binding<Int>? = nil,
+        capturedTodo: Binding<UUID?>? = nil
+    ) {
+        self.destination = destination
+        self._selectedTodo = selectedTodo
+        self.createRequest = createRequest
+        self.capturedTodo = capturedTodo
+
+        _destinationTodos = Query(
+            TodoQueries.descriptor(
+                for: destination,
+                calendar: AppSettings.shared.calendar,
+                includeResolved: includeResolved
+            )
+        )
+    }
 
     /// Set while waiting on the user's answer to the cascade prompt.
     @State private var pendingCascade: PendingCascade?
@@ -60,6 +140,7 @@ struct TodoListView: View {
     @State private var suggestionModel = TitleSuggestionModel()
     /// Debounces the save and suggestion refresh behind title editing.
     @State private var titleEditTask: Task<Void, Never>?
+    @State private var notesEditTask: Task<Void, Never>?
     /// The row whose title field is focused. There is no separate edit mode.
     @FocusState private var focusedTodoID: UUID?
     /// Whether the search field holds the keyboard, so Cmd+F can put it there.
@@ -108,6 +189,16 @@ struct TodoListView: View {
             // to-dos. Whichever is on top is the one the user meant.
             guard !isShowingCalendar else { return }
             createTodoInCurrentList()
+        }
+        // Cmd+N created the to-do already, in the Inbox; this list only has to
+        // put the caret in it. Unlike `createRequest` there is nothing to
+        // create here — the shortcut works from tabs that have no list at all,
+        // so `RootView` does the creating and hands the row over.
+        .onChange(of: capturedTodo?.wrappedValue) { _, captured in
+            guard let captured, !isShowingCalendar else { return }
+            withAnimation(Theme.Animation.rowExpand) { cursor.select(captured) }
+            focusedTodoID = captured
+            capturedTodo?.wrappedValue = nil
         }
         .navigationTitle(title)
         #if os(iOS)
@@ -196,7 +287,7 @@ struct TodoListView: View {
         // at the window bottom on macOS, the same as in the detail editor.
         .suggestionBar(suggestionModel.suggestions) { suggestion in
             guard let todo = focusedTodo else { return }
-            suggestionModel.apply(suggestion, to: todo, allTodos: todos, store: store)
+            suggestionModel.apply(suggestion, to: todo, context: context, store: store)
         }
         .confirmationDialog(
             cascadePrompt,
@@ -275,9 +366,7 @@ struct TodoListView: View {
         searchableList
             .todoDropTarget(
                 destination,
-                store: store,
-                allTodos: todos,
-                spaces: spaces
+                store: store
             )
     }
 
@@ -309,6 +398,12 @@ struct TodoListView: View {
         rows(visibleTodos)
     }
 
+    #if os(macOS)
+    private let rowInsets = EdgeInsets(top: 10, leading: 5, bottom: 10, trailing: 5)
+    #else
+    private let rowInsets = EdgeInsets(top: 3, leading: 5, bottom: 3, trailing: 5)
+    #endif
+    
     @ViewBuilder
     private func rows(_ visibleTodos: [Todo]) -> some View {
         if visibleTodos.isEmpty && isSearching {
@@ -393,7 +488,7 @@ struct TodoListView: View {
                                 onToggle: { _ in handleToggle(subtask) },
                                 onSelectState: { handleSetState(subtask, to: $0) },
                                 onTitleChange: { handleTitleChange($0, for: subtask) },
-                                onNotesChange: { _ in store.save() },
+                                onNotesChange: { handleNotesChange(for: $0) },
                                 menu: { AnyView(rowMenu(for: subtask)) },
                                 // Return inside a project adds another subtask
                                 // to the same parent.
@@ -415,7 +510,9 @@ struct TodoListView: View {
                             .todoDetailPopover(for: subtask, selection: $selectedTodo)
                         }
                     }
-                    .listRowInsets(EdgeInsets())
+                    .listRowInsets(
+                        rowInsets
+                    )
                     .listRowSeparator(.hidden)
                     .swipeActions(edge: .trailing) {
                         Button(role: .destructive) {
@@ -457,7 +554,6 @@ struct TodoListView: View {
                     .contentShape(Rectangle())
                     .onTapGesture { clearSelection() }
             }
-            .padding([.leading, .trailing])
             .listStyle(.plain)
             // A tap that misses every row lands here and puts the selection
             // down. Behind the rows rather than over them, so it only ever sees
@@ -597,7 +693,7 @@ struct TodoListView: View {
 
     private var cursorTodo: Todo? {
         guard let id = cursor.selection else { return nil }
-        return todos.first { $0.uuid == id }
+        return TodoQueries.todo(uuid: id, in: context)
     }
 
     /// The to-do a keyboard command should act on.
@@ -665,7 +761,27 @@ struct TodoListView: View {
             guard let todo = commandTarget else { return }
             focusedTodoID = nil
             movingTodo = todo
+
+        case .duplicate:
+            guard let todo = commandTarget else { return }
+            duplicate(todo)
+
+        case .delete:
+            guard let todo = commandTarget else { return }
+            focusedTodoID = nil
+            requestDelete(todo)
         }
+    }
+
+    /// Copy a to-do and move the cursor onto the copy.
+    ///
+    /// The cursor follows the new row rather than staying on the original: the
+    /// copy is what the user is about to edit — that is the point of
+    /// duplicating — and it lands directly below, so the selection moving one
+    /// row is what they would expect to see.
+    private func duplicate(_ todo: Todo) {
+        let copy = store.duplicate(todo)
+        withAnimation(Theme.Animation.listChange) { cursor.select(copy.uuid) }
     }
 
     /// Apply a picked move destination.
@@ -678,7 +794,7 @@ struct TodoListView: View {
             store.move(todo, toParent: nil)
             store.move(todo, toSpace: spaces.first { $0.uuid == id })
         case .project(let id):
-            guard let project = todos.first(where: { $0.uuid == id }) else { return }
+            guard let project = TodoQueries.todo(uuid: id, in: context) else { return }
             _ = store.adopt(todo, asSubtaskOf: project)
         }
     }
@@ -701,6 +817,12 @@ struct TodoListView: View {
         }
 
         Divider()
+
+        Button {
+            duplicate(todo)
+        } label: {
+            Label("Duplicate", systemImage: "plus.square.on.square.dashed")
+        }
 
         Button {
             store.addSubtask(to: todo)
@@ -798,10 +920,20 @@ struct TodoListView: View {
     private func handleTitleChange(_ newTitle: String, for todo: Todo) {
         titleEditTask?.cancel()
         titleEditTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(250))
+            try? await Task.sleep(for: .milliseconds(500))
             guard !Task.isCancelled else { return }
 
-            suggestionModel.refresh(for: newTitle, todo: todo, allTodos: todos)
+            suggestionModel.refresh(for: newTitle, todo: todo, context: context)
+            store.save()
+        }
+    }
+    
+    private func handleNotesChange(for todo: Todo) {
+        notesEditTask?.cancel()
+        notesEditTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            
             store.save()
         }
     }
@@ -824,7 +956,7 @@ struct TodoListView: View {
             // from under someone who was only reaching for its notes.
             DispatchQueue.main.async {
                 guard focusedTodoID != previous else { return }
-                guard let todo = todos.first(where: { $0.uuid == previous }) else { return }
+                guard let todo = TodoQueries.todo(uuid: previous, in: context) else { return }
                 // Notes typed into a still-untitled row are content too, so the
                 // row has earned its place even without a title.
                 let isBlank = todo.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -838,17 +970,17 @@ struct TodoListView: View {
             }
         }
 
-        guard let current, let todo = todos.first(where: { $0.uuid == current }) else {
+        guard let current, let todo = TodoQueries.todo(uuid: current, in: context) else {
             suggestionModel.clear()
             return
         }
-        suggestionModel.refresh(for: todo.title, todo: todo, allTodos: todos)
+        suggestionModel.refresh(for: todo.title, todo: todo, context: context)
     }
 
     /// The todo whose title has focus, for the suggestion bar.
     private var focusedTodo: Todo? {
         guard let id = focusedTodoID else { return nil }
-        return todos.first { $0.uuid == id }
+        return TodoQueries.todo(uuid: id, in: context)
     }
 
     // MARK: State changes
@@ -888,7 +1020,7 @@ struct TodoListView: View {
         // inside a project finds work anywhere in it, not only the handful of
         // rows that happened to pass the date filter.
         if isSearching {
-            return TodoSearch.matches(todos, query: searchText, in: destination)
+            return TodoSearch.matches(query: searchText, in: destination, context: context)
         }
 
         // Keeps the focused row on screen even once it stops matching this list
@@ -903,17 +1035,10 @@ struct TodoListView: View {
         )
     }
 
+    /// The destination's rows: what the query returned, plus the rules that
+    /// could not be predicates. See `destinationTodos` and `TodoQueries.finish`.
     private var filteredTodos: [Todo] {
-        switch destination {
-        case .inbox: TodoQueries.inbox(todos, includeResolved: settings.showResolved)
-        case .today: TodoQueries.today(todos, calendar: AppSettings.shared.calendar, includeResolved: settings.showResolved)
-        case .tomorrow: TodoQueries.tomorrow(todos, calendar: AppSettings.shared.calendar, includeResolved: settings.showResolved)
-        case .thisWeek: TodoQueries.thisWeek(todos, calendar: AppSettings.shared.calendar, includeResolved: settings.showResolved)
-        case .anytime: TodoQueries.anytime(todos, includeResolved: settings.showResolved)
-        case .logbook: TodoQueries.logbook(todos)
-        case .space(let id): TodoQueries.inSpace(todos, spaceID: id, includeResolved: settings.showResolved)
-        case .project(let id): TodoQueries.inProject(todos, projectID: id, includeResolved: settings.showResolved)
-        }
+        TodoQueries.finish(destinationTodos, for: destination)
     }
 
     private var title: String {
@@ -921,7 +1046,7 @@ struct TodoListView: View {
         case .space(let id):
             spaces.first { $0.uuid == id }?.name ?? "Space"
         case .project(let id):
-            todos.first { $0.uuid == id }?.title ?? "Project"
+            TodoQueries.todo(uuid: id, in: context)?.title ?? "Project"
         default:
             destination.title
         }
@@ -981,14 +1106,14 @@ struct TodoListView: View {
             return spaces.first { $0.uuid == id }
         }
         if case .project(let id) = destination {
-            return todos.first { $0.uuid == id }?.space
+            return TodoQueries.todo(uuid: id, in: context)?.space
         }
         return nil
     }
 
     private var defaultParent: Todo? {
         if case .project(let id) = destination {
-            return todos.first { $0.uuid == id }
+            return TodoQueries.todo(uuid: id, in: context)
         }
         return nil
     }

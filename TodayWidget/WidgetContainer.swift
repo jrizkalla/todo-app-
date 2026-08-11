@@ -17,7 +17,7 @@ extension ModelContainer {
         let configuration = ModelConfiguration(
             schema: AppSchema.schema,
             url: url,
-            cloudKitDatabase: .none
+            cloudKitDatabase: .automatic
         )
 
         // Same plan as the app: the widget opens the same file, so whichever

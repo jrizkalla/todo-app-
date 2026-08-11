@@ -13,7 +13,6 @@ struct SidebarView: View {
 
     @Environment(\.modelContext) private var context
     @Query private var spaces: [Space]
-    @Query private var todos: [Todo]
 
     /// The sidebar's own pull-down search, which searches everything rather
     /// than one list.
@@ -123,7 +122,7 @@ struct SidebarView: View {
     /// user cannot remember the location of, so grouping it back under the
     /// containers they could not recall would defeat the point.
     private var searchResults: [Todo] {
-        TodoSearch.matches(todos, query: searchText, scope: .unresolved)
+        TodoSearch.matches(query: searchText, scope: .unresolved, context: context)
     }
 
     /// Selecting a result opens its detail page.
@@ -166,15 +165,13 @@ struct SidebarView: View {
                 // be too easy to do by accident.
                 .todoDropTarget(
                     destination,
-                    store: store,
-                    allTodos: todos,
-                    spaces: spaces
+                    store: store
                 )
             }
         }
 
         // Projects with no space, listed before the space sections.
-        let loose = TodoQueries.looseProjects(todos)
+        let loose = TodoQueries.looseProjects(in: context)
         if !loose.isEmpty {
             Section("Projects") {
                 ForEach(loose) { project in
@@ -195,8 +192,9 @@ struct SidebarView: View {
                         HStack {
                             Text(space.name)
                             Spacer()
-                            if space.openCount > 0 {
-                                Text("\(space.openCount)")
+                            let openCount = space.openCount
+                            if openCount > 0 {
+                                Text("\(openCount)")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                     .monospacedDigit()
@@ -209,9 +207,7 @@ struct SidebarView: View {
                 }
                 .todoDropTarget(
                     .space(space.uuid),
-                    store: store,
-                    allTodos: todos,
-                    spaces: spaces
+                    store: store
                 )
                 // Menu and confirmation both hang off the space's own row,
                 // so the dialog is anchored beside the space it is about.
@@ -297,9 +293,7 @@ struct SidebarView: View {
         // Dropping onto a project adopts the to-do as one of its subtasks.
         .todoDropTarget(
             .project(project.uuid),
-            store: store,
-            allTodos: todos,
-            spaces: spaces
+            store: store
         )
     }
 
@@ -342,15 +336,13 @@ struct SidebarView: View {
         spaces.filter(\.isHiddenByFocus).count
     }
 
+    /// A destination's badge number, counted in SQLite.
+    ///
+    /// `fetchCount` rather than fetching and measuring: the badge only ever
+    /// needed the number, and building the whole array to read `.count` was
+    /// what made five badges cost five passes over the store.
     private func badgeCount(for destination: ListDestination) -> Int {
-        switch destination {
-        case .inbox: TodoQueries.inbox(todos, includeResolved: false).count
-        case .today: TodoQueries.today(todos, includeResolved: false).count
-        case .tomorrow: TodoQueries.tomorrow(todos, includeResolved: false).count
-        case .thisWeek: TodoQueries.thisWeek(todos, includeResolved: false).count
-        case .anytime: TodoQueries.anytime(todos, includeResolved: false).count
-        default: 0
-        }
+        TodoQueries.count(for: destination, in: context)
     }
 
     private func color(for destination: ListDestination) -> Color {

@@ -17,11 +17,14 @@ final class TitleSuggestionModel {
     /// - Parameters:
     ///   - todo: The todo being edited, excluded from project matches so a todo
     ///     cannot suggest moving into itself.
-    ///   - allTodos: Everything in the store, used to find candidate projects.
-    func refresh(for title: String, todo: Todo, allTodos: [Todo]) {
+    ///   - context: Used to fetch the candidate projects. Only projects are
+    ///     fetched — the parser matches `#project` names and never looked at
+    ///     anything else, so the old "everything in the store" array was
+    ///     scanned in full to keep a handful of rows.
+    func refresh(for title: String, todo: Todo, context: ModelContext) {
         var parser = TitleParser()
-        parser.projectNames = allTodos
-            .filter { $0.isProject && $0.uuid != todo.uuid && $0.uuid != todo.parent?.uuid }
+        parser.projectNames = TodoQueries.projects(in: context)
+            .filter { $0.uuid != todo.uuid && $0.uuid != todo.parent?.uuid }
             .map { (name: $0.title, uuid: $0.uuid) }
 
         suggestions = parser.suggestions(for: title)
@@ -39,7 +42,7 @@ final class TitleSuggestionModel {
     func apply(
         _ suggestion: ParsedSuggestion,
         to todo: Todo,
-        allTodos: [Todo],
+        context: ModelContext,
         store: TodoStore
     ) -> String {
         switch suggestion.kind {
@@ -52,7 +55,7 @@ final class TitleSuggestionModel {
         case .duration(let seconds):
             todo.duration = seconds
         case .project(_, let uuid):
-            if let project = allTodos.first(where: { $0.uuid == uuid }) {
+            if let project = TodoQueries.todo(uuid: uuid, in: context) {
                 store.move(todo, toParent: project)
             }
         }
@@ -61,7 +64,7 @@ final class TitleSuggestionModel {
         todo.title = rewritten
         store.update(todo) { _ in }
 
-        refresh(for: rewritten, todo: todo, allTodos: allTodos)
+        refresh(for: rewritten, todo: todo, context: context)
         return rewritten
     }
 }

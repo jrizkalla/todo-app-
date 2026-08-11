@@ -46,6 +46,7 @@
 		AA0000000000000000000002 /* TODOTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TODOTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA0000000000000000000011 /* TodayWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = TodayWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		BD10313130269141008B5B9B /* TODO.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TODO.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		BDD24F95302BE1E70070D1E4 /* SwiftData.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftData.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.1.sdk/System/Library/Frameworks/SwiftData.framework; sourceTree = DEVELOPER_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -142,6 +143,7 @@
 				BD10313330269141008B5B9B /* TODO */,
 				AA0000000000000000000012 /* TodayWidget */,
 				AA0000000000000000000003 /* TODOTests */,
+				BDD24F94302BE1E60070D1E4 /* Frameworks */,
 				BD10313230269141008B5B9B /* Products */,
 			);
 			sourceTree = "<group>";
@@ -154,6 +156,14 @@
 				AA0000000000000000000002 /* TODOTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		BDD24F94302BE1E60070D1E4 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				BDD24F95302BE1E70070D1E4 /* SwiftData.framework */,
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */

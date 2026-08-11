@@ -35,6 +35,29 @@ enum Theme {
         /// stay in step when either is retuned.
         static let checkboxCornerRadius: CGFloat = 5
 
+        // MARK: Selected-row shadow
+
+        /// Blur radius of the lift under an expanded row.
+        ///
+        /// Tighter than it used to be. A 20pt blur on a card this size reads as
+        /// haze rather than as lift, and — because a shadow needs that much
+        /// clear space on every side — it was also what made the row impossible
+        /// to fit inside a `List` cell without being clipped.
+        static let rowShadowRadius: CGFloat = 8
+        static let rowShadowOpacity: Double = 0.14
+        /// Pushed down slightly, so the card reads as lit from above rather
+        /// than glowing evenly in all directions.
+        static let rowShadowOffset: CGFloat = 2
+
+        /// Clear space reserved around a row for its shadow to fall into.
+        ///
+        /// Derived from the shadow itself rather than eyeballed: the blur
+        /// reaches roughly its radius in every direction, plus the downward
+        /// offset. Too small and the `List` clips the blur square — which is
+        /// exactly the artefact this exists to prevent — so the two numbers
+        /// have to move together.
+        static let rowShadowMargin: CGFloat = rowShadowRadius + rowShadowOffset
+
         /// Gap between consecutive to-do rows.
         ///
         /// The main list gets this as padding *inside* each row, since rows

@@ -22,6 +22,7 @@ struct TodayWidget: Widget {
         StaticConfiguration(kind: Self.kind, provider: TodayTimelineProvider()) { entry in
             TodayWidgetView(entry: entry)
                 .containerBackground(.fill.tertiary, for: .widget)
+                .modelContainer(.appContainerWithFallback())
         }
         .configurationDisplayName("Today")
         .description("Everything on today's list, including timed work.")
@@ -97,12 +98,12 @@ struct TodayTimelineProvider: TimelineProvider {
     /// stands in for can never disagree about what counts as today.
     @MainActor
     private func loadEntry() -> TodayEntry {
-        guard let container = try? ModelContainer.widgetContainer() else {
-            return TodayEntry(date: .now, items: [], overflow: 0, isUnavailable: true)
-        }
+        let container = ModelContainer.appContainerWithFallback()
 
-        let todos = (try? container.mainContext.fetch(FetchDescriptor<Todo>())) ?? []
-        let today = TodoQueries.today(todos)
+        // Filtered by SQLite rather than by pulling the whole store across and
+        // narrowing it here — a widget has a hard memory budget, and faulting in
+        // every to-do ever written to read the top few is what exceeds it.
+        let today = TodoQueries.todos(for: .today, in: container.mainContext)
 
         let snapshots = today.prefix(Self.maxItems).map { todo in
             TodoSnapshot(

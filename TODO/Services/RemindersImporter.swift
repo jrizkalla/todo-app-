@@ -100,9 +100,14 @@ final class RemindersImporter {
 
         // Anything already imported stays out of the pending list, so a
         // re-import is never offered for the same source twice.
+        // Only rows that came from Reminders can have been imported, so the
+        // dedupe set is fetched by that flag rather than by reading every
+        // to-do in the store and discarding the ones with no source id.
+        let importedDescriptor = FetchDescriptor<Todo>(
+            predicate: #Predicate<Todo> { $0.sourceReminderID != nil }
+        )
         let alreadyImported = Set(
-            ((try? context.fetch(FetchDescriptor<Todo>())) ?? [])
-                .compactMap(\.sourceReminderID)
+            ((try? context.fetch(importedDescriptor)) ?? []).compactMap(\.sourceReminderID)
         )
 
         pending = found

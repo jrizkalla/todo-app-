@@ -6,12 +6,101 @@ import SwiftData
 /// Scheduled todos without a time sit in a header row; timed todos are laid out
 /// against the hour grid like calendar events, using their duration or the
 /// configured default.
+/// The calendar, wrapped so its row query can follow the visible dates.
+///
+/// A `@Query`'s predicate is fixed when the view is initialized, and the grid's
+/// range is not: the user pages through days and weeks, and the scale switch
+/// changes how much is on screen at once. This wrapper owns the anchor and
+/// scale — either the caller's bindings or its own state — and gives the inner
+/// view an identity built from the resulting date range, so paging rebuilds the
+/// query against the new range rather than leaving it fetching the old one.
+///
+/// Fetching a range rather than a day: the week scale draws seven at once, and
+/// one query for the span beats seven for the columns.
 struct CalendarView: View {
     enum Scale: String, CaseIterable, Identifiable {
         case day, week
         var id: String { rawValue }
         var label: String { self == .day ? "Day" : "Week" }
     }
+
+    @Binding var selectedTodo: Todo?
+    var destination: ListDestination = .today
+    var anchorDate: Binding<Date>?
+    var scaleBinding: Binding<Scale>?
+    var createRequest: Binding<Int>?
+    var onShowList: (() -> Void)?
+
+    @Environment(AppSettings.self) private var settings
+
+    /// Fallbacks for the callers that own neither value. Held here rather than
+    /// in the inner view so the range can be computed before it is built.
+    @State private var localScale: Scale = .day
+    @State private var localAnchor = Date()
+
+    /// Paging state, owned here rather than inside the view whose identity
+    /// changes with the range.
+    ///
+    /// The inner view is recreated whenever the visible dates move, and a swipe
+    /// *is* the visible dates moving — so `@State` down there would be reset by
+    /// the very gesture that changes it, and the page would snap back under the
+    /// user's finger. Held above the identity, it survives the rebuild.
+    @State private var pageIndex = 0
+    @State private var pageOrigin = Date()
+
+    private var scale: Scale { scaleBinding?.wrappedValue ?? localScale }
+    private var anchor: Date { anchorDate?.wrappedValue ?? localAnchor }
+
+    /// The span the query covers: the visible page, plus one page either side.
+    ///
+    /// The neighbours are deliberate — paging is a swipe, and the next page is
+    /// already partly on screen while it settles, so a range that stopped at
+    /// the current page's edges would show a momentarily empty grid.
+    private var fetchRange: (start: Date, end: Date) {
+        let calendar = settings.calendar
+        let component: Calendar.Component = scale == .day ? .day : .weekOfYear
+
+        let pageStart: Date
+        switch scale {
+        case .day:
+            pageStart = calendar.startOfDay(for: anchor)
+        case .week:
+            pageStart = calendar.dateInterval(of: .weekOfYear, for: anchor)?.start
+                ?? calendar.startOfDay(for: anchor)
+        }
+
+        let start = calendar.date(byAdding: component, value: -1, to: pageStart) ?? pageStart
+        let afterPage = calendar.date(byAdding: component, value: 2, to: pageStart) ?? pageStart
+        return (start, afterPage)
+    }
+
+    var body: some View {
+        let range = fetchRange
+        return RangedCalendarView(
+            selectedTodo: $selectedTodo,
+            destination: destination,
+            rangeStart: range.start,
+            rangeEnd: range.end,
+            anchorDate: anchorDate ?? $localAnchor,
+            scaleBinding: scaleBinding ?? $localScale,
+            pageIndex: $pageIndex,
+            pageOrigin: $pageOrigin,
+            createRequest: createRequest,
+            onShowList: onShowList
+        )
+        .id(QueryIdentity(start: range.start, end: range.end))
+    }
+
+    /// What the row query is built from. Paging or switching scale moves the
+    /// range, which rebuilds the query.
+    private struct QueryIdentity: Hashable {
+        let start: Date
+        let end: Date
+    }
+}
+
+private struct RangedCalendarView: View {
+    typealias Scale = CalendarView.Scale
 
     @Binding var selectedTodo: Todo?
 
@@ -24,17 +113,51 @@ struct CalendarView: View {
 
     @Environment(\.modelContext) private var context
     @Environment(AppSettings.self) private var settings
-    @Query private var todos: [Todo]
+
+    /// The dated, unresolved, Focus-visible work falling in the visible range.
+    ///
+    /// Narrowed by SQLite on both counts — which rows can be drawn at all, and
+    /// which days are on screen — so paging to an empty week fetches nothing
+    /// rather than reading the whole store and finding nothing in it. The
+    /// per-day and per-container slicing left in the body is then comparison
+    /// over the handful of rows a page can actually show.
+    @Query private var datedTodos: [Todo]
+
     @Query private var spaces: [Space]
+
+    init(
+        selectedTodo: Binding<Todo?>,
+        destination: ListDestination,
+        rangeStart: Date,
+        rangeEnd: Date,
+        anchorDate: Binding<Date>,
+        scaleBinding: Binding<Scale>,
+        pageIndex: Binding<Int>,
+        pageOrigin: Binding<Date>,
+        createRequest: Binding<Int>? = nil,
+        onShowList: (() -> Void)? = nil
+    ) {
+        self._selectedTodo = selectedTodo
+        self.destination = destination
+        self.anchorDate = anchorDate
+        self.scaleBinding = scaleBinding
+        self._pageIndex = pageIndex
+        self._pageOrigin = pageOrigin
+        self.createRequest = createRequest
+        self.onShowList = onShowList
+
+        _datedTodos = Query(
+            TodoQueries.scheduledDescriptor(from: rangeStart, to: rangeEnd)
+        )
+    }
 
     /// Day or week, and the day being shown.
     ///
-    /// Owned by `RootView` when the calendar is a tab, so tapping the summary's
-    /// schedule card can open the calendar *on today* rather than wherever the
-    /// user last left it. The local defaults keep the view usable on its own —
-    /// in previews, and scoped to a space or project.
-    var anchorDate: Binding<Date>?
-    var scaleBinding: Binding<Scale>?
+    /// Always bound here: the wrapper resolves the caller's bindings against
+    /// its own fallback state before building this view, because the visible
+    /// range has to be known in order to build the query.
+    var anchorDate: Binding<Date>
+    var scaleBinding: Binding<Scale>
 
     /// Incremented by the app-wide create button; the calendar answers by
     /// creating a block at the next quarter hour. See `createAtNextSlot`.
@@ -47,8 +170,6 @@ struct CalendarView: View {
     /// has nothing to return to.
     var onShowList: (() -> Void)?
 
-    @State private var localScale: Scale = .day
-    @State private var localAnchor = Date()
     @State private var eventStore = CalendarEventStore.shared
 
     /// The side panel, which a scoped calendar points at its own list.
@@ -80,10 +201,10 @@ struct CalendarView: View {
     /// The to-do whose "move to" picker is open, from Cmd+M.
     @State private var movingTodo: Todo?
 
-    /// Page currently shown, as an offset from `pageOrigin`.
-    @State private var pageIndex = 0
-    /// Date that page 0 refers to; moved when the window is recentred.
-    @State private var pageOrigin = Date()
+    /// Page currently shown, as an offset from `pageOrigin`, and the date page
+    /// 0 refers to. Both owned by the wrapper — see its `pageIndex`.
+    @Binding private var pageIndex: Int
+    @Binding private var pageOrigin: Date
 
     /// How many pages exist either side of the origin. Large enough that
     /// recentring is invisible, small enough to stay cheap.
@@ -98,25 +219,19 @@ struct CalendarView: View {
     private var calendar: Calendar { settings.calendar }
     private var store: TodoStore { TodoStore(context: context) }
 
-    /// The externally-owned value when there is one, else the local state.
+    /// Whoever owns the value — the caller, or the wrapper's fallback state.
     private var scale: Scale {
-        get { scaleBinding?.wrappedValue ?? localScale }
-        nonmutating set {
-            if let scaleBinding { scaleBinding.wrappedValue = newValue } else { localScale = newValue }
-        }
+        get { scaleBinding.wrappedValue }
+        nonmutating set { scaleBinding.wrappedValue = newValue }
     }
 
     private var anchor: Date {
-        get { anchorDate?.wrappedValue ?? localAnchor }
-        nonmutating set {
-            if let anchorDate { anchorDate.wrappedValue = newValue } else { localAnchor = newValue }
-        }
+        get { anchorDate.wrappedValue }
+        nonmutating set { anchorDate.wrappedValue = newValue }
     }
 
     /// Binding form, for the picker.
-    private var scaleSelection: Binding<Scale> {
-        scaleBinding ?? $localScale
-    }
+    private var scaleSelection: Binding<Scale> { scaleBinding }
 
     /// What the scoped calendar's switch selects between: the list it was
     /// opened from, or one of the grid's scales.
@@ -158,10 +273,19 @@ struct CalendarView: View {
         }
     }
 
-    /// To-dos this calendar lays out, narrowed to the container it was opened
-    /// from.
-    private var scopedTodos: [Todo] {
-        TodoQueries.calendarScope(todos, for: destination)
+    /// One day's untimed rows, for the all-day header.
+    ///
+    /// Sliced out of `datedTodos` rather than queried per day: the fetch
+    /// already covers the visible range and applied the state and Focus rules,
+    /// so what is left is a date comparison and the container walk — and the
+    /// week scale asks this seven times for one page.
+    private func untimedOn(_ day: Date) -> [Todo] {
+        TodoQueries.untimedOn(datedTodos, day: day, for: destination, calendar: calendar)
+    }
+
+    /// One day's timed rows, laid out against the hours. See `untimedOn`.
+    private func timedOn(_ day: Date) -> [Todo] {
+        TodoQueries.timedOn(datedTodos, day: day, for: destination, calendar: calendar)
     }
 
     var body: some View {
@@ -196,10 +320,14 @@ struct CalendarView: View {
         // The app-wide button asks; the calendar answers by blocking out the
         // next quarter hour on the day being shown.
         .onChange(of: createRequest?.wrappedValue) { _, _ in createAtNextSlot() }
-        // Up and down step through the day's blocks in time order; left and
-        // right move between days, which is what the arrows mean on a grid.
-        .onKeyPress(.upArrow) { moveCursor(.up) }
-        .onKeyPress(.downArrow) { moveCursor(.down) }
+        // Up and down act on the *selected block* rather than stepping between
+        // blocks: on a grid the vertical axis is time, so the obvious thing for
+        // an arrow key to do with something selected is move it through time.
+        // Stepping between blocks is still available — with nothing selected
+        // the same keys pick one, which is how the cursor gets started.
+        .onKeyPress(keys: [.upArrow, .downArrow]) { press in
+            arrowPressed(press)
+        }
         .onKeyPress(.leftArrow) { shift(by: -1); return .handled }
         .onKeyPress(.rightArrow) { shift(by: 1); return .handled }
         .onKeyPress(.return) {
@@ -278,14 +406,13 @@ struct CalendarView: View {
         return days.flatMap { day in
             // `timed` already comes back in start order, which is the order the
             // blocks are drawn down the column.
-            TodoQueries.untimed(scopedTodos, on: day, calendar: calendar).map(\.uuid)
-                + TodoQueries.timed(scopedTodos, on: day, calendar: calendar).map(\.uuid)
+            untimedOn(day).map(\.uuid) + timedOn(day).map(\.uuid)
         }
     }
 
     private var cursorTodo: Todo? {
         guard let id = cursor.selection else { return nil }
-        return todos.first { $0.uuid == id }
+        return TodoQueries.todo(uuid: id, in: context)
     }
 
     private func moveCursor(_ direction: KeyboardCursor.Direction) -> KeyPress.Result {
@@ -294,6 +421,85 @@ struct CalendarView: View {
         cursor = next
         return .handled
     }
+
+    /// Route an up or down arrow, which does one of three things here.
+    ///
+    /// With a timed block selected the key edits it: plain and Shift move it
+    /// through the day, Command changes how long it runs. With nothing selected
+    /// — or with an all-day chip selected, which has no time to move — the key
+    /// falls back to picking a block, so the arrows still get the cursor going.
+    private func arrowPressed(_ press: KeyPress) -> KeyPress.Result {
+        let direction: KeyboardCursor.Direction = press.key == .upArrow ? .up : .down
+        // Up shortens and moves earlier; down lengthens and moves later. Both
+        // read the same way on screen — the block follows the key.
+        let sign = press.key == .upArrow ? -1 : 1
+
+        // An untimed to-do sits in the all-day row and has no start to nudge,
+        // so the keys keep their navigation meaning on it.
+        guard let todo = cursorTodo, todo.assignedDate != nil, todo.assignedHasTime else {
+            return moveCursor(direction)
+        }
+
+        let modifiers = press.modifiers
+        let minutes = modifiers.contains(.shift)
+            ? settings.calendarFineNudgeMinutes
+            : settings.calendarNudgeMinutes
+
+        if modifiers.contains(.command) {
+            resize(todo, byMinutes: sign * minutes)
+        } else {
+            nudge(todo, byMinutes: sign * minutes)
+        }
+        return .handled
+    }
+
+    /// Move a block through its day by `minutes`, clamped to the day it is on.
+    ///
+    /// Clamped rather than allowed to roll into the next day: the grid shows
+    /// one day (or one week of separate columns), so a block that slid past
+    /// midnight would vanish from under the cursor that is still driving it.
+    private func nudge(_ todo: Todo, byMinutes minutes: Int) {
+        guard let current = todo.assignedDate,
+              let moved = calendar.date(byAdding: .minute, value: minutes, to: current)
+        else { return }
+
+        let dayStart = calendar.startOfDay(for: current)
+        let duration = todo.effectiveDuration(defaultDuration: settings.defaultEventDuration)
+        let lastStart = dayStart.addingTimeInterval(24 * 3600 - duration)
+        let clamped = min(max(moved, dayStart), max(lastStart, dayStart))
+
+        guard clamped != current else { return }
+
+        store.update(todo) {
+            $0.assignedDate = clamped
+            $0.assignedHasTime = true
+        }
+    }
+
+    /// Lengthen or shorten a block by `minutes`, holding its start time.
+    ///
+    /// Writes the duration explicitly even when the to-do had none, since the
+    /// point of the keystroke is to give it a length of its own rather than to
+    /// keep tracking whatever the default happens to be.
+    private func resize(_ todo: Todo, byMinutes minutes: Int) {
+        guard let start = todo.assignedDate else { return }
+
+        let current = todo.effectiveDuration(defaultDuration: settings.defaultEventDuration)
+        let dayEnd = calendar.startOfDay(for: start).addingTimeInterval(24 * 3600)
+        // Never shorter than one nudge step, and never past the end of the day
+        // the block starts on.
+        let longest = max(dayEnd.timeIntervalSince(start), Self.shortestDuration)
+        let proposed = current + Double(minutes) * 60
+        let clamped = min(max(proposed, Self.shortestDuration), longest)
+
+        guard clamped != current else { return }
+
+        store.update(todo) { $0.duration = clamped }
+    }
+
+    /// Floor for a resized block: below this it stops being readable, and the
+    /// grid draws it at its minimum height anyway.
+    private static let shortestDuration: TimeInterval = 5 * 60
 
     private func perform(_ command: KeyboardCommand) {
         switch command {
@@ -316,10 +522,29 @@ struct CalendarView: View {
             guard let todo = cursorTodo ?? selectedTodo else { return }
             movingTodo = todo
 
+        case .duplicate:
+            guard let todo = cursorTodo ?? selectedTodo else { return }
+            duplicate(todo)
+
+        case .delete:
+            guard let todo = cursorTodo ?? selectedTodo else { return }
+            store.delete(todo)
+
         // The calendar has no search field of its own; the lists own that.
         case .search:
             break
         }
+    }
+
+    /// Copy a block, leaving the cursor on the copy.
+    ///
+    /// The copy keeps the original's time, so the two sit exactly on top of one
+    /// another — which the grid's overlap layout already handles by splitting
+    /// the column between them, and which is the honest thing to show: the user
+    /// asked for a second block at that time and now has one.
+    private func duplicate(_ todo: Todo) {
+        let copy = store.duplicate(todo)
+        cursor.select(copy.uuid)
     }
 
     private func apply(_ destination: MoveDestinationView.Destination, to todo: Todo) {
@@ -331,7 +556,7 @@ struct CalendarView: View {
             store.move(todo, toParent: nil)
             store.move(todo, toSpace: spaces.first { $0.uuid == id })
         case .project(let id):
-            guard let project = todos.first(where: { $0.uuid == id }) else { return }
+            guard let project = TodoQueries.todo(uuid: id, in: context) else { return }
             _ = store.adopt(todo, asSubtaskOf: project)
         }
     }
@@ -569,7 +794,46 @@ struct CalendarView: View {
     // MARK: All-day
 
     /// Untimed scheduled todos, pinned above the grid as the spec requires.
+    ///
+    /// Capped and scrollable rather than allowed to grow: a day with twenty
+    /// undated items would otherwise push the hour grid — the thing the screen
+    /// is for — entirely off the bottom of the window.
     private func allDayRow(for days: [Date]) -> some View {
+        ScrollView(.vertical) {
+            allDayContent(for: days)
+        }
+        // Only as tall as it needs to be, up to the cap. `ScrollView` takes all
+        // the height offered, so without this the row would sit at its maximum
+        // even on a day holding one chip.
+        .frame(maxHeight: allDayHeight(for: days))
+        // A cap that has not been reached is not a scroll view the user should
+        // be able to bounce.
+        .scrollBounceBehavior(.basedOnSize)
+    }
+
+    /// Tallest the all-day row is allowed to get: about five chips.
+    ///
+    /// Measured against the day holding the most, since in the week scale the
+    /// columns share one row and the row has to fit the busiest of them.
+    private func allDayHeight(for days: [Date]) -> CGFloat {
+        let mostChips = days.map { day in
+            untimedOn(day).count + allDayEvents(on: day).count
+        }.max() ?? 0
+
+        let rows = min(max(mostChips, 1), Self.allDayVisibleChips)
+        return CGFloat(rows) * Self.allDayChipHeight
+            + CGFloat(max(rows - 1, 0)) * Self.allDayChipSpacing
+            + Self.allDayRowPadding * 2
+    }
+
+    /// How many chips the all-day row shows before it starts scrolling.
+    private static let allDayVisibleChips = 5
+    /// Height of one chip: caption text plus its own vertical padding.
+    private static let allDayChipHeight: CGFloat = 22
+    private static let allDayChipSpacing: CGFloat = 4
+    private static let allDayRowPadding: CGFloat = 6
+
+    private func allDayContent(for days: [Date]) -> some View {
         HStack(alignment: .top, spacing: 0) {
             Text("all-day")
                 .font(.caption2)
@@ -579,15 +843,18 @@ struct CalendarView: View {
 
             HStack(alignment: .top, spacing: 0) {
                 ForEach(days, id: \.self) { day in
-                    VStack(spacing: 4) {
-                        ForEach(TodoQueries.untimed(scopedTodos, on: day, calendar: calendar)) { todo in
+                    VStack(spacing: Self.allDayChipSpacing) {
+                        ForEach(untimedOn(day)) { todo in
                             chip(for: todo)
                         }
                         ForEach(allDayEvents(on: day)) { event in
                             allDayEventChip(event)
                         }
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    // Pinned to the top so a column with one chip lines its
+                    // chip up with its neighbours' first, rather than
+                    // centring it against the tallest column in the week.
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .padding(.horizontal, Self.columnInset)
                     // Dropping into the all-day strip schedules for that day
                     // without a time — the counterpart to dropping onto the
@@ -597,7 +864,7 @@ struct CalendarView: View {
                     .contentShape(Rectangle())
                     .dropDestination(for: TodoTransfer.self) { items, _ in
                         let dropped = items.compactMap { item in
-                            todos.first { $0.uuid == item.uuid }
+                            TodoQueries.todo(uuid: item.uuid, in: context)
                         }
                         guard !dropped.isEmpty else { return false }
 
@@ -612,8 +879,11 @@ struct CalendarView: View {
                 }
             }
         }
-        .padding(.vertical, 6)
-        .frame(minHeight: 36)
+        .padding(.vertical, Self.allDayRowPadding)
+        // A day with nothing in it still has to be a drop target, so the row
+        // keeps a floor of one chip's worth of height. The cap above is a
+        // maximum, not a size.
+        .frame(minHeight: Self.allDayChipHeight + Self.allDayRowPadding * 2)
     }
 
     private func chip(for todo: Todo) -> some View {
@@ -648,7 +918,37 @@ struct CalendarView: View {
             cursor.select(todo.uuid)
             selectedTodo = todo
         }
+        .contextMenu { blockMenu(for: todo) }
         .accessibilityAddTraits(.isButton)
+    }
+
+    /// The context menu behind a long press on anything the calendar lays out.
+    ///
+    /// Deliberately short, and deliberately not the list's menu: on a calendar
+    /// the interesting verbs are about the *slot* — take it off the grid, put a
+    /// second one beside it, or get rid of it. Everything else about a to-do is
+    /// one tap away in the editor.
+    @ViewBuilder
+    private func blockMenu(for todo: Todo) -> some View {
+        Button {
+            store.unschedule(todo)
+        } label: {
+            Label("Unschedule", systemImage: "calendar.badge.minus")
+        }
+
+        Button {
+            duplicate(todo)
+        } label: {
+            Label("Duplicate", systemImage: "plus.square.on.square.dashed")
+        }
+
+        Divider()
+
+        Button(role: .destructive) {
+            store.delete(todo)
+        } label: {
+            Label("Delete", systemImage: "trash")
+        }
     }
 
     // MARK: Timed grid
@@ -697,7 +997,7 @@ struct CalendarView: View {
     }
 
     private func dayColumn(for day: Date, isActive: Bool = true) -> some View {
-        let todosOnDay = TodoQueries.timed(scopedTodos, on: day, calendar: calendar)
+        let todosOnDay = timedOn(day)
         let eventsOnDay = timedEvents(on: day)
         let slots = layoutSlots(todos: todosOnDay, events: eventsOnDay)
 
@@ -770,7 +1070,7 @@ struct CalendarView: View {
         // — scheduling each for the time it was dropped at.
         .dropDestination(for: TodoTransfer.self) { items, location in
             let dropped = items.compactMap { item in
-                todos.first { $0.uuid == item.uuid }
+                TodoQueries.todo(uuid: item.uuid, in: context)
             }
             guard !dropped.isEmpty else { return false }
 
@@ -892,7 +1192,7 @@ struct CalendarView: View {
     /// System events are ignored: they are read-only here, so creating a to-do
     /// alongside a meeting is a reasonable thing to want.
     private func occupiedRanges(on day: Date) -> [Range<Date>] {
-        TodoQueries.timed(scopedTodos, on: day, calendar: calendar).compactMap { todo in
+        timedOn(day).compactMap { todo in
             guard let start = todo.assignedDate else { return nil }
             let end = start.addingTimeInterval(
                 todo.effectiveDuration(defaultDuration: settings.defaultEventDuration)
@@ -991,14 +1291,14 @@ struct CalendarView: View {
             return spaces.first { $0.uuid == id }
         }
         if case .project(let id) = destination {
-            return todos.first { $0.uuid == id }?.space
+            return TodoQueries.todo(uuid: id, in: context)?.space
         }
         return nil
     }
 
     private var creationParent: Todo? {
         if case .project(let id) = destination {
-            return todos.first { $0.uuid == id }
+            return TodoQueries.todo(uuid: id, in: context)
         }
         return nil
     }
@@ -1091,6 +1391,11 @@ struct CalendarView: View {
                     dragTranslation = 0
                 }
         )
+        // A long press already means "pick this block up and drag it", so the
+        // menu is attached rather than bound to another press of our own: the
+        // system opens it from the same gesture without the two competing, and
+        // a right-click on macOS gets there too.
+        .contextMenu { blockMenu(for: todo) }
         .accessibilityAddTraits(.isButton)
     }
 
@@ -1325,7 +1630,7 @@ struct CalendarView: View {
         case .space(let id):
             return spaces.first { $0.uuid == id }?.name
         case .project(let id):
-            return todos.first { $0.uuid == id }?.title
+            return TodoQueries.todo(uuid: id, in: context)?.title
         default:
             return nil
         }

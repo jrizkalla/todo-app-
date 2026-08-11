@@ -35,7 +35,6 @@ enum AppTab: String, CaseIterable, Identifiable, Hashable {
 struct RootView: View {
     @Environment(\.modelContext) private var context
     @Environment(AppSettings.self) private var settings
-    @Query private var todos: [Todo]
 
     /// The app launches on Today, per the spec.
     @State private var tab: AppTab = .today
@@ -68,6 +67,15 @@ struct RootView: View {
             set: { createRequests[tab] = $0 }
         )
     }
+
+    /// A to-do just captured with Cmd+N, waiting for whichever surface shows the
+    /// Inbox to put the caret in its title.
+    ///
+    /// Passed down rather than acted on here because `RootView` draws no rows:
+    /// only the list or the panel has the row — and therefore the text field —
+    /// that focus has to land in. Cleared by whoever claims it, so a second
+    /// Cmd+N is not answered by the surface that handled the first.
+    @State private var capturedTodo: UUID?
 
     @State private var didRunLaunchTasks = false
     @State private var importer = RemindersImporter.shared
@@ -113,6 +121,10 @@ struct RootView: View {
                             SidePanelView(
                                 selectedTodo: $selectedTodo,
                                 scope: effectivePanelScope,
+                                // Only while it is actually showing the Inbox:
+                                // scoped to a calendar's list, the panel is not
+                                // where a captured to-do went.
+                                capturedTodo: effectivePanelScope == .inbox ? $capturedTodo : nil,
                                 onHide: { settings.showSidePanel = false }
                             )
                             .frame(width: panelColumn)
@@ -140,6 +152,37 @@ struct RootView: View {
         .onChange(of: showsInboxTab) { _, showsTab in
             if !showsTab && tab == .inbox { tab = .today }
         }
+        // Cmd+N, from anywhere in the app.
+        .onReceive(
+            NotificationCenter.default.publisher(for: .createInInboxRequested)
+        ) { _ in
+            captureIntoInbox()
+        }
+    }
+
+    /// Answer Cmd+N: put a new to-do in the Inbox and show it, ready to type.
+    ///
+    /// The creating is done here rather than delegated to a list, so the
+    /// shortcut works on the Today tab too — a screen with no list of its own,
+    /// where the + button is deliberately absent. Showing the Inbox afterwards
+    /// is not incidental: a row created onto a screen the user cannot see is a
+    /// to-do they have no way to name.
+    private func captureIntoInbox() {
+        let created = TodoStore(context: context).createTodo()
+
+        // Wherever the Inbox is currently reachable. On a phone it is a tab of
+        // its own; on a wide layout it is the side panel, which is on screen
+        // beside every tab and needs no navigation at all.
+        if showsInboxTab {
+            tab = .inbox
+        } else if !settings.showSidePanel {
+            // The panel is the Inbox on this layout, so the row would be
+            // created into something hidden. Showing it is a smaller surprise
+            // than a to-do that silently goes nowhere.
+            settings.showSidePanel = true
+        }
+
+        capturedTodo = created.uuid
     }
 
     /// Reveals the panel again after it has been collapsed.
@@ -189,7 +232,8 @@ struct RootView: View {
                         TodoListView(
                             destination: .inbox,
                             selectedTodo: $selectedTodo,
-                            createRequest: createCount(for: .inbox)
+                            createRequest: createCount(for: .inbox),
+                            capturedTodo: $capturedTodo
                         )
                         .todoDetailDestination(selection: $selectedTodo)
                     }
@@ -380,7 +424,9 @@ struct CreateButton: View {
         .padding(.trailing, Theme.Metrics.createButtonInset)
         .padding(.bottom, Theme.Metrics.createButtonInset)
         .accessibilityLabel("New To-Do")
-        .keyboardShortcut("n", modifiers: .command)
+        // No keyboard shortcut of its own. Cmd+N is the Inbox capture command
+        // — see `AppCommands` — and a second binding here meant one keystroke
+        // both captured to the Inbox *and* created into the open screen.
     }
 }
 

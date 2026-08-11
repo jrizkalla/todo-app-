@@ -11,7 +11,17 @@ import SwiftUI
 struct AppCommands: Commands {
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
-            command(.create, key: "n")
+            // Deliberately *not* `.create`, which is the + button's request and
+            // means "new thing here" — a block on the calendar, a row in
+            // whichever list is open. Cmd+N is the capture shortcut: it is
+            // pressed to get something out of the user's head before they have
+            // decided where it belongs, and the Inbox is where the app says
+            // undecided work lives. Routing it through the open screen instead
+            // put a to-do into whatever list happened to be showing.
+            Button("New To-Do") {
+                NotificationCenter.default.post(name: .createInInboxRequested, object: nil)
+            }
+            .keyboardShortcut("n", modifiers: .command)
         }
 
         CommandMenu("To-Do") {
@@ -22,6 +32,13 @@ struct AppCommands: Commands {
 
             command(.schedule, key: "s")
             command(.move, key: "m")
+            command(.duplicate, key: "d")
+
+            Divider()
+
+            // Delete rather than Backspace: they are the same physical key on
+            // an Apple keyboard, and `.delete` is what SwiftUI calls it.
+            command(.delete, key: .delete)
         }
 
         CommandGroup(after: .textEditing) {
@@ -46,6 +63,11 @@ struct AppCommands: Commands {
 
 extension Notification.Name {
     static let toggleCalendarRequested = Notification.Name("toggleCalendarRequested")
+    /// Cmd+N: capture something into the Inbox, wherever the user is.
+    ///
+    /// Answered by `RootView` rather than by a list, because the point of the
+    /// shortcut is that it does *not* depend on which screen is open.
+    static let createInInboxRequested = Notification.Name("createInInboxRequested")
 }
 
 extension View {
