@@ -20,7 +20,14 @@ extension ModelContainer {
             cloudKitDatabase: .none
         )
 
-        return try ModelContainer(for: AppSchema.schema, configurations: [configuration])
+        // Same plan as the app: the widget opens the same file, so whichever
+        // runs first has to be able to migrate it. Without this the widget
+        // would fail to open a store the app had not upgraded yet.
+        return try ModelContainer(
+            for: AppSchema.schema,
+            migrationPlan: AppMigrationPlan.self,
+            configurations: [configuration]
+        )
     }
 }
 

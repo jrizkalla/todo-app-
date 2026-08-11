@@ -100,7 +100,15 @@ extension ModelContainer {
             }
         }
 
-        return try ModelContainer(for: AppSchema.schema, configurations: [configuration])
+        // The migration plan is what carries a store from V1 to V2; without it
+        // SwiftData attempts an implicit lightweight migration, which cannot
+        // add SavedAISummary's mandatory fingerprint columns to existing rows
+        // and fails the open outright. See `AppMigrationPlan`.
+        return try ModelContainer(
+            for: AppSchema.schema,
+            migrationPlan: AppMigrationPlan.self,
+            configurations: [configuration]
+        )
     }
 
     /// True when the process is hosting an XCTest/Swift Testing bundle.
