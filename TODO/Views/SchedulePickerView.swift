@@ -181,26 +181,53 @@ struct SchedulePickerView: View {
     private func dayCell(_ day: Date?) -> some View {
         if let day {
             let isPast = day < today
+            let isToday = calendar.isDate(day, inSameDayAs: today)
 
             Button {
                 onPick(day, false)
             } label: {
                 Text("\(calendar.component(.day, from: day))")
                     .font(.callout)
+                    // Today is the anchor the whole grid is read against —
+                    // "the 14th" means nothing until you can see where today
+                    // falls — so it is weighted even when something else is
+                    // the selected date.
+                    .fontWeight(isToday ? .bold : .regular)
                     .frame(maxWidth: .infinity, minHeight: 32)
-                    .foregroundStyle(isPast ? .secondary : .primary)
+                    .foregroundStyle(dayForeground(isToday: isToday, isPast: isPast))
                     .background {
                         if isSelected(day) {
                             Circle().fill(Color.accentColor.opacity(0.22))
+                        } else if isToday {
+                            // A ring rather than a fill, so today never looks
+                            // like the picked date. The two coincide often
+                            // enough that they have to stay distinguishable —
+                            // and when they do, the fill above wins and the
+                            // bold weight still marks it as today.
+                            Circle().strokeBorder(Color.accentColor.opacity(0.55), lineWidth: 1.5)
                         }
                     }
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(accessibilityLabel(for: day, isToday: isToday))
         } else {
             // Padding for the days before the first of the month.
             Color.clear.frame(maxWidth: .infinity, minHeight: 32)
         }
+    }
+
+    /// Today keeps full-strength colour even though it is not in the future;
+    /// dimming it would bury the one date the grid is read against.
+    private func dayForeground(isToday: Bool, isPast: Bool) -> Color {
+        if isToday { return .accentColor }
+        return isPast ? .secondary : .primary
+    }
+
+    /// Spells out "Today" for VoiceOver, which cannot see the ring.
+    private func accessibilityLabel(for day: Date, isToday: Bool) -> String {
+        let date = day.formatted(.dateTime.weekday(.wide).month(.wide).day())
+        return isToday ? "Today, \(date)" : date
     }
 
     private var clearButton: some View {

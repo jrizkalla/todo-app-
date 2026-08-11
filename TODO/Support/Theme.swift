@@ -182,6 +182,15 @@ enum Theme {
         /// Rows entering and leaving a list, and content swapping in place.
         static let listChange: SwiftUI.Animation = .spring(response: 0.3, dampingFraction: 0.85)
 
+        /// A to-do row growing open to expose its notes, and closing again.
+        ///
+        /// Slightly longer and softer than `toggle`: this moves the rows below
+        /// it down the screen, and a fast spring on that much travel reads as a
+        /// jolt. The damping is just under critical, so the row settles with a
+        /// hint of give — enough to feel like it grew rather than jumped, and
+        /// short of the bounce that would make a list look springy.
+        static let rowExpand: SwiftUI.Animation = .spring(response: 0.35, dampingFraction: 0.82)
+
         /// The most substantial: panels, sheets, and moving between days.
         /// Still under a third of a second.
         static let panel: SwiftUI.Animation = .spring(response: 0.32, dampingFraction: 0.88)
@@ -207,6 +216,20 @@ enum Theme {
 }
 
 extension Color {
+    /// Fill behind the expanded row's card.
+    ///
+    /// The system's own background colour rather than a literal white, so the
+    /// card stays lighter than the list it sits on in *both* appearances — a
+    /// hardcoded white card is invisible in light mode's white list and puts
+    /// white text on a white field in dark mode.
+    static var rowCard: Color {
+        #if os(macOS)
+        Color(nsColor: .controlBackgroundColor)
+        #else
+        Color(uiColor: .secondarySystemGroupedBackground)
+        #endif
+    }
+
     /// Build a color from a `#RRGGBB` string, falling back to gray on bad input.
     init(hex: String) {
         let cleaned = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))

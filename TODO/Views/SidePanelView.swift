@@ -21,6 +21,14 @@ struct SidePanelView: View {
     /// Titles are editable here too, so the panel owns its own focus.
     @FocusState private var focusedTodoID: UUID?
 
+    /// Which row is expanded for editing.
+    ///
+    /// The panel's own state, not `selectedTodo`: that one opens the editor,
+    /// and the first tap on a row is only meant to expand it in place. The
+    /// panel has no keyboard cursor to hang this on the way the main list
+    /// does, so it keeps the id itself.
+    @State private var expandedTodoID: UUID?
+
     private var store: TodoStore { TodoStore(context: context) }
 
     var body: some View {
@@ -82,8 +90,8 @@ struct SidePanelView: View {
         TodoRow(
             todo: todo,
             showsSpace: true,
-            isSelected: selectedTodo?.uuid == todo.uuid,
-            onToggle: {
+            isSelected: expandedTodoID == todo.uuid,
+            onToggle: { _ in
                 // Cascade silently here: the panel is a glanceable surface and
                 // a modal prompt would be disruptive. The full prompt still
                 // appears in the main list.
@@ -97,7 +105,7 @@ struct SidePanelView: View {
                 }
             },
             onTitleChange: { _ in store.save() },
-            focusedTodoID: $focusedTodoID,
+            onNotesChange: { _ in store.save() },
             menu: {
                 AnyView(
                     Button {
@@ -107,10 +115,26 @@ struct SidePanelView: View {
                         Label("Show Details", systemImage: "info.circle")
                     }
                 )
-            }
+            },
+            onSubmitTitle: {},
+            onShowDetail: { todo in
+                focusedTodoID = nil
+                selectedTodo = todo
+            },
+            focusedTodoID: $focusedTodoID
         )
         .listRowInsets(EdgeInsets())
         .listRowSeparator(.hidden)
+        // Expanding is the panel's call, not the row's — see `TodoRow`.
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard expandedTodoID != todo.uuid else { return }
+            withAnimation(Theme.Animation.rowExpand) { expandedTodoID = todo.uuid }
+        }
+        // The panel sits beside every tab, so dragging out of it is the
+        // shortest path from unfiled work to a list or a calendar slot.
+        // Suppressed while the title is being typed into, as in the main list.
+        .todoDraggable(todo, isEnabled: focusedTodoID != todo.uuid)
         // The panel selects to-dos too, so its rows anchor the editor popover
         // the same way the main list's do.
         .todoDetailPopover(for: todo, selection: $selectedTodo)

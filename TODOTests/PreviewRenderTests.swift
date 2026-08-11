@@ -48,6 +48,14 @@ struct PreviewRenderTests {
         render(TodoRowRenderHost(todo: PreviewData.longTitled))
     }
 
+    /// The expanded row draws a different hierarchy from the collapsed one —
+    /// two live text fields and the detail chevron in place of static text —
+    /// so it needs its own pass.
+    @Test func todoRowRendersExpanded() {
+        render(TodoRowRenderHost(todo: PreviewData.todo(titled: "Review"), isSelected: true))
+        render(TodoRowRenderHost(todo: PreviewData.longTitled, isSelected: true))
+    }
+
     @Test func pendingReminderRowRenders() {
         render(
             PendingReminderRow(reminder: PreviewData.pendingReminders[0]) {}
@@ -74,7 +82,7 @@ struct PreviewRenderTests {
 
     @Test func todoListRendersEveryDestination() {
         let destinations: [ListDestination] = [
-            .inbox, .today, .thisWeek, .anytime, .logbook,
+            .inbox, .today, .tomorrow, .thisWeek, .anytime, .logbook,
             .project(PreviewData.project.uuid),
             .space(PreviewData.space.uuid),
         ]
@@ -100,6 +108,33 @@ struct PreviewRenderTests {
 
     @Test func sidePanelRenders() {
         render(SidePanelRenderHost())
+    }
+
+    /// The quick-scheduling panel, in the states its month grid distinguishes:
+    /// an undated to-do, one dated to today (where the today ring and the
+    /// selection fill land on the same cell), and one dated elsewhere.
+    @Test func schedulePickerRenders() {
+        let undated = PreviewData.todo(titled: "Undated")
+
+        let todayTodo = Todo(title: "Due today", assignedDate: Date())
+        PreviewData.context.insert(todayTodo)
+
+        let laterTodo = Todo(
+            title: "Later",
+            assignedDate: Calendar.current.date(byAdding: .day, value: 9, to: Date())
+        )
+        PreviewData.context.insert(laterTodo)
+
+        for todo in [undated, todayTodo, laterTodo] {
+            render(
+                SchedulePickerView(
+                    todo: todo,
+                    onPick: { _, _ in },
+                    onAddReminder: {},
+                    onDismiss: {}
+                )
+            )
+        }
     }
 
     @Test func spaceEditorRenders() {
@@ -143,14 +178,21 @@ struct PreviewRenderTests {
 @MainActor
 private struct TodoRowRenderHost: View {
     let todo: Todo
+    var isSelected: Bool = false
     @FocusState private var focused: UUID?
 
     var body: some View {
         TodoRow(
             todo: todo,
             showsSpace: true,
-            onToggle: {},
+            isSelected: isSelected,
+            onToggle: { _ in },
             onSelectState: { _ in },
+            onTitleChange: { _ in },
+            onNotesChange: { _ in },
+            menu: { AnyView(EmptyView()) },
+            onSubmitTitle: {},
+            onShowDetail: { _ in },
             focusedTodoID: $focused
         )
     }

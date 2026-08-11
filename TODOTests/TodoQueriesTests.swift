@@ -95,6 +95,49 @@ struct TodoQueriesTests {
         #expect(TodoQueries.today([done], calendar: calendar).isEmpty)
     }
 
+    // MARK: Tomorrow
+
+    /// Tomorrow covers the next day only — not today, not the day after.
+    @Test func tomorrowHoldsOnlyTheNextDaysWork() throws {
+        let context = try makeContext()
+        let todayTodo = Todo(title: "Today", assignedDate: day(offset: 0))
+        let tomorrowTodo = Todo(title: "Tomorrow", assignedDate: day(offset: 1))
+        let laterTodo = Todo(title: "Later", assignedDate: day(offset: 2))
+        [todayTodo, tomorrowTodo, laterTodo].forEach(context.insert)
+
+        let result = TodoQueries.tomorrow([todayTodo, tomorrowTodo, laterTodo], calendar: calendar)
+
+        #expect(result.map(\.title) == ["Tomorrow"])
+    }
+
+    /// Overdue work belongs to Today, which is where it cannot be missed.
+    /// Repeating it here would show one late item in two lists.
+    @Test func tomorrowExcludesOverdueWork() throws {
+        let context = try makeContext()
+        let overdue = Todo(title: "Overdue", assignedDate: day(offset: -3))
+        context.insert(overdue)
+
+        #expect(TodoQueries.tomorrow([overdue], calendar: calendar).isEmpty)
+    }
+
+    /// A due date alone puts an item in Tomorrow, matching Today's rule.
+    @Test func tomorrowIncludesItemsDueTomorrow() throws {
+        let context = try makeContext()
+        let due = Todo(title: "Due", dueDate: day(offset: 1))
+        context.insert(due)
+
+        #expect(TodoQueries.tomorrow([due], calendar: calendar).map(\.title) == ["Due"])
+    }
+
+    @Test func tomorrowExcludesResolvedWork() throws {
+        let context = try makeContext()
+        let done = Todo(title: "Done", assignedDate: day(offset: 1))
+        context.insert(done)
+        done.setState(.completed)
+
+        #expect(TodoQueries.tomorrow([done], calendar: calendar).isEmpty)
+    }
+
     // MARK: Any Time
 
     /// The summary's Any Time card lists work with no time of day. Timed work
@@ -197,6 +240,56 @@ struct TodoQueriesTests {
         let todos = [todayTodo, tomorrowTodo]
 
         #expect(TodoQueries.scheduled(todos, on: today, calendar: calendar).map(\.title) == ["Today"])
+    }
+
+    /// The grid is a picture of time still to be spent, so finished work leaves
+    /// it — including the all-day header. Unlike the lists, this is not tied to
+    /// the Show Resolved preference: a completed block would hold a slot it no
+    /// longer needs and push live work into a cascade beside it.
+    @Test func calendarExcludesCompletedAndCancelled() throws {
+        let context = try makeContext()
+        let today = calendar.startOfDay(for: Date())
+
+        let open = Todo(title: "Open", assignedDate: today.addingTimeInterval(9 * 3600))
+        let done = Todo(title: "Done", assignedDate: today.addingTimeInterval(10 * 3600))
+        let dropped = Todo(title: "Dropped", assignedDate: today.addingTimeInterval(11 * 3600))
+        [open, done, dropped].forEach { $0.assignedHasTime = true }
+        done.state = .completed
+        dropped.state = .cancelled
+        [open, done, dropped].forEach(context.insert)
+
+        let todos = [open, done, dropped]
+
+        #expect(TodoQueries.timed(todos, on: today, calendar: calendar).map(\.title) == ["Open"])
+        #expect(TodoQueries.scheduled(todos, on: today, calendar: calendar).map(\.title) == ["Open"])
+    }
+
+    /// Resolved all-day items leave the header for the same reason.
+    @Test func calendarHeaderExcludesResolved() throws {
+        let context = try makeContext()
+        let today = calendar.startOfDay(for: Date())
+
+        let open = Todo(title: "Open", assignedDate: today)
+        let done = Todo(title: "Done", assignedDate: today)
+        done.state = .completed
+        [open, done].forEach(context.insert)
+
+        #expect(TodoQueries.untimed([open, done], on: today, calendar: calendar).map(\.title) == ["Open"])
+    }
+
+    /// Completing something today must not leave it on the grid until the app
+    /// is relaunched — the query is the only gate, so it is checked directly.
+    @Test func completingRemovesItFromTheGrid() throws {
+        let context = try makeContext()
+        let today = calendar.startOfDay(for: Date())
+        let todo = Todo(title: "Standup", assignedDate: today.addingTimeInterval(9 * 3600))
+        todo.assignedHasTime = true
+        context.insert(todo)
+
+        #expect(TodoQueries.timed([todo], on: today, calendar: calendar).count == 1)
+
+        todo.state = .completed
+        #expect(TodoQueries.timed([todo], on: today, calendar: calendar).isEmpty)
     }
 
     // MARK: Spaces and projects

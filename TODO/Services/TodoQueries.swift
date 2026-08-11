@@ -5,6 +5,7 @@ import SwiftData
 enum ListDestination: Hashable, Codable {
     case inbox
     case today
+    case tomorrow
     case thisWeek
     case anytime
     case logbook
@@ -15,6 +16,7 @@ enum ListDestination: Hashable, Codable {
         switch self {
         case .inbox: "Inbox"
         case .today: "Today"
+        case .tomorrow: "Tomorrow"
         case .thisWeek: "This Week"
         case .anytime: "Anytime"
         case .logbook: "Logbook"
@@ -27,6 +29,7 @@ enum ListDestination: Hashable, Codable {
         switch self {
         case .inbox: "tray"
         case .today: "star"
+        case .tomorrow: "sunrise"
         case .thisWeek: "calendar"
         case .anytime: "square.stack"
         case .logbook: "checkmark.circle"
@@ -108,6 +111,27 @@ enum TodoQueries {
             .filter { todo in
                 if let assigned = todo.assignedDate, assigned < endOfToday { return true }
                 if let due = todo.dueDate, due < endOfToday { return true }
+                return false
+            }
+            .filter(includeResolved: includeResolved)
+            .filterCycles()
+            .sorted(by: sortByDateThenOrder)
+    }
+
+    /// Everything due or scheduled on the next day.
+    ///
+    /// Unlike `today`, this is a single day's window with no backward reach:
+    /// overdue work belongs in Today, where it cannot be missed. Pulling it
+    /// forward into Tomorrow as well would show the same late item in two lists
+    /// and make Tomorrow read as busier than the day actually is.
+    static func tomorrow(_ todos: [Todo], calendar: Calendar = .current, now: Date = Date(), includeResolved: Bool = false) -> [Todo] {
+        let startOfTomorrow = calendar.startOfDay(for: now).addingTimeInterval(24 * 3600)
+        let endOfTomorrow = startOfTomorrow.addingTimeInterval(24 * 3600)
+
+        return topLevel(todos)
+            .filter { todo in
+                if let assigned = todo.assignedDate, assigned >= startOfTomorrow, assigned < endOfTomorrow { return true }
+                if let due = todo.dueDate, due >= startOfTomorrow, due < endOfTomorrow { return true }
                 return false
             }
             .filter(includeResolved: includeResolved)
@@ -204,7 +228,14 @@ enum TodoQueries {
     // MARK: Calendar
 
     /// Scheduled todos falling on a given day.
-    static func scheduled(_ todos: [Todo], on day: Date, calendar: Calendar = .current, includeResolved: Bool = false) -> [Todo] {
+    ///
+    /// Completed and cancelled work is always excluded, whatever the Show
+    /// Resolved preference says. The grid is a picture of time still to be
+    /// spent, and a finished item occupies a slot it no longer needs — it
+    /// pushes live work into a cascade, blocks long-press creation on hours
+    /// that are in fact free, and makes a full day out of one already done.
+    /// The Logbook is where finished work is read back.
+    static func scheduled(_ todos: [Todo], on day: Date, calendar: Calendar = .current) -> [Todo] {
         let start = calendar.startOfDay(for: day)
         guard let end = calendar.date(byAdding: .day, value: 1, to: start) else { return [] }
 
@@ -212,21 +243,20 @@ enum TodoQueries {
             guard let assigned = todo.assignedDate else { return false }
             return assigned >= start && assigned < end
         }
-        .filter(includeResolved: includeResolved)
+        .filter(includeResolved: false)
         .filterCycles()
-        .filterResolved()
     }
 
     /// Day's todos without a time — shown in the calendar's all-day header.
-    static func untimed(_ todos: [Todo], on day: Date, calendar: Calendar = .current, includeResolved: Bool = false) -> [Todo] {
-        scheduled(todos, on: day, calendar: calendar, includeResolved: includeResolved)
+    static func untimed(_ todos: [Todo], on day: Date, calendar: Calendar = .current) -> [Todo] {
+        scheduled(todos, on: day, calendar: calendar)
             .filter { !$0.assignedHasTime }
             .sorted(by: sortByOrder)
     }
 
     /// Day's todos with a time — laid out as events.
-    static func timed(_ todos: [Todo], on day: Date, calendar: Calendar = .current, includeResolved: Bool = false) -> [Todo] {
-        scheduled(todos, on: day, calendar: calendar, includeResolved: includeResolved)
+    static func timed(_ todos: [Todo], on day: Date, calendar: Calendar = .current) -> [Todo] {
+        scheduled(todos, on: day, calendar: calendar)
             .filter { $0.assignedHasTime }
             .sorted { ($0.assignedDate ?? .distantPast) < ($1.assignedDate ?? .distantPast) }
     }

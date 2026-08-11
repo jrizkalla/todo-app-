@@ -145,9 +145,9 @@ extension TodoSearch {
             // Unfiled capture only. A subtask inside a project is filed, so the
             // Inbox's field should not reach it.
             return todos.filter { $0.bucket == .inbox && !$0.isProject }
-        case .today, .thisWeek:
-            // Dated work, at any date. Both lists are windows onto the same
-            // pool, so both search it the same way.
+        case .today, .tomorrow, .thisWeek:
+            // Dated work, at any date. All three lists are windows onto the
+            // same pool, so all three search it the same way.
             return todos.filter { $0.assignedDate != nil || $0.dueDate != nil }
         case .anytime:
             // Scheduled-but-undated, matching the browsing rule.

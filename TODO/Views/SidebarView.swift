@@ -302,7 +302,7 @@ struct SidebarView: View {
     /// Inbox is deliberately absent: it is its own tab, and listing it here too
     /// would give one screen two entry points with no way to tell them apart.
     private var fixedDestinations: [ListDestination] {
-        [.today, .thisWeek, .anytime, .logbook]
+        [.today, .tomorrow, .thisWeek, .anytime, .logbook]
     }
 
     /// Spell out what a space deletion takes with it, counting the projects and
@@ -342,6 +342,7 @@ struct SidebarView: View {
         switch destination {
         case .inbox: TodoQueries.inbox(todos, includeResolved: false).count
         case .today: TodoQueries.today(todos, includeResolved: false).count
+        case .tomorrow: TodoQueries.tomorrow(todos, includeResolved: false).count
         case .thisWeek: TodoQueries.thisWeek(todos, includeResolved: false).count
         case .anytime: TodoQueries.anytime(todos, includeResolved: false).count
         default: 0
@@ -352,6 +353,7 @@ struct SidebarView: View {
         switch destination {
         case .inbox: .blue
         case .today: .yellow
+        case .tomorrow: .orange
         case .thisWeek: .green
         case .anytime: .teal
         case .logbook: .secondary

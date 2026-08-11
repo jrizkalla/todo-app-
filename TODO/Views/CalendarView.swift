@@ -113,7 +113,7 @@ struct CalendarView: View {
     /// that container, so events from elsewhere would be noise.
     private var showsCalendarEvents: Bool {
         switch destination {
-        case .today, .thisWeek, .anytime:
+        case .today, .tomorrow, .thisWeek, .anytime:
             settings.showCalendarEvents
         default:
             false
@@ -218,12 +218,8 @@ struct CalendarView: View {
         return days.flatMap { day in
             // `timed` already comes back in start order, which is the order the
             // blocks are drawn down the column.
-            TodoQueries.untimed(
-                scopedTodos, on: day, calendar: calendar, includeResolved: settings.showResolved
-            ).map(\.uuid)
-                + TodoQueries.timed(
-                    scopedTodos, on: day, calendar: calendar, includeResolved: settings.showResolved
-                ).map(\.uuid)
+            TodoQueries.untimed(scopedTodos, on: day, calendar: calendar).map(\.uuid)
+                + TodoQueries.timed(scopedTodos, on: day, calendar: calendar).map(\.uuid)
         }
     }
 
@@ -431,7 +427,7 @@ struct CalendarView: View {
                 HStack(spacing: 0) {
                     // Matches the hour gutter, so the columns line up with the
                     // grid underneath rather than sitting half a column off.
-                    Color.clear.frame(width: 58, height: 1)
+                    Color.clear.frame(width: Self.gutterWidth, height: 1)
 
                     ForEach(visibleDays, id: \.self) { day in
                         VStack(spacing: 2) {
@@ -443,15 +439,44 @@ struct CalendarView: View {
                                 .fontWeight(calendar.isDateInToday(day) ? .bold : .regular)
                                 .foregroundStyle(calendar.isDateInToday(day) ? Color.accentColor : .primary)
                         }
+                        // The same per-column inset the grid's day columns
+                        // carry, so a header column is exactly as wide as the
+                        // column of blocks beneath it.
+                        .padding(.horizontal, Self.columnInset)
                         .frame(maxWidth: .infinity)
                     }
                 }
                 .frame(maxWidth: .infinity)
+                // Only the controls above want the pane's margin. The day
+                // columns have to start where the grid starts, and taking the
+                // margin too left every column offset by it — a constant error
+                // that is invisible on a phone in portrait and glaring in
+                // landscape, where the columns are wide enough to show it.
+                .padding(.horizontal, -Self.headerMargin)
             }
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, Self.headerMargin)
         .padding(.vertical, 10)
     }
+
+    /// Width of the hour labels themselves.
+    private static let gutterLabelWidth: CGFloat = 52
+    /// Gap between the hour labels and the first day column.
+    private static let gutterGap: CGFloat = 6
+
+    /// Total width of the hour-label gutter.
+    ///
+    /// Derived rather than written out again because two views have to agree on
+    /// it: the grid draws the gutter and the week header reserves the same
+    /// space to line its columns up with the blocks underneath. Written as a
+    /// separate literal, the two drifted apart the moment either was retuned.
+    private static let gutterWidth: CGFloat = gutterLabelWidth + gutterGap
+
+    /// Horizontal inset applied to each day column of the grid.
+    private static let columnInset: CGFloat = 3
+
+    /// Margin from the pane edge to the header's controls.
+    private static let headerMargin: CGFloat = 14
 
     // MARK: All-day
 
@@ -461,13 +486,13 @@ struct CalendarView: View {
             Text("all-day")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-                .frame(width: 52, alignment: .trailing)
-                .padding(.trailing, 6)
+                .frame(width: Self.gutterLabelWidth, alignment: .trailing)
+                .padding(.trailing, Self.gutterGap)
 
             HStack(alignment: .top, spacing: 0) {
                 ForEach(days, id: \.self) { day in
                     VStack(spacing: 4) {
-                        ForEach(TodoQueries.untimed(scopedTodos, on: day, calendar: calendar, includeResolved: settings.showResolved)) { todo in
+                        ForEach(TodoQueries.untimed(scopedTodos, on: day, calendar: calendar)) { todo in
                             chip(for: todo)
                         }
                         ForEach(allDayEvents(on: day)) { event in
@@ -475,7 +500,7 @@ struct CalendarView: View {
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 3)
+                    .padding(.horizontal, Self.columnInset)
                     // Dropping into the all-day strip schedules for that day
                     // without a time — the counterpart to dropping onto the
                     // grid, which sets the hour it was dropped at. A
@@ -575,14 +600,12 @@ struct CalendarView: View {
                     .id(hour)
             }
         }
-        .frame(width: 52)
-        .padding(.trailing, 6)
+        .frame(width: Self.gutterLabelWidth)
+        .padding(.trailing, Self.gutterGap)
     }
 
     private func dayColumn(for day: Date, isActive: Bool = true) -> some View {
-        let todosOnDay = TodoQueries.timed(
-            scopedTodos, on: day, calendar: calendar, includeResolved: settings.showResolved
-        )
+        let todosOnDay = TodoQueries.timed(scopedTodos, on: day, calendar: calendar)
         let eventsOnDay = timedEvents(on: day)
         let slots = layoutSlots(todos: todosOnDay, events: eventsOnDay)
 
@@ -664,7 +687,7 @@ struct CalendarView: View {
             }
             return true
         }
-        .padding(.horizontal, 3)
+        .padding(.horizontal, Self.columnInset)
     }
 
     private var fullWidth: CalendarSlot { CalendarSlot(offset: 0, width: 1) }
@@ -777,9 +800,7 @@ struct CalendarView: View {
     /// System events are ignored: they are read-only here, so creating a to-do
     /// alongside a meeting is a reasonable thing to want.
     private func occupiedRanges(on day: Date) -> [Range<Date>] {
-        TodoQueries.timed(
-            scopedTodos, on: day, calendar: calendar, includeResolved: settings.showResolved
-        ).compactMap { todo in
+        TodoQueries.timed(scopedTodos, on: day, calendar: calendar).compactMap { todo in
             guard let start = todo.assignedDate else { return nil }
             let end = start.addingTimeInterval(
                 todo.effectiveDuration(defaultDuration: settings.defaultEventDuration)

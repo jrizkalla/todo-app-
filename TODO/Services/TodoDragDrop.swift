@@ -60,8 +60,19 @@ enum TodoDropAction {
 
         case .today:
             store.update(todo) {
-                $0.assignedDate = calendar.startOfDay(for: now)
-                $0.assignedHasTime = false
+                $0.assignedDate = moveToDay(
+                    calendar.startOfDay(for: now), keepingTimeOf: $0, calendar: calendar
+                )
+            }
+            return true
+
+        case .tomorrow:
+            store.update(todo) {
+                $0.assignedDate = moveToDay(
+                    calendar.startOfDay(for: now).addingTimeInterval(24 * 3600),
+                    keepingTimeOf: $0,
+                    calendar: calendar
+                )
             }
             return true
 
@@ -69,8 +80,9 @@ enum TodoDropAction {
             // Today is inside this week and needs no guessing, which is the
             // same choice the create button makes for this list.
             store.update(todo) {
-                $0.assignedDate = calendar.startOfDay(for: now)
-                $0.assignedHasTime = false
+                $0.assignedDate = moveToDay(
+                    calendar.startOfDay(for: now), keepingTimeOf: $0, calendar: calendar
+                )
             }
             return true
 
@@ -105,6 +117,26 @@ enum TodoDropAction {
             // destructive act triggered by a slip of the mouse.
             return false
         }
+    }
+
+    /// Re-date a to-do onto `day`, keeping its time of day when it had one.
+    ///
+    /// Dropping onto Today answers *which day*, not *what time* — a 9am standup
+    /// dragged from This Week into Today is still a 9am standup. Flattening it
+    /// to midnight silently threw away a time the user had set, and moved the
+    /// item off the calendar grid into the all-day row as a side effect of a
+    /// gesture that said nothing about either.
+    private static func moveToDay(
+        _ day: Date,
+        keepingTimeOf todo: Todo,
+        calendar: Calendar
+    ) -> Date {
+        guard todo.assignedHasTime, let existing = todo.assignedDate else { return day }
+
+        let time = calendar.dateComponents([.hour, .minute], from: existing)
+        return calendar.date(
+            bySettingHour: time.hour ?? 0, minute: time.minute ?? 0, second: 0, of: day
+        ) ?? day
     }
 
     /// Whether a destination will accept a drop at all.

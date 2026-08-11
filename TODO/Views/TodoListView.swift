@@ -287,11 +287,16 @@ struct TodoListView: View {
 
                 ForEach(visibleTodos) { todo in
                     VStack(spacing: 0) {
-                        TodoRowV2(
+                        TodoRow(
                             todo: todo,
                             showsSpace: showsSpaceBadge,
-                            selectedTodo: $selectedTodo,
-//                            isCursor: cursor.selection == todo.uuid,
+                            // The cursor is the expanded row. Deliberately not
+                            // `selectedTodo`: that binding *presents the
+                            // editor* — it pushes the detail page on iOS and
+                            // opens the popover on macOS — so expanding a row
+                            // through it skipped the first stage of the tap
+                            // and opened the detail on a single tap.
+                            isSelected: cursor.selection == todo.uuid,
                             onToggle: { _ in handleToggle(todo) },
                             onSelectState: { handleSetState(todo, to: $0) },
                             onTitleChange: { handleTitleChange($0, for: todo) },
@@ -299,7 +304,25 @@ struct TodoListView: View {
                             menu: { AnyView(rowMenu(for: todo)) },
                             onSubmitTitle: { createTodoAfterSubmit(from: todo) },
                             onShowDetail: { _ in showDetail(for: todo) },
+                            focusedTodoID: $focusedTodoID
                         )
+                        // The tap that expands a row is attached here rather
+                        // than inside the row, which captures no taps of its
+                        // own: only the list knows that expanding is also a
+                        // cursor move, and only it can leave the already
+                        // expanded row alone so a second tap reaches the title
+                        // field instead of being swallowed.
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            guard cursor.selection != todo.uuid else { return }
+                            withAnimation(Theme.Animation.rowExpand) { selectRow(todo) }
+                        }
+                        // A row in any list can be dragged to any other list,
+                        // to a space or project in the sidebar, or onto the
+                        // calendar. Suppressed while the row's title has the
+                        // caret, where a press belongs to the text field —
+                        // see `TodoDraggableModifier`.
+                        .todoDraggable(todo, isEnabled: focusedTodoID != todo.uuid)
                         // On macOS the editor opens as a popover pointing at
                         // this row; on iOS this is a no-op and the detail page
                         // is pushed instead.
@@ -312,21 +335,30 @@ struct TodoListView: View {
                         ForEach(nestedSubtasks(of: todo)) { subtask in
                             TodoRow(
                                 todo: subtask,
-                                isSelected: selectedTodo?.uuid == subtask.uuid,
-                                isCursor: cursor.selection == subtask.uuid,
-                                onToggle: { handleToggle(subtask) },
+                                showsSpace: false,
+                                isSelected: cursor.selection == subtask.uuid,
+                                onToggle: { _ in handleToggle(subtask) },
                                 onSelectState: { handleSetState(subtask, to: $0) },
                                 onTitleChange: { handleTitleChange($0, for: subtask) },
-                                onNotesChange: { store.save() },
-                                focusedTodoID: $focusedTodoID,
+                                onNotesChange: { _ in store.save() },
                                 menu: { AnyView(rowMenu(for: subtask)) },
                                 // Return inside a project adds another subtask
                                 // to the same parent.
                                 onSubmitTitle: { addSubtaskAfterSubmit(to: todo) },
-                                onShowDetail: { showDetail(for: subtask) },
-                                onSelect: { selectRow(subtask) }
+                                onShowDetail: { _ in showDetail(for: subtask) },
+                                focusedTodoID: $focusedTodoID
                             )
                             .padding(.leading, 28)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                guard cursor.selection != subtask.uuid else { return }
+                                withAnimation(Theme.Animation.rowExpand) { selectRow(subtask) }
+                            }
+                            // Dragging a subtask out is how it leaves its
+                            // parent — the drop destinations already detach it,
+                            // so this is the gesture for promoting work out of
+                            // a project as well as for scheduling it.
+                            .todoDraggable(subtask, isEnabled: focusedTodoID != subtask.uuid)
                             .todoDetailPopover(for: subtask, selection: $selectedTodo)
                         }
                     }
@@ -366,6 +398,7 @@ struct TodoListView: View {
                     .frame(height: Theme.Metrics.listBottomClearance)
                     .listRowSeparator(.hidden)
             }
+            .padding([.leading, .trailing])
             .listStyle(.plain)
             // A plain list on macOS draws flush to the pane edges, which puts
             // the checkboxes hard against the sidebar divider. The inset gives
@@ -411,6 +444,11 @@ struct TodoListView: View {
             parent: defaultParent,
             assignedDate: defaultAssignedDate
         )
+        // The cursor moves with the caret. A row is only drawn expanded — and
+        // its title field only accepts the keyboard — when the cursor is on it,
+        // so focusing a row the cursor had not reached left the new to-do
+        // collapsed and swallowed everything typed into it.
+        cursor.select(created.uuid)
         focusedTodoID = created.uuid
         return created
     }
@@ -432,6 +470,7 @@ struct TodoListView: View {
         DispatchQueue.main.async {
             store.save()
             let subtask = store.addSubtask(to: parent)
+            cursor.select(subtask.uuid)
             focusedTodoID = subtask.uuid
         }
     }
@@ -778,6 +817,7 @@ struct TodoListView: View {
         switch destination {
         case .inbox: TodoQueries.inbox(todos, includeResolved: settings.showResolved)
         case .today: TodoQueries.today(todos, calendar: AppSettings.shared.calendar, includeResolved: settings.showResolved)
+        case .tomorrow: TodoQueries.tomorrow(todos, calendar: AppSettings.shared.calendar, includeResolved: settings.showResolved)
         case .thisWeek: TodoQueries.thisWeek(todos, calendar: AppSettings.shared.calendar, includeResolved: settings.showResolved)
         case .anytime: TodoQueries.anytime(todos, includeResolved: settings.showResolved)
         case .logbook: TodoQueries.logbook(todos)
@@ -824,7 +864,7 @@ struct TodoListView: View {
         if isSearching { return true }
 
         return switch destination {
-        case .today, .thisWeek, .anytime, .logbook: true
+        case .today, .tomorrow, .thisWeek, .anytime, .logbook: true
         default: false
         }
     }
@@ -855,6 +895,10 @@ struct TodoListView: View {
         // for This Week too — it is inside the week and needs no guessing.
         case .today, .thisWeek:
             Calendar.current.startOfDay(for: Date())
+        // Same rule one day on: something added to Tomorrow has to land there
+        // rather than in Today, or the row vanishes the moment it is created.
+        case .tomorrow:
+            Calendar.current.startOfDay(for: Date()).addingTimeInterval(24 * 3600)
         // Anytime means scheduled-but-undated, which the bucket rules give a
         // to-do once it has a home; a date would move it into Today.
         default:
@@ -866,6 +910,7 @@ struct TodoListView: View {
         switch destination {
         case .inbox: "Inbox Zero"
         case .today: "Nothing Today"
+        case .tomorrow: "Nothing Tomorrow"
         case .thisWeek: "Nothing This Week"
         case .logbook: "No History Yet"
         default: "Nothing Here"
@@ -876,6 +921,7 @@ struct TodoListView: View {
         switch destination {
         case .inbox: "New to-dos land here until you give them a date or a home."
         case .today: "Tap + to add something for today."
+        case .tomorrow: "Tap + to add something for tomorrow."
         case .thisWeek: "Nothing is scheduled for this week."
         case .logbook: "Completed and cancelled to-dos collect here."
         default: "Tap + to add a to-do."
@@ -898,6 +944,11 @@ private struct TodoListPreviewHost: View {
 
 #Preview("Today") {
     TodoListPreviewHost(destination: .today)
+        .previewEnvironment()
+}
+
+#Preview("Tomorrow") {
+    TodoListPreviewHost(destination: .tomorrow)
         .previewEnvironment()
 }
 
