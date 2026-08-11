@@ -67,6 +67,15 @@ extension SummaryFingerprint {
             + list.overdue.map { line(for: $0, bucket: "overdue") }
     }
 
+    /// Tomorrow's to-dos, which the evening and night instructions look ahead to.
+    ///
+    /// Folded into the same `todos` list as today's rather than given a field of
+    /// their own: the bucket prefix already keeps them distinct, and a saved
+    /// fingerprint from before this existed still simply fails to match.
+    static func tomorrow(_ todos: [TodoStruct]) -> [String] {
+        todos.map { line(for: $0, bucket: "tomorrow") }
+    }
+
     private static func line(for todo: TodoStruct, bucket: String) -> String {
         [
             bucket,

@@ -215,8 +215,8 @@ struct SummaryFingerprintTests {
     @Test func differentInstructionsChangeTheFingerprint() {
         var a = SummaryFingerprint()
         var b = SummaryFingerprint()
-        a.instructions = AISummaryService.getInstructions(for: .morning)
-        b.instructions = AISummaryService.getInstructions(for: .night)
+        a.instructions = AISummaryService.getInstructions(for: SummaryPhase.morning)
+        b.instructions = AISummaryService.getInstructions(for: SummaryPhase.night)
 
         #expect(a.instructions != b.instructions)
         #expect(!a.matches(b))
@@ -228,6 +228,73 @@ struct SummaryFingerprintTests {
         var populated = SummaryFingerprint()
         populated.todos = ["something"]
         #expect(!SummaryFingerprint().matches(populated))
+    }
+
+    // MARK: Phase selection
+
+    /// Hours chosen to sit inside `TimeOfDay`'s morning and afternoon bands.
+    private func at(hour: Int) -> Date {
+        Calendar.current.date(
+            bySettingHour: hour, minute: 0, second: 0, of: Date(timeIntervalSince1970: 1_754_900_000)
+        )!
+    }
+
+    @Test func morningWithWorkLeftGetsTheMorningBrief() {
+        #expect(SummaryPhase.from(date: at(hour: 8), remaining: 5) == .morning)
+    }
+
+    @Test func afternoonWithPlentyLeftGetsMidday() {
+        #expect(SummaryPhase.from(date: at(hour: 14), remaining: 5) == .midday)
+    }
+
+    /// "Only 1 or 2 tasks/calendar events left" is the evening instructions.
+    @Test func windingDownGetsEvening() {
+        #expect(SummaryPhase.from(date: at(hour: 14), remaining: 2) == .evening)
+        #expect(SummaryPhase.from(date: at(hour: 14), remaining: 1) == .evening)
+    }
+
+    @Test func threeRemainingIsStillMidday() {
+        #expect(SummaryPhase.from(date: at(hour: 14), remaining: 3) == .midday)
+    }
+
+    @Test func nothingLeftGetsNight() {
+        #expect(SummaryPhase.from(date: at(hour: 14), remaining: 0) == .night)
+    }
+
+    /// An empty day should talk about tomorrow even at 8am — there is no
+    /// "how to prepare" brief to give for a day with nothing in it.
+    @Test func emptyDayGetsNightEvenInTheMorning() {
+        #expect(SummaryPhase.from(date: at(hour: 8), remaining: 0) == .night)
+    }
+
+    /// The morning brief wins over winding-down: a day with one thing in it
+    /// still deserves the how-to-prepare framing when it has not started.
+    @Test func morningOutranksWindingDown() {
+        #expect(SummaryPhase.from(date: at(hour: 8), remaining: 1) == .morning)
+    }
+
+    /// Every phase must produce distinct instructions, or the fingerprint could
+    /// not tell them apart and crossing a boundary would not re-run.
+    @Test func everyPhaseHasDistinctInstructions() {
+        let all = SummaryPhase.allCases.map { AISummaryService.getInstructions(for: $0) }
+        #expect(Set(all).count == SummaryPhase.allCases.count)
+        for instructions in all {
+            #expect(instructions.contains("quickSummary"))
+        }
+    }
+
+    /// Tomorrow's items are part of the prompt once the day winds down, so
+    /// changing them has to invalidate.
+    @Test func changingTomorrowChangesTheFingerprint() {
+        let before = SummaryFingerprint.tomorrow([todo(title: "A")])
+        let after = SummaryFingerprint.tomorrow([todo(title: "A"), todo(title: "B")])
+        #expect(before != after)
+    }
+
+    /// A to-do tomorrow is not the same prompt as the same to-do today.
+    @Test func tomorrowAndTodayAreDistinguished() {
+        let list = RelevantTodoList(scheduled: [todo(title: "A")], overdue: [])
+        #expect(SummaryFingerprint.todos(list) != SummaryFingerprint.tomorrow([todo(title: "A")]))
     }
 
     /// It survives the round trip through the SwiftData store as a value.

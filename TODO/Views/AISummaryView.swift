@@ -210,6 +210,9 @@ struct AISummaryView : View {
             scheduled: TodoQueries.today(todos).filter(filterPast).map { $0.toStruct() },
             overdue: TodoQueries.overdue(todos).filter(filterPast).map { $0.toStruct() }
         )
+        // Needed once the day winds down, when the summary starts looking ahead
+        // rather than listing what is left.
+        aiSummaryService.tomorrow = TodoQueries.tomorrow(todos).map { $0.toStruct() }
 
         let saved = savedSummaries.first { Calendar.current.isDateInToday($0.generatedOn) }
         if let saved, saved.fingerprint.matches(aiSummaryService.fingerprint(now: now)) {
