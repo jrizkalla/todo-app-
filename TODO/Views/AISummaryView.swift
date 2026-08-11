@@ -183,28 +183,45 @@ struct AISummaryView : View {
             .scrollContentBackground(.hidden)
         }
         .task(id: settings.showCalendarEvents) { await loadEvents() }
+        .task { await refreshSummary() }
         .onChange(of: weatherService.weather) {
-            let savedSummary = savedSummaries.filter { Calendar.current.isDateInToday($0.generatedOn)}.first
-            if let savedSummary {
-                summary = savedSummary.summary
-            } else {
-                let now = Date()
-                let filterPast: (Todo) -> Bool = { todo in
-                    todo.endDate.map { $0 <= now } ?? true
-                }
-                aiSummaryService.userInfo = settings.userInfo
-                aiSummaryService.weather = weatherService.weather
-                aiSummaryService.reminders = .init(
-                    scheduled: TodoQueries.today(todos).filter(filterPast).map { $0.toStruct() },
-                    overdue: TodoQueries.overdue(todos).filter(filterPast).map { $0.toStruct() }
-                )
-                Task { @MainActor in
-                    guard let summary = await aiSummaryService.generateSummary() else { return }
-                    self.summary = summary
-                    TodoStore(context: context).updateAISummary(.init(summary: summary))
-                }
-            }
+            Task { await refreshSummary() }
         }
+    }
+
+    /// Show the saved summary if it still describes the current day, otherwise
+    /// generate a new one.
+    ///
+    /// The saved fingerprint is what decides, not the clock: a summary from
+    /// earlier today is only still true if the tasks, events, forecast, user
+    /// info, and instructions behind it have not moved. `generatedOn` still
+    /// gates on the day so a summary never survives midnight, since the
+    /// fingerprint deliberately leaves the date out.
+    @MainActor
+    private func refreshSummary() async {
+        let now = Date()
+        let filterPast: (Todo) -> Bool = { todo in
+            todo.endDate.map { $0 <= now } ?? true
+        }
+        aiSummaryService.userInfo = settings.userInfo
+        aiSummaryService.weather = weatherService.weather
+        aiSummaryService.visibleCalendars = settings.visibleCalendars
+        aiSummaryService.reminders = .init(
+            scheduled: TodoQueries.today(todos).filter(filterPast).map { $0.toStruct() },
+            overdue: TodoQueries.overdue(todos).filter(filterPast).map { $0.toStruct() }
+        )
+
+        let saved = savedSummaries.first { Calendar.current.isDateInToday($0.generatedOn) }
+        if let saved, saved.fingerprint.matches(aiSummaryService.fingerprint(now: now)) {
+            summary = saved.summary
+            return
+        }
+
+        guard let (generated, fingerprint) = await aiSummaryService.generateSummary() else { return }
+        summary = generated
+        TodoStore(context: context).updateAISummary(
+            .init(summary: generated, fingerprint: fingerprint)
+        )
     }
 }
 

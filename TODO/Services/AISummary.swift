@@ -46,59 +46,106 @@ final class AISummaryService: ObservableObject {
     var weather: WeatherForecast?
     var reminders: RelevantTodoList?
     var userInfo: UserInfo
-    var visibleCalendars: [String] = []
+    /// `nil` means every calendar, matching `CalendarEventStore.loadEvents`.
+    var visibleCalendars: [String]?
     
     var session: LanguageModelSession!
-    
+    /// The instructions `session` was built with.
+    ///
+    /// A session is bound to its instructions, so it has to be rebuilt when
+    /// they change — otherwise crossing into a new time of day would keep
+    /// prompting with the previous period's instructions, and the summary
+    /// would never actually reflect the fingerprint that triggered it.
+    private var sessionInstructions: String?
+
     init(userInfo: UserInfo) {
         self.weather = nil
         self.reminders = nil
         self.userInfo = userInfo
     }
     
-    func generateSummary() async -> AISummary? {
-        guard SystemLanguageModel.default.isAvailable else {
-            print("model isn't available")
-            return nil
-        }
-        
+    /// The upcoming events the prompt is built from.
+    ///
+    /// Loaded through here rather than inline so the fingerprint and the prompt
+    /// are guaranteed to describe the same set of events.
+    private func upcomingEvents(now: Date) -> [CalendarEvent] {
         let calEventStore = CalendarEventStore()
-        let now = Date()
         calEventStore.loadEvents(
             from: now,
             to: Calendar.current.startOfDay(for: now).addingTimeInterval(24 * 60 * 60 - 1),
             calendarIdentifiers: visibleCalendars
         )
-        
+        return calEventStore.events
+    }
+
+    /// A flat description of everything that would go into the prompt right now.
+    ///
+    /// Cheap by comparison with running the model, so the view calls this first
+    /// and only generates when it does not match what was saved.
+    func fingerprint(now: Date = Date()) -> SummaryFingerprint {
+        SummaryFingerprint(
+            instructions: Self.getInstructions(for: .from(date: now)),
+            user: SummaryFingerprint.user(userInfo),
+            weather: SummaryFingerprint.weather(weather),
+            todos: SummaryFingerprint.todos(reminders),
+            events: SummaryFingerprint.events(upcomingEvents(now: now))
+        )
+    }
+
+    /// The generated summary, paired with the fingerprint of the prompt that
+    /// produced it so the caller can save both together.
+    func generateSummary() async -> (summary: AISummary, fingerprint: SummaryFingerprint)? {
+        guard SystemLanguageModel.default.isAvailable else {
+            print("model isn't available")
+            return nil
+        }
+
+        let now = Date()
+        let events = upcomingEvents(now: now)
+        let instructions = Self.getInstructions(for: .from(date: now))
+
         let prompt = Prompt {
-            
+
             "Current date/time: \(now.description(with: .current))"
-            
+
             "Information about the user:"
             "name: \(userInfo.name ?? "none")"
             "User provided description: \(userInfo.generalInfomation ?? "none")"
-            
+
             if let weather {
                 weather
             }
             if let reminders {
                 reminders
             }
-            
+
             "Calendar events:"
-            calEventStore.events
+            events
         }
-        
-        if session == nil {
-            session = LanguageModelSession(
-                instructions: Self.getInstructions(for: .from(date: now))
-            )
+
+        // Built from the same values the prompt just consumed rather than by
+        // re-reading them, so the two can never describe different days.
+        let fingerprint = SummaryFingerprint(
+            instructions: instructions,
+            user: SummaryFingerprint.user(userInfo),
+            weather: SummaryFingerprint.weather(weather),
+            todos: SummaryFingerprint.todos(reminders),
+            events: SummaryFingerprint.events(events)
+        )
+
+        if session == nil || sessionInstructions != instructions {
+            session = LanguageModelSession(instructions: instructions)
+            sessionInstructions = instructions
         }
         do {
             let response = try await session.respond(to: prompt)
             let responseData = String(response.content.trimmingPrefix(/\s*```json\s*/)).trimmingSuffix("```")
             let decoder = JSONDecoder()
-            return try? decoder.decode(AISummary.self, from: responseData.data(using: .utf8)!)
+            guard let summary = try? decoder.decode(
+                AISummary.self,
+                from: responseData.data(using: .utf8)!
+            ) else { return nil }
+            return (summary, fingerprint)
         } catch {
             print(error)
             return nil

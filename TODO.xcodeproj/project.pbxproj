@@ -58,6 +58,7 @@
 				Models/SavedAISummary.swift,
 				Models/Space.swift,
 				Models/Structs.swift,
+				Models/SummaryFingerprintModel.swift,
 				Models/Todo.swift,
 				Services/TodoQueries.swift,
 				Support/AppLog.swift,

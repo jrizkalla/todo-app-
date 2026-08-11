@@ -27,9 +27,17 @@ final class SavedAISummary {
 
     var summary: AISummary = AISummary()
 
-    init(summary: AISummary) {
+    /// What the prompt looked like when `summary` was generated.
+    ///
+    /// Defaulted to an empty fingerprint so a summary saved before this existed
+    /// simply fails to match and is regenerated once, rather than needing a
+    /// migration.
+    var fingerprint: SummaryFingerprint = SummaryFingerprint()
+
+    init(summary: AISummary, fingerprint: SummaryFingerprint = SummaryFingerprint()) {
         uuid = UUID()
         generatedOn = Date()
         self.summary = summary
+        self.fingerprint = fingerprint
     }
 }
