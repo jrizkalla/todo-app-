@@ -63,7 +63,7 @@ struct SpaceEditorView: View {
 
                 ColorSwatchPicker(selection: Binding(
                     get: { colorHex },
-                    set: { colorHex = $0 ?? "#8E8E93" }
+                    set: { colorHex = $0 ?? Theme.Palette.defaultSpaceColor }
                 ))
             }
 

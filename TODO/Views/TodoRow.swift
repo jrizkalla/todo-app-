@@ -78,6 +78,19 @@ struct TodoRow : View {
                         .textFieldStyle(.plain)
                         .lineLimit(1...6)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        // Return commits the field on macOS rather than
+                        // inserting a newline, so it arrives here and never as
+                        // text. `onChange(of: todoTitle)` below covers the
+                        // other half — on iOS the same vertical field inserts a
+                        // newline instead and never submits. Both routes end in
+                        // `submitTitle()`, which is why the two platforms
+                        // behave the same despite disagreeing about the key.
+                        //
+                        // The keystroke `onSubmit` was once suspected of
+                        // dropping is safe now: this reads `todoTitle`, which
+                        // SwiftUI has already updated, and the list defers
+                        // creating the next row by a runloop turn anyway.
+                        .onSubmit(submitTitle)
                         // Collapsed, the field is inert: taps pass through to
                         // the list's own gesture, which is what makes the first
                         // tap select the row instead of dropping a caret in it.
@@ -188,26 +201,17 @@ struct TodoRow : View {
         // debounces the save behind these, and the suggestion chips are drawn
         // from the title as it stands right now.
         .onChange(of: todoTitle) { _, newValue in
-            // Return arrives as ordinary text because the field is
-            // `axis: .vertical`, which is what makes it safe to read here —
-            // by the time the newline is visible every earlier keystroke has
-            // already landed in the binding, where `onSubmit` would have
-            // dropped the last one.
+            // A newline reaching the binding means Return arrived as text
+            // rather than as a key — the iOS vertical field, and paste or
+            // dictation on any platform. `onKeyPress` above has already
+            // handled the ordinary macOS case.
             guard newValue.contains("\n") else {
                 guard todo.title != newValue else { return }
                 todo.title = newValue
                 onTitleChange(newValue)
                 return
             }
-
-            let cleaned = newValue
-                .replacingOccurrences(of: "\n", with: "")
-                .trimmingCharacters(in: .whitespaces)
-
-            todoTitle = cleaned
-            todo.title = cleaned
-            onTitleChange(cleaned)
-            onSubmitTitle()
+            submitTitle()
         }
         .onChange(of: todoDescription) { _, newValue in
             guard todo.notes != newValue else { return }
@@ -216,6 +220,23 @@ struct TodoRow : View {
         }
     }
     
+    /// Commit the title and ask the list for the next to-do.
+    ///
+    /// Shared by both routes Return can take — the key press, and a newline
+    /// landing in the binding — so the two cannot drift into behaving
+    /// differently. Stripping the newline matters for the second: leaving it in
+    /// would persist a title with a trailing blank line.
+    private func submitTitle() {
+        let cleaned = todoTitle
+            .replacingOccurrences(of: "\n", with: "")
+            .trimmingCharacters(in: .whitespaces)
+
+        todoTitle = cleaned
+        if todo.title != cleaned { todo.title = cleaned }
+        onTitleChange(cleaned)
+        onSubmitTitle()
+    }
+
     /// The expanded row's tinted border.
     ///
     /// Faded rather than inserted, for the same reason as the card behind it:

@@ -12,7 +12,7 @@ final class Space {
     /// SF Symbol shown beside the space in the sidebar.
     var symbolName: String = "square.stack"
     /// Accent color, stored as a hex string to stay a CloudKit primitive.
-    var colorHex: String = "#8E8E93"
+    var colorHex: String = Theme.Palette.defaultSpaceColor
     /// Sidebar ordering; the user can drag spaces to reorder.
     var sortIndex: Int = 0
     var createdAt: Date = Date()
@@ -38,7 +38,7 @@ final class Space {
     init(
         name: String = "",
         symbolName: String = "square.stack",
-        colorHex: String = "#8E8E93",
+        colorHex: String = Theme.Palette.defaultSpaceColor,
         sortIndex: Int = 0
     ) {
         self.uuid = UUID()

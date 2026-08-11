@@ -124,7 +124,9 @@ final class CalendarEventStore {
 
     /// Convert a calendar's `CGColor` to the `#RRGGBB` form the app uses.
     static func hexString(from color: CGColor?) -> String {
-        guard let components = color?.components, components.count >= 3 else { return "#8E8E93" }
+        guard let components = color?.components, components.count >= 3 else {
+            return Theme.Palette.defaultSpaceColor
+        }
         let r = Int((components[0] * 255).rounded())
         let g = Int((components[1] * 255).rounded())
         let b = Int((components[2] * 255).rounded())

@@ -280,6 +280,8 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            DataExportSection()
         }
         .formStyle(.grouped)
         #if os(macOS)

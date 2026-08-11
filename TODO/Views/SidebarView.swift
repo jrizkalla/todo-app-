@@ -57,10 +57,14 @@ struct SidebarView: View {
                 Button {
                     isCreatingSpace = true
                 } label: {
-                    Label("New Space", systemImage: "plus.circle")
-                        .font(.callout)
+                    HStack {
+                        Spacer()
+                        Label("New Space", systemImage: "plus.circle")
+                            .font(.callout)
+                        Spacer()
+                    }
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.glass)
                 .foregroundStyle(.secondary)
 
                 Spacer()
@@ -81,7 +85,7 @@ struct SidebarView: View {
             }
             .padding(.horizontal, 18)
             .padding(.vertical, 10)
-            .background(.bar)
+//            .background(.bar)
         }
         #if !os(macOS)
         .sheet(isPresented: $isShowingSettings) {

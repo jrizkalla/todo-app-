@@ -225,10 +225,18 @@ enum Theme {
         /// Dot marking a to-do the user has not seen in its current list.
         static let unviewed = Color.yellow
 
+        /// The color a space has until the user picks one.
+        ///
+        /// Named because it is also the model default (`Space.colorHex`), the
+        /// fallback for a calendar with no color of its own, and what clearing
+        /// the color picker returns to — those have to stay the same value, and
+        /// as separate literals they were free to drift apart.
+        static let defaultSpaceColor = "#8E8E93"
+
         /// Default colors offered when creating a space.
         static let spaceColors: [String] = [
             "#FF453A", "#FF9F0A", "#FFD60A", "#32D74B",
-            "#64D2FF", "#0A84FF", "#BF5AF2", "#8E8E93",
+            "#64D2FF", "#0A84FF", "#BF5AF2", defaultSpaceColor,
         ]
     }
 }

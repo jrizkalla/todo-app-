@@ -12,6 +12,11 @@ enum AppSchema {
     /// that queries or writes it fails at the CoreData layer rather than at
     /// compile time — persistent history hits "not a valid entity name" and
     /// takes the app down with it. Adding an `@Model` means adding it here.
+    ///
+    /// It also means teaching the archive about it — `ArchiveFormat.RecordKind`
+    /// plus a writer and reader in `DatabaseExporter`/`DatabaseImporter` —
+    /// or the new model is silently left out of every export.
+    /// `DatabaseArchiveTests.everyModelHasAnArchiveRecordKind` catches the miss.
     static let models: [any PersistentModel.Type] = [
         Todo.self,
         Space.self,

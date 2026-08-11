@@ -47,7 +47,11 @@ struct TodoStore {
     }
 
     @discardableResult
-    func createSpace(name: String, symbolName: String = "square.stack", colorHex: String = "#8E8E93") -> Space {
+    func createSpace(
+        name: String,
+        symbolName: String = "square.stack",
+        colorHex: String = Theme.Palette.defaultSpaceColor
+    ) -> Space {
         let existing = (try? context.fetch(FetchDescriptor<Space>())) ?? []
         let space = Space(
             name: name,
