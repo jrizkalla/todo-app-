@@ -227,6 +227,68 @@ enum TodoQueries {
 
     // MARK: Calendar
 
+    /// The pool of to-dos a calendar lays out for a given destination.
+    ///
+    /// Narrower than the list query on purpose: the lists show one level of a
+    /// container, while a calendar is about *when the work in this container
+    /// happens* — so a space's calendar reaches into its projects and a
+    /// project's calendar reaches down its whole subtask tree. Anything sitting
+    /// on a day belongs on that day's grid regardless of how deeply it is filed.
+    ///
+    /// Projects themselves are left out: a project is a container, and a dated
+    /// one would draw a block covering work that is already on the grid.
+    static func calendarScope(_ todos: [Todo], for destination: ListDestination) -> [Todo] {
+        switch destination {
+        case .space(let id):
+            return todos.filter { !$0.isProject && belongs(to: id, todo: $0) }
+        case .project(let id):
+            return todos.filter { !$0.isProject && isDescendant(of: id, todo: $0) }
+        default:
+            return todos
+        }
+    }
+
+    /// The work a scoped calendar *cannot* draw: everything in the container
+    /// with no date to place it on.
+    ///
+    /// The exact complement of what the grid lays out, over the same pool
+    /// `calendarScope` defines — so the calendar and the side panel beside it
+    /// add up to the whole container with nothing counted twice and nothing
+    /// missing. Keyed on `assignedDate` alone, because that is the field the
+    /// grid positions blocks by: an item with only a due date has still never
+    /// been given a slot, and belongs in the panel where it can be dragged onto
+    /// one.
+    ///
+    /// Resolved work is always excluded, matching `scheduled(_:on:)` — the pair
+    /// is a picture of time still to be spent, and the Logbook is where
+    /// finished work is read back.
+    static func unscheduled(
+        _ todos: [Todo],
+        for destination: ListDestination,
+        includeResolved: Bool = false
+    ) -> [Todo] {
+        calendarScope(topLevel(todos), for: destination)
+            .filter { $0.assignedDate == nil }
+            .filter(includeResolved: includeResolved)
+            .filterResolved()
+            .filterCycles()
+            .sorted(by: sortByDateThenOrder)
+    }
+
+    /// Whether a to-do is filed in a space, directly or through an ancestor.
+    ///
+    /// A subtask does not always carry its parent's space, so the walk upwards
+    /// is what stops work inside a space's projects from going missing.
+    private static func belongs(to spaceID: UUID, todo: Todo) -> Bool {
+        if todo.space?.uuid == spaceID { return true }
+        return todo.ancestors.contains { $0.space?.uuid == spaceID }
+    }
+
+    /// Whether a to-do sits anywhere beneath a project.
+    private static func isDescendant(of projectID: UUID, todo: Todo) -> Bool {
+        todo.ancestors.contains { $0.uuid == projectID }
+    }
+
     /// Scheduled todos falling on a given day.
     ///
     /// Completed and cancelled work is always excluded, whatever the Show
@@ -235,6 +297,12 @@ enum TodoQueries {
     /// pushes live work into a cascade, blocks long-press creation on hours
     /// that are in fact free, and makes a full day out of one already done.
     /// The Logbook is where finished work is read back.
+    ///
+    /// Deliberately *not* `filterCycles()`, which the list queries use to stop
+    /// a subtask drawing its own row beside the parent it is already nested
+    /// under. A calendar has no nesting: a parent at 10am and its subtask at
+    /// 1pm are two separate hours of the day, and dropping the child left a
+    /// scheduled block simply missing from the grid.
     static func scheduled(_ todos: [Todo], on day: Date, calendar: Calendar = .current) -> [Todo] {
         let start = calendar.startOfDay(for: day)
         guard let end = calendar.date(byAdding: .day, value: 1, to: start) else { return [] }
@@ -244,7 +312,6 @@ enum TodoQueries {
             return assigned >= start && assigned < end
         }
         .filter(includeResolved: false)
-        .filterCycles()
     }
 
     /// Day's todos without a time — shown in the calendar's all-day header.

@@ -40,9 +40,21 @@ struct CalendarView: View {
     /// creating a block at the next quarter hour. See `createAtNextSlot`.
     var createRequest: Binding<Int>?
 
+    /// Called to go back to the list this calendar was opened from.
+    ///
+    /// Set only by the scoped calendars, which are one of two ways of reading
+    /// the same list; the Calendar tab is a destination in its own right and
+    /// has nothing to return to.
+    var onShowList: (() -> Void)?
+
     @State private var localScale: Scale = .day
     @State private var localAnchor = Date()
     @State private var eventStore = CalendarEventStore.shared
+
+    /// The side panel, which a scoped calendar points at its own list.
+    @State private var panelScope = SidePanelScopeModel.shared
+    /// This calendar's claim on the panel, held while it is on screen.
+    @State private var sidePanelClaim: UUID?
 
     /// The to-do being dragged to a new time, and how far it has moved.
     @State private var draggingTodoID: UUID?
@@ -106,6 +118,32 @@ struct CalendarView: View {
         scaleBinding ?? $localScale
     }
 
+    /// What the scoped calendar's switch selects between: the list it was
+    /// opened from, or one of the grid's scales.
+    private enum ViewMode: Hashable {
+        case list
+        case scale(Scale)
+    }
+
+    /// Reading gives whichever scale is showing; writing `.list` leaves the
+    /// calendar instead of selecting anything.
+    ///
+    /// The selection deliberately never *becomes* `.list` — the segment acts as
+    /// a button, so returning here and coming back finds the switch on the
+    /// scale the user left, not stuck on a segment for a screen they are no
+    /// longer looking at.
+    private var viewModeSelection: Binding<ViewMode> {
+        Binding(
+            get: { .scale(scale) },
+            set: { mode in
+                switch mode {
+                case .list: onShowList?()
+                case .scale(let newScale): scale = newScale
+                }
+            }
+        )
+    }
+
     /// Outside calendar events belong on the cross-cutting lists only.
     ///
     /// Today and This Week are "what does my day look like" views, where the
@@ -123,16 +161,7 @@ struct CalendarView: View {
     /// To-dos this calendar lays out, narrowed to the container it was opened
     /// from.
     private var scopedTodos: [Todo] {
-        switch destination {
-        case .space(let id):
-            // Everything filed in the space, including work inside its
-            // projects, since the space calendar is about the whole area.
-            todos.filter { $0.space?.uuid == id && !$0.isProject }
-        case .project(let id):
-            todos.filter { $0.parent?.uuid == id }
-        default:
-            todos
-        }
+        TodoQueries.calendarScope(todos, for: destination)
     }
 
     var body: some View {
@@ -150,6 +179,20 @@ struct CalendarView: View {
         #endif
         // Reload whenever the visible range or the calendar preferences change.
         .task(id: eventReloadKey) { await reloadEvents() }
+        // A scoped calendar takes over the side panel for as long as it is on
+        // screen, so the grid's dated work and the panel's undated work make up
+        // the whole container between them. The Calendar *tab* claims nothing:
+        // it is unscoped, and the Inbox is what belongs beside it.
+        //
+        // Tied to `destination` as well as to appearing, because the Lists tab
+        // reuses one pushed calendar as the sidebar selection moves under it.
+        .onAppear { claimSidePanel() }
+        .onChange(of: destination) { _, _ in claimSidePanel() }
+        .onDisappear {
+            guard let token = sidePanelClaim else { return }
+            sidePanelClaim = nil
+            panelScope.release(token)
+        }
         // The app-wide button asks; the calendar answers by blocking out the
         // next quarter hour on the day being shown.
         .onChange(of: createRequest?.wrappedValue) { _, _ in createAtNextSlot() }
@@ -202,6 +245,23 @@ struct CalendarView: View {
                 onDismiss: { movingTodo = nil }
             )
             .presentationDetents([.medium])
+        }
+    }
+
+    // MARK: Side panel
+
+    /// Point the side panel at this calendar's list, if it has one.
+    ///
+    /// Only spaces and projects claim it. The cross-cutting destinations are
+    /// what the Calendar tab already shows unscoped, and their "unscheduled
+    /// remainder" would be every undated to-do in the app — which is not a
+    /// useful list, and is not what the Inbox sitting there already means.
+    private func claimSidePanel() {
+        switch destination {
+        case .space, .project:
+            sidePanelClaim = panelScope.claim(destination)
+        default:
+            break
         }
     }
 
@@ -391,6 +451,16 @@ struct CalendarView: View {
     /// switches.
     private var header: some View {
         VStack(spacing: 8) {
+            // A scoped calendar spends its title on the container's name, so
+            // the day it is showing has to be said here instead. The week scale
+            // already names its days in the column headers below.
+            if containerName != nil && scale == .day {
+                Text(anchor.formatted(.dateTime.weekday(.wide).month().day()))
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
             HStack(spacing: 12) {
                 Button {
                     shift(by: -1)
@@ -413,13 +483,31 @@ struct CalendarView: View {
 
                 Spacer()
 
-                Picker("Scale", selection: scaleSelection) {
-                    ForEach(Scale.allCases) { option in
-                        Text(option.label).tag(option)
+                // On a scoped calendar the switch gains a List option, so
+                // getting back to the rows is the same control that moves
+                // between day and week — going back to the list *is* a change
+                // of view, not a step up a hierarchy, and the Back chevron was
+                // the only way to do it.
+                if onShowList != nil {
+                    Picker("View", selection: viewModeSelection) {
+                        Text("List").tag(ViewMode.list)
+                        ForEach(Scale.allCases) { option in
+                            Text(option.label).tag(ViewMode.scale(option))
+                        }
                     }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(width: 190)
+                } else {
+                    Picker("Scale", selection: scaleSelection) {
+                        ForEach(Scale.allCases) { option in
+                            Text(option.label).tag(option)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(width: 140)
                 }
-                .pickerStyle(.segmented)
-                .frame(width: 140)
             }
 
             // Day-of-week columns, so a week view reads at a glance.
@@ -532,31 +620,35 @@ struct CalendarView: View {
         // A plain view rather than a `Button` so `draggable` can claim the
         // long press: a button consumes the touch first and the chip never
         // lifts. Tapping is restored by the explicit tap gesture below.
-        InlineMarkdownText(markdown: todo.title.isEmpty ? "Untitled" : todo.title)
-            .font(.caption)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background {
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(tint(for: todo).opacity(0.2))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .stroke(
-                                Color.accentColor,
-                                lineWidth: cursor.selection == todo.uuid ? 2 : 0
-                            )
-                    }
-            }
-            .contentShape(Rectangle())
-            // Dragging an all-day chip onto the grid gives it a time. The grid
-            // receives it via `dropDestination` below.
-            .todoDraggable(todo)
-            .onTapGesture {
-                cursor.select(todo.uuid)
-                selectedTodo = todo
-            }
-            .accessibilityAddTraits(.isButton)
+        HStack(spacing: 4) {
+            Image(systemName: "square")
+                .font(.caption)
+            InlineMarkdownText(markdown: todo.title.isEmpty ? "Untitled" : todo.title)
+                .font(.caption)
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(tint(for: todo).opacity(0.2))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .stroke(
+                            Color.accentColor,
+                            lineWidth: cursor.selection == todo.uuid ? 2 : 0
+                        )
+                }
+        }
+        .contentShape(Rectangle())
+    // Dragging an all-day chip onto the grid gives it a time. The grid
+    // receives it via `dropDestination` below.
+        .todoDraggable(todo)
+        .onTapGesture {
+            cursor.select(todo.uuid)
+            selectedTodo = todo
+        }
+        .accessibilityAddTraits(.isButton)
     }
 
     // MARK: Timed grid
@@ -1211,6 +1303,12 @@ struct CalendarView: View {
     }
 
     private var navigationTitle: String {
+        // A scoped calendar names its container instead of the dates: it is
+        // reached from that list, the header below already says which days are
+        // on screen, and "Groceries" is what tells the user this grid is not
+        // the whole calendar.
+        if let containerName { return containerName }
+
         switch scale {
         case .day:
             return anchor.formatted(.dateTime.weekday(.wide).month().day())
@@ -1218,6 +1316,18 @@ struct CalendarView: View {
             guard let week = calendar.dateInterval(of: .weekOfYear, for: anchor) else { return "Week" }
             let end = calendar.date(byAdding: .day, value: -1, to: week.end) ?? week.end
             return "\(week.start.formatted(.dateTime.month().day())) – \(end.formatted(.dateTime.month().day()))"
+        }
+    }
+
+    /// Name of the space or project this calendar is scoped to, if any.
+    private var containerName: String? {
+        switch destination {
+        case .space(let id):
+            return spaces.first { $0.uuid == id }?.name
+        case .project(let id):
+            return todos.first { $0.uuid == id }?.title
+        default:
+            return nil
         }
     }
 }

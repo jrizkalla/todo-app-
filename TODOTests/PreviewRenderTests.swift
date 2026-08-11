@@ -106,8 +106,28 @@ struct PreviewRenderTests {
         render(CalendarRenderHost())
     }
 
+    /// The calendar a space or project opens, which takes the branches the
+    /// unscoped one never does: the container-named title and the day label
+    /// that replaces it in the header.
+    @Test func scopedCalendarRenders() {
+        for destination in [
+            ListDestination.space(PreviewData.space.uuid),
+            .project(PreviewData.project.uuid),
+        ] {
+            render(CalendarRenderHost(destination: destination))
+            render(CalendarRenderHost(destination: destination, scale: .week))
+        }
+    }
+
     @Test func sidePanelRenders() {
         render(SidePanelRenderHost())
+    }
+
+    /// Scoped to a space and to a project, which draw a different header, a
+    /// different empty message, and — for a space — rows without the badge.
+    @Test func sidePanelRendersEveryScope() {
+        render(SidePanelRenderHost(scope: .list(.space(PreviewData.space.uuid))))
+        render(SidePanelRenderHost(scope: .list(.project(PreviewData.project.uuid))))
     }
 
     /// The quick-scheduling panel, in the states its month grid distinguishes:
@@ -224,19 +244,39 @@ private struct SidebarRenderHost: View {
 
 @MainActor
 private struct CalendarRenderHost: View {
+    let destination: ListDestination
     @State private var selected: Todo?
+    /// Seeded at init so the requested scale is the one `body` first renders —
+    /// setting it from `onAppear` would arrive after `ImageRenderer` has
+    /// already laid the view out, leaving the week grid untested.
+    @State private var scale: CalendarView.Scale
+
+    init(destination: ListDestination = .today, scale: CalendarView.Scale = .day) {
+        self.destination = destination
+        _scale = State(initialValue: scale)
+    }
 
     var body: some View {
-        NavigationStack { CalendarView(selectedTodo: $selected) }
+        NavigationStack {
+            CalendarView(
+                selectedTodo: $selected,
+                destination: destination,
+                scaleBinding: $scale,
+                // Non-nil for the scoped cases, which is what draws the
+                // three-segment List/Day/Week switch rather than the plain one.
+                onShowList: destination == .today ? nil : {}
+            )
+        }
     }
 }
 
 @MainActor
 private struct SidePanelRenderHost: View {
+    var scope: SidePanelScope = .inbox
     @State private var selected: Todo?
 
     var body: some View {
-        SidePanelView(selectedTodo: $selected)
+        SidePanelView(selectedTodo: $selected, scope: scope)
     }
 }
 

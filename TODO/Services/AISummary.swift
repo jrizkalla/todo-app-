@@ -65,7 +65,7 @@ final class AISummaryService: ObservableObject {
         let calEventStore = CalendarEventStore()
         let now = Date()
         calEventStore.loadEvents(
-            from: Calendar.current.startOfDay(for: now),
+            from: now,
             to: Calendar.current.startOfDay(for: now).addingTimeInterval(24 * 60 * 60 - 1),
             calendarIdentifiers: visibleCalendars
         )

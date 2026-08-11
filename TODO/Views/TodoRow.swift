@@ -238,6 +238,14 @@ struct TodoRow : View {
     /// uncluttered.
     private var badges: [Badge] {
         var badges: [Badge] = []
+        
+        if let date = todo.assignedDate ?? todo.dueDate, date < Date() && !Calendar.current.isDateInToday(date) {
+            badges.append(.init(
+                text: "Overdue",
+                symbol: "exclamationmark.triangle",
+                color: .red
+            ))
+        }
 
         if let assigned = todo.assignedDate {
             badges.append(Badge(

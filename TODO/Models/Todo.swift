@@ -36,6 +36,11 @@ final class Todo {
     /// Planned length. Nil means the calendar falls back to the configurable
     /// default duration.
     var duration: TimeInterval?
+    
+    var endDate: Date? {
+        guard let assignedDate, let duration else { return nil }
+        return assignedDate.addingTimeInterval(duration)
+    }
 
     /// Deadline, distinct from `assignedDate` — the spec treats scheduling and
     /// due dates as separate properties.

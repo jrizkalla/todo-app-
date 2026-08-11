@@ -1,6 +1,15 @@
 import SwiftUI
 import SwiftData
 
+/// A list's own calendar, pushed on top of it.
+///
+/// A wrapper rather than pushing the `ListDestination` directly: the list
+/// already navigates on to-dos, and a bare destination value would be
+/// indistinguishable from any other route carrying one.
+struct CalendarRoute: Hashable {
+    let destination: ListDestination
+}
+
 /// The main list pane for a sidebar destination.
 struct TodoListView: View {
     let destination: ListDestination
@@ -43,6 +52,9 @@ struct TodoListView: View {
 
     /// What the user has typed into the pull-down search field, if anything.
     @State private var searchText = ""
+
+    /// Set while this list's calendar is pushed on top of it.
+    @State private var calendarRoute: CalendarRoute?
 
     /// Suggestion chips for whichever row's title has focus.
     @State private var suggestionModel = TitleSuggestionModel()
@@ -91,12 +103,48 @@ struct TodoListView: View {
         // what is still in the field.
         .onChange(of: createRequest?.wrappedValue) { _, _ in
             guard !isSearching else { return }
+            // The list stays alive underneath its pushed calendar, so both
+            // would answer the one button and a single tap would create two
+            // to-dos. Whichever is on top is the one the user meant.
+            guard !isShowingCalendar else { return }
             createTodoInCurrentList()
         }
         .navigationTitle(title)
         #if os(iOS)
         .navigationBarTitleDisplayMode(.large)
         #endif
+        .toolbar {
+            // Only spaces and projects get one: the cross-cutting lists are
+            // already covered by the Calendar tab, which shows the same days
+            // unscoped, so a second entry point onto it would just be a
+            // duplicate.
+            if showsCalendarButton {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        // Focus belongs to the calendar now; a caret left in a
+                        // row's title would keep the keyboard up over the grid.
+                        focusedTodoID = nil
+                        calendarRoute = CalendarRoute(destination: destination)
+                    } label: {
+                        Label("Calendar", systemImage: "calendar")
+                    }
+                    .help("Show \(title) on a calendar")
+                }
+            }
+        }
+        // Pushed rather than presented: it is the same list seen another way,
+        // so Back returns to the rows it was opened from.
+        .navigationDestination(item: $calendarRoute) { route in
+            CalendarView(
+                selectedTodo: $selectedTodo,
+                destination: route.destination,
+                createRequest: createRequest,
+                onShowList: { calendarRoute = nil }
+            )
+            .todoDetailDestination(selection: $selectedTodo)
+        }
+        // A calendar opened from one list has no meaning in the next.
+        .onChange(of: destination) { _, _ in calendarRoute = nil }
         // Visiting a list is what "viewing" means, so its dots clear on arrival.
         .task(id: destination) { markVisibleAsViewed() }
         // Switching lists drops focus, so the keyboard never follows the user
@@ -118,6 +166,11 @@ struct TodoListView: View {
         // the list — rather than one of its title fields — holds the keyboard.
         .focusable()
         .focused($isListFocused)
+        // The focus this takes is a plumbing detail — it exists so the arrow
+        // keys have somewhere to land — and is not a thing the user selected.
+        // On macOS the system drew it as a ring around the entire pane, so
+        // tapping one row lit up the whole list along with it.
+        .focusEffectDisabled()
         // Arrow keys drive the cursor whenever the caret is not in a text
         // field — in a field the arrows belong to the text, which is why this
         // defers rather than competing for them.
@@ -394,12 +447,34 @@ struct TodoListView: View {
                 }
 
                 // Breathing room so the floating button never covers a row.
+                //
+                // Tappable, because the space under the last row reads as
+                // "outside the list" and tapping it is how a user puts the
+                // selection down.
                 Color.clear
                     .frame(height: Theme.Metrics.listBottomClearance)
                     .listRowSeparator(.hidden)
+                    .contentShape(Rectangle())
+                    .onTapGesture { clearSelection() }
             }
             .padding([.leading, .trailing])
             .listStyle(.plain)
+            // A tap that misses every row lands here and puts the selection
+            // down. Behind the rows rather than over them, so it only ever sees
+            // taps the rows themselves did not want; `.listRowBackground` would
+            // not do, since the gaps between rows and the area beside them
+            // belong to the list, not to any row.
+            //
+            // The list's own scroll background has to go first, or it sits over
+            // this layer and swallows every one of those taps. The list has no
+            // colour of its own to lose — the pane behind it is what shows
+            // through either way.
+            .scrollContentBackground(.hidden)
+            .background {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture { clearSelection() }
+            }
             // A plain list on macOS draws flush to the pane edges, which puts
             // the checkboxes hard against the sidebar divider. The inset gives
             // the rows the same margin AppKit lists have.
@@ -499,6 +574,17 @@ struct TodoListView: View {
         isListFocused = true
     }
 
+    /// Put the selection down, after a tap that landed outside every row.
+    ///
+    /// The caret goes with it: a row that is no longer selected collapses, and
+    /// leaving focus in a collapsed row's title would keep the keyboard up over
+    /// a field the user can no longer see.
+    private func clearSelection() {
+        guard cursor.selection != nil || focusedTodoID != nil else { return }
+        focusedTodoID = nil
+        withAnimation(Theme.Animation.rowExpand) { cursor.select(nil) }
+    }
+
     /// Every row the arrow keys can land on, parents and their nested subtasks
     /// in the order they are drawn.
     ///
@@ -529,7 +615,11 @@ struct TodoListView: View {
     /// once visited — so without a gate all of them would respond to one
     /// keystroke at once.
     private var isKeyboardTarget: Bool {
-        cursor.selection != nil || focusedTodoID != nil || selectedTodo != nil
+        // The pushed calendar answers the same commands and shares
+        // `selectedTodo` with this list, so the list stands down while it is on
+        // top rather than both acting on one keystroke.
+        guard !isShowingCalendar else { return false }
+        return cursor.selection != nil || focusedTodoID != nil || selectedTodo != nil
     }
 
     /// Move the keyboard cursor, unless a text field wants the arrow key.
@@ -855,6 +945,22 @@ struct TodoListView: View {
         default: "in \(destination.title)"
         }
     }
+
+    /// Whether this list offers a calendar of its own.
+    ///
+    /// Spaces and projects only. The date-driven lists — Today, Tomorrow, This
+    /// Week — are already what the Calendar tab shows, and the Inbox and
+    /// Anytime hold work with no date to lay out, so a grid of them would be
+    /// empty by definition.
+    private var showsCalendarButton: Bool {
+        switch destination {
+        case .space, .project: true
+        default: false
+        }
+    }
+
+    /// Whether the pushed calendar is the screen the user is looking at.
+    private var isShowingCalendar: Bool { calendarRoute != nil }
 
     /// Show the space badge on cross-cutting lists where items come from
     /// several places.

@@ -72,6 +72,10 @@ struct RootView: View {
     @State private var didRunLaunchTasks = false
     @State private var importer = RemindersImporter.shared
 
+    /// What the side panel is showing. Normally the Inbox; a scoped calendar
+    /// pushed anywhere in the app points it at its own list instead.
+    @State private var panelScope = SidePanelScopeModel.shared
+
     @Environment(\.scenePhase) private var scenePhase
 
     /// Shortest gap between foreground rescans, so flicking in and out of the
@@ -91,29 +95,40 @@ struct RootView: View {
         // Phones fall through to the bare tab view untouched.
         Group {
             if isWideLayout {
-                HStack(spacing: 0) {
-                    tabs
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                    if settings.showSidePanel {
-                        Divider()
-                        SidePanelView(
-                            selectedTodo: $selectedTodo,
-                            onHide: { settings.showSidePanel = false }
-                        )
-                        .frame(width: Theme.Metrics.sidePanelWidth)
-                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                // The panel is an *overlay*, not a sibling in a stack, so it
+                // draws above the tab content rather than beside it; `tabs`
+                // reserves the width with a matching trailing inset, so no
+                // content ends up hidden behind the card.
+                //
+                // It deliberately stops below the toolbar. On macOS the search
+                // field is a window toolbar item spanning the whole window — it
+                // is not confined to the tab column and pays no attention to
+                // content safe areas — so anything drawn up into that strip
+                // collides with it. Running the card to the window's very top
+                // is what put the field on top of it.
+                tabs
+                    .safeAreaPadding(.trailing, settings.showSidePanel ? panelColumn : 0)
+                    .overlay(alignment: .trailing) {
+                        if settings.showSidePanel {
+                            SidePanelView(
+                                selectedTodo: $selectedTodo,
+                                scope: effectivePanelScope,
+                                onHide: { settings.showSidePanel = false }
+                            )
+                            .frame(width: panelColumn)
+                            .transition(.move(edge: .trailing).combined(with: .opacity))
+                        }
                     }
-                }
-                .animation(Theme.Animation.panel, value: settings.showSidePanel)
-                // Bringing the panel back once hidden: the toggle in Settings
-                // still works, but a control on the shell itself means the user
-                // does not have to leave the screen to undo a collapse.
-                .overlay(alignment: .topTrailing) {
-                    if !settings.showSidePanel {
-                        showPanelButton
+                    .animation(Theme.Animation.panel, value: settings.showSidePanel)
+                    // Bringing the panel back once hidden: the toggle in
+                    // Settings still works, but a control on the shell itself
+                    // means the user does not have to leave the screen to undo
+                    // a collapse.
+                    .overlay(alignment: .topTrailing) {
+                        if !settings.showSidePanel {
+                            showPanelButton
+                        }
                     }
-                }
             } else {
                 tabs
             }
@@ -147,12 +162,24 @@ struct RootView: View {
     }
 
     /// Whether the Inbox deserves a tab of its own.
+    private var showsInboxTab: Bool { !isWideLayout }
+
+    /// What the panel actually shows, once the open tab is taken into account.
     ///
-    /// It does not when the side panel is already showing the Inbox: two ways
-    /// onto one screen, with no way to tell which one you are looking at. The
-    /// panel is the better of the two, since it is visible from every tab. A
-    /// phone never shows the panel, so the tab always survives there.
-    private var showsInboxTab: Bool { !(isWideLayout && settings.showSidePanel) }
+    /// A scoped calendar only holds the panel while the user is *looking* at
+    /// it. The Lists tab keeps its pushed screens mounted across a tab switch,
+    /// so the claim outlives the visit — without this, walking from a space's
+    /// calendar over to Today left that space's undated work sitting beside the
+    /// summary, where it means nothing and the Inbox is what belongs. Coming
+    /// back to Lists finds the calendar still pushed and the scope with it.
+    private var effectivePanelScope: SidePanelScope {
+        tab == .lists ? panelScope.scope : .inbox
+    }
+
+    /// Width the panel occupies, card plus the inset it carries itself.
+    private var panelColumn: CGFloat {
+        Theme.Metrics.sidePanelWidth + Theme.Metrics.panelInset
+    }
 
     private var tabs: some View {
         TabView(selection: $tab) {
@@ -271,6 +298,11 @@ struct RootView: View {
         let skipsPrompts = ProcessInfo.processInfo.arguments.contains("-skipPermissionPrompts")
 
         #if DEBUG
+        // Spaces, projects, and dated work in the real store, so the app can be
+        // driven on a device without hand-entering a fixture first.
+        if ProcessInfo.processInfo.arguments.contains("-seedSampleData") {
+            PreviewData.seedIfEmpty(into: context)
+        }
         if ProcessInfo.processInfo.arguments.contains("-seedCalendarEvents") {
             await DebugCalendarSeeder.seed()
         }
@@ -280,6 +312,12 @@ struct RootView: View {
         // `-startInCalendar` opens straight into the calendar, for UI checks.
         if ProcessInfo.processInfo.arguments.contains("-startInCalendar") {
             tab = .calendar
+        }
+        // Likewise for Lists, which is the tab the side panel sits beside the
+        // real sidebar on — the arrangement worth looking at when the panel's
+        // chrome changes.
+        if ProcessInfo.processInfo.arguments.contains("-startInLists") {
+            tab = .lists
         }
         #endif
 

@@ -1,5 +1,6 @@
 #if DEBUG
 import Foundation
+import os
 import SwiftUI
 import SwiftData
 
@@ -36,6 +37,22 @@ enum PreviewData {
 
     // MARK: Seeding
 
+    /// Put the preview fixture into a real store, for UI verification.
+    ///
+    /// Runs with `-seedSampleData` and only in debug builds. Skipped when the
+    /// store already holds something, so re-launching does not stack duplicate
+    /// copies of every sample to-do on top of each other.
+    static func seedIfEmpty(into context: ModelContext) {
+        let existing = (try? context.fetchCount(FetchDescriptor<Todo>())) ?? 0
+        guard existing == 0 else {
+            AppLog.data.info("Sample seeder: store already populated")
+            return
+        }
+
+        seed(into: context)
+        AppLog.data.info("Sample seeder: added sample spaces, projects, and to-dos")
+    }
+
     private static func seed(into context: ModelContext) {
         let work = Space(name: "Work", symbolName: "briefcase", colorHex: "#0A84FF", sortIndex: 0)
         let home = Space(name: "Home", symbolName: "house", colorHex: "#32D74B", sortIndex: 1)
@@ -49,13 +66,25 @@ enum PreviewData {
         project.move(toSpace: work)
         project.colorHex = "#BF5AF2"
 
-        let draft = Todo(title: "Draft the **release notes**")
+        // Dated so the project's own calendar has blocks to lay out, which is
+        // the whole point of scoping a grid to a container.
+        let draft = Todo(title: "Draft the **release notes**", assignedDate: time(10))
+        draft.assignedHasTime = true
+        draft.duration = 3600
         let brief = Todo(title: "Brief the support team")
         context.insert(draft)
         context.insert(brief)
         project.addSubtask(draft)
         project.addSubtask(brief)
         brief.setState(.completed)
+
+        // A grandchild, so the project calendar's walk down the whole subtask
+        // tree — rather than one level — is visible in the running app.
+        let slides = Todo(title: "Prepare the launch slides", assignedDate: time(13))
+        slides.assignedHasTime = true
+        slides.duration = 5400
+        context.insert(slides)
+        draft.addSubtask(slides)
 
         // Today: a spread of states, dates, and metadata.
         let review = Todo(title: "Review `parseDate()` pull request", assignedDate: today)

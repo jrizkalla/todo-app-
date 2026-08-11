@@ -188,11 +188,15 @@ struct AISummaryView : View {
             if let savedSummary {
                 summary = savedSummary.summary
             } else {
+                let now = Date()
+                let filterPast: (Todo) -> Bool = { todo in
+                    todo.endDate.map { $0 <= now } ?? true
+                }
                 aiSummaryService.userInfo = settings.userInfo
                 aiSummaryService.weather = weatherService.weather
                 aiSummaryService.reminders = .init(
-                    scheduled: TodoQueries.today(todos).map { $0.toStruct() },
-                    overdue: TodoQueries.overdue(todos).map { $0.toStruct() }
+                    scheduled: TodoQueries.today(todos).filter(filterPast).map { $0.toStruct() },
+                    overdue: TodoQueries.overdue(todos).filter(filterPast).map { $0.toStruct() }
                 )
                 Task { @MainActor in
                     guard let summary = await aiSummaryService.generateSummary() else { return }

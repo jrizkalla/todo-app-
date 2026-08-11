@@ -332,6 +332,194 @@ struct TodoQueriesTests {
         #expect(TodoQueries.looseProjects([loose, filed]).map(\.title) == ["Loose"])
     }
 
+    // MARK: Calendar scoping
+
+    /// A space's calendar reaches into its projects, which the list query — one
+    /// level deep by design — deliberately does not.
+    @Test func calendarScopeForSpaceIncludesWorkInsideItsProjects() throws {
+        let context = try makeContext()
+        let space = Space(name: "Work")
+        let loose = Todo(title: "Loose")
+        let project = Todo(title: "Project", isProject: true)
+        let child = Todo(title: "Child")
+        context.insert(space)
+        [loose, project, child].forEach(context.insert)
+        loose.move(toSpace: space)
+        project.move(toSpace: space)
+        project.addSubtask(child)
+
+        let scoped = TodoQueries.calendarScope(
+            [loose, project, child], for: .space(space.uuid)
+        )
+
+        // The project itself is a container, not a block on the grid.
+        #expect(Set(scoped.map(\.title)) == ["Loose", "Child"])
+    }
+
+    /// Work filed in another space stays off this space's calendar.
+    @Test func calendarScopeForSpaceExcludesOtherSpaces() throws {
+        let context = try makeContext()
+        let work = Space(name: "Work")
+        let home = Space(name: "Home")
+        let mine = Todo(title: "Mine")
+        let theirs = Todo(title: "Theirs")
+        [work, home].forEach(context.insert)
+        [mine, theirs].forEach(context.insert)
+        mine.move(toSpace: work)
+        theirs.move(toSpace: home)
+
+        let scoped = TodoQueries.calendarScope([mine, theirs], for: .space(work.uuid))
+
+        #expect(scoped.map(\.title) == ["Mine"])
+    }
+
+    /// A project's calendar covers its whole tree, not just its direct children.
+    @Test func calendarScopeForProjectIncludesNestedSubtasks() throws {
+        let context = try makeContext()
+        let project = Todo(title: "Project", isProject: true)
+        let child = Todo(title: "Child")
+        let grandchild = Todo(title: "Grandchild")
+        let outside = Todo(title: "Outside")
+        [project, child, grandchild, outside].forEach(context.insert)
+        project.addSubtask(child)
+        child.addSubtask(grandchild)
+
+        let scoped = TodoQueries.calendarScope(
+            [project, child, grandchild, outside], for: .project(project.uuid)
+        )
+
+        #expect(Set(scoped.map(\.title)) == ["Child", "Grandchild"])
+    }
+
+    /// A subtask keeps its own block when its parent is scheduled the same day.
+    ///
+    /// The list queries collapse a child into the parent it is nested under,
+    /// which on a grid meant a scheduled hour simply going missing — so this
+    /// runs the scope through the day query the calendar actually calls,
+    /// rather than testing the scope in isolation.
+    @Test func calendarKeepsSubtaskScheduledAlongsideItsParent() throws {
+        let context = try makeContext()
+        let project = Todo(title: "Project", isProject: true)
+        let parent = Todo(title: "Parent", assignedDate: day(offset: 0).addingTimeInterval(10 * 3600))
+        let child = Todo(title: "Child", assignedDate: day(offset: 0).addingTimeInterval(13 * 3600))
+        [project, parent, child].forEach(context.insert)
+        project.addSubtask(parent)
+        parent.addSubtask(child)
+        parent.assignedHasTime = true
+        child.assignedHasTime = true
+
+        let scoped = TodoQueries.calendarScope(
+            [project, parent, child], for: .project(project.uuid)
+        )
+        let timed = TodoQueries.timed(scoped, on: day(offset: 0), calendar: calendar)
+
+        #expect(timed.map(\.title) == ["Parent", "Child"])
+    }
+
+    /// The cross-cutting lists are unscoped — the calendar shows everything.
+    @Test func calendarScopePassesEverythingThroughForOtherDestinations() throws {
+        let context = try makeContext()
+        let a = Todo(title: "A")
+        let b = Todo(title: "B")
+        [a, b].forEach(context.insert)
+
+        #expect(TodoQueries.calendarScope([a, b], for: .today).count == 2)
+    }
+
+    // MARK: Unscheduled remainder (side panel)
+
+    /// The panel beside a space's calendar holds exactly what the grid cannot
+    /// draw, reaching into the space's projects the same way the grid does.
+    @Test func unscheduledForSpaceCollectsUndatedWorkIncludingInsideProjects() throws {
+        let context = try makeContext()
+        let space = Space(name: "Work")
+        let dated = Todo(title: "Dated", assignedDate: day(offset: 0))
+        let undated = Todo(title: "Undated")
+        let project = Todo(title: "Project", isProject: true)
+        let undatedChild = Todo(title: "Undated Child")
+        context.insert(space)
+        [dated, undated, project, undatedChild].forEach(context.insert)
+        [dated, undated, project].forEach { $0.move(toSpace: space) }
+        project.addSubtask(undatedChild)
+
+        let result = TodoQueries.unscheduled(
+            [dated, undated, project, undatedChild], for: .space(space.uuid)
+        )
+
+        // The project itself is a container, so it is no more a panel row than
+        // it is a block on the grid.
+        #expect(Set(result.map(\.title)) == ["Undated", "Undated Child"])
+    }
+
+    /// A due date is not a slot: the grid positions blocks by `assignedDate`
+    /// alone, so an item with only a deadline still belongs in the panel.
+    @Test func unscheduledKeepsItemsThatHaveOnlyADueDate() throws {
+        let context = try makeContext()
+        let space = Space(name: "Work")
+        let due = Todo(title: "Due Only")
+        context.insert(space)
+        context.insert(due)
+        due.move(toSpace: space)
+        due.dueDate = day(offset: 1)
+
+        let result = TodoQueries.unscheduled([due], for: .space(space.uuid))
+
+        #expect(result.map(\.title) == ["Due Only"])
+    }
+
+    /// The grid and the panel partition the container: nothing counted twice,
+    /// nothing missing.
+    @Test func unscheduledIsTheComplementOfWhatTheGridDraws() throws {
+        let context = try makeContext()
+        let space = Space(name: "Work")
+        let dated = Todo(title: "Dated", assignedDate: day(offset: 0))
+        let undated = Todo(title: "Undated")
+        context.insert(space)
+        [dated, undated].forEach(context.insert)
+        [dated, undated].forEach { $0.move(toSpace: space) }
+
+        let pool = [dated, undated]
+        let scoped = TodoQueries.calendarScope(pool, for: .space(space.uuid))
+        let onGrid = TodoQueries.scheduled(scoped, on: day(offset: 0), calendar: calendar)
+        let inPanel = TodoQueries.unscheduled(pool, for: .space(space.uuid))
+
+        #expect(Set(onGrid.map(\.title)).isDisjoint(with: Set(inPanel.map(\.title))))
+        #expect(Set(onGrid.map(\.title)).union(inPanel.map(\.title)) == ["Dated", "Undated"])
+    }
+
+    /// Finished work is not waiting for a slot.
+    @Test func unscheduledExcludesResolvedWorkByDefault() throws {
+        let context = try makeContext()
+        let space = Space(name: "Work")
+        let open = Todo(title: "Open")
+        let done = Todo(title: "Done")
+        context.insert(space)
+        [open, done].forEach(context.insert)
+        [open, done].forEach { $0.move(toSpace: space) }
+        done.setState(.completed)
+
+        let result = TodoQueries.unscheduled([open, done], for: .space(space.uuid))
+
+        #expect(result.map(\.title) == ["Open"])
+    }
+
+    /// Work filed elsewhere stays out of this space's panel.
+    @Test func unscheduledExcludesOtherSpaces() throws {
+        let context = try makeContext()
+        let work = Space(name: "Work")
+        let home = Space(name: "Home")
+        let mine = Todo(title: "Mine")
+        let theirs = Todo(title: "Theirs")
+        [work, home].forEach(context.insert)
+        [mine, theirs].forEach(context.insert)
+        mine.move(toSpace: work)
+        theirs.move(toSpace: home)
+
+        let result = TodoQueries.unscheduled([mine, theirs], for: .space(work.uuid))
+
+        #expect(result.map(\.title) == ["Mine"])
+    }
+
     // MARK: Ordering
 
     /// Dated work sorts ahead of undated work in cross-cutting lists.
