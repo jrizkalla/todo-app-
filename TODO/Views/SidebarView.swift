@@ -12,7 +12,14 @@ struct SidebarView: View {
     @Binding var selectedTodo: Todo?
 
     @Environment(\.modelContext) private var context
-    @Query private var spaces: [Space]
+    /// The spaces to draw, filtered and ordered by SQLite.
+    ///
+    /// The Focus rule and the sort are both predicates now, and the query
+    /// prefetches each space's to-dos: this view draws a row per space and the
+    /// project list under it, so the relationship is read for every one — the
+    /// case `prefetchTodos` exists for.
+    @Query(TodoQueries.visibleSpacesDescriptor())
+    private var orderedSpaces: [Space]
 
     /// The sidebar's own pull-down search, which searches everything rather
     /// than one list.
@@ -192,7 +199,9 @@ struct SidebarView: View {
                         HStack {
                             Text(space.name)
                             Spacer()
-                            let openCount = space.openCount
+                            let openCount = TodoQueries.openCount(
+                                inSpace: space.uuid, in: context
+                            )
                             if openCount > 0 {
                                 Text("\(openCount)")
                                     .font(.caption)
@@ -245,12 +254,13 @@ struct SidebarView: View {
                     Button("Cancel", role: .cancel) { pendingDeletion = nil }
                 }
 
-                ForEach(space.projects) { project in
+                let projects = TodoQueries.projects(inSpace: space.uuid, in: context)
+                ForEach(projects) { project in
                     projectLink(project)
                         .padding(.leading, 12)
                 }
                 .onMove { indices, newOffset in
-                    var reordered = space.projects
+                    var reordered = projects
                     reordered.move(fromOffsets: indices, toOffset: newOffset)
                     store.reorder(reordered)
                 }
@@ -308,8 +318,9 @@ struct SidebarView: View {
     private var deletePrompt: String {
         guard let space = pendingDeletion else { return "" }
 
-        let projects = space.projects.count
-        let others = space.todoList.count - projects
+        let (projects, others) = TodoQueries.spaceContentCounts(
+            spaceID: space.uuid, in: context
+        )
 
         var parts: [String] = []
         if projects > 0 { parts.append("\(projects) project\(projects == 1 ? "" : "s")") }
@@ -321,19 +332,13 @@ struct SidebarView: View {
         return "Deleting “\(space.name)” also deletes its \(parts.joined(separator: " and ")). This cannot be undone."
     }
 
-    /// Spaces the active Focus allows, in display order.
-    ///
-    /// A Focus filter hides whole spaces from the sidebar, so a Focus that
-    /// selects only "Work" leaves the personal spaces out of the list entirely
-    /// rather than merely dimming them.
-    private var orderedSpaces: [Space] {
-        spaces.visibleUnderFocus
-    }
-
     /// Whether a Focus is currently hiding at least one space, which the footer
     /// notes so a missing space never looks like data loss.
+    ///
+    /// Counted in SQLite: `orderedSpaces` no longer holds the hidden ones to
+    /// count, and the footer only ever wanted the number.
     private var hiddenSpaceCount: Int {
-        spaces.filter(\.isHiddenByFocus).count
+        TodoQueries.hiddenSpaceCount(in: context)
     }
 
     /// A destination's badge number, counted in SQLite.

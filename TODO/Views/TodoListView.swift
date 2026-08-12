@@ -65,7 +65,13 @@ private struct DestinationTodoList: View {
     /// filtering, and the `assignedDate ?? dueDate` ordering — are applied to
     /// this already-narrowed page in `filteredTodos`.
     @Query private var destinationTodos: [Todo]
-    @Query private var spaces: [Space]
+    /// Every space, in display order.
+    ///
+    /// Sorted by SQLite rather than re-sorted at each use site. Deliberately
+    /// *not* Focus-filtered: hiding a space from the sidebar says what the user
+    /// is looking at now, not where work is allowed to be filed.
+    @Query(TodoQueries.allSpacesDescriptor())
+    private var spaces: [Space]
 
     @Binding var selectedTodo: Todo?
 
@@ -487,8 +493,10 @@ private struct DestinationTodoList: View {
                                 isSelected: cursor.selection == subtask.uuid,
                                 onToggle: { _ in handleToggle(subtask) },
                                 onSelectState: { handleSetState(subtask, to: $0) },
-                                onTitleChange: { handleTitleChange($0, for: subtask) },
-                                onNotesChange: { handleNotesChange(for: $0) },
+                                onTitleChange: { _ in },
+                                onNotesChange: { _ in },
+//                                onTitleChange: { print("title change"); handleTitleChange($0, for: subtask) },
+//                                onNotesChange: { print("notes change"); handleNotesChange(for: $0) },
                                 menu: { AnyView(rowMenu(for: subtask)) },
                                 // Return inside a project adds another subtask
                                 // to the same parent.
@@ -542,35 +550,13 @@ private struct DestinationTodoList: View {
                     reordered.move(fromOffsets: indices, toOffset: newOffset)
                     store.reorder(reordered)
                 }
-
-                // Breathing room so the floating button never covers a row.
-                //
-                // Tappable, because the space under the last row reads as
-                // "outside the list" and tapping it is how a user puts the
-                // selection down.
-                Color.clear
-                    .frame(height: Theme.Metrics.listBottomClearance)
-                    .listRowSeparator(.hidden)
-                    .contentShape(Rectangle())
-                    .onTapGesture { clearSelection() }
+            }
+            .onScrollPhaseChange { oldPhase, newPhase in
+                if newPhase == .decelerating {
+                    clearSelection()
+                }
             }
             .listStyle(.plain)
-            // A tap that misses every row lands here and puts the selection
-            // down. Behind the rows rather than over them, so it only ever sees
-            // taps the rows themselves did not want; `.listRowBackground` would
-            // not do, since the gaps between rows and the area beside them
-            // belong to the list, not to any row.
-            //
-            // The list's own scroll background has to go first, or it sits over
-            // this layer and swallows every one of those taps. The list has no
-            // colour of its own to lose — the pane behind it is what shows
-            // through either way.
-            .scrollContentBackground(.hidden)
-            .background {
-                Color.clear
-                    .contentShape(Rectangle())
-                    .onTapGesture { clearSelection() }
-            }
             // A plain list on macOS draws flush to the pane edges, which puts
             // the checkboxes hard against the sidebar divider. The inset gives
             // the rows the same margin AppKit lists have.
@@ -841,7 +827,7 @@ private struct DestinationTodoList: View {
 
         Menu("Move to Space") {
             Button("None") { store.move(todo, toSpace: nil) }
-            ForEach(spaces.sorted { $0.sortIndex < $1.sortIndex }) { space in
+            ForEach(spaces) { space in
                 Button(space.name) { store.move(todo, toSpace: space) }
             }
         }

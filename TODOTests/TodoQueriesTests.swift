@@ -767,6 +767,103 @@ struct TodoQueryDescriptorTests {
         #expect(!fetched.contains { $0.title == "Concealed" })
     }
 
+    // MARK: Spaces
+
+    /// A space holding a mix of projects, loose work, and finished work.
+    private func makeSpace(in context: ModelContext, name: String = "Work") -> Space {
+        let space = Space(name: name)
+        context.insert(space)
+
+        let project = Todo(title: "Project", isProject: true)
+        let loose = Todo(title: "Loose")
+        let another = Todo(title: "Another")
+        let done = Todo(title: "Done")
+        [project, loose, another, done].forEach(context.insert)
+        [project, loose, another, done].forEach { $0.move(toSpace: space) }
+        done.setState(.completed)
+
+        return space
+    }
+
+    /// The fetched space contents match the model's own accessors.
+    ///
+    /// The same equivalence check the destinations get: `Space.projects` and
+    /// `openCount` walk the relationship, the query answers in SQL, and the two
+    /// have to agree.
+    @Test func fetchedSpaceContentsMatchTheModelAccessors() throws {
+        let context = try makeContext()
+        let space = makeSpace(in: context)
+
+        #expect(
+            TodoQueries.projects(inSpace: space.uuid, in: context).map(\.title)
+                == space.projects.map(\.title)
+        )
+        #expect(
+            TodoQueries.openCount(inSpace: space.uuid, in: context) == space.openCount
+        )
+
+        let counts = TodoQueries.spaceContentCounts(spaceID: space.uuid, in: context)
+        #expect(counts.projects == space.projects.count)
+        #expect(counts.others == space.todoList.count - space.projects.count)
+    }
+
+    /// The badge counts unresolved, non-project work — not the whole space.
+    @Test func spaceOpenCountExcludesProjectsAndFinishedWork() throws {
+        let context = try makeContext()
+        let space = makeSpace(in: context)
+
+        // "Loose" and "Another" are open; "Project" is a container and "Done"
+        // is finished.
+        #expect(TodoQueries.openCount(inSpace: space.uuid, in: context) == 2)
+    }
+
+    /// Work in one space is never counted against another.
+    @Test func spaceQueriesAreScopedToTheirSpace() throws {
+        let context = try makeContext()
+        let work = makeSpace(in: context, name: "Work")
+        let home = makeSpace(in: context, name: "Home")
+
+        #expect(TodoQueries.openCount(inSpace: work.uuid, in: context) == 2)
+        #expect(TodoQueries.projects(inSpace: home.uuid, in: context).count == 1)
+        #expect(
+            TodoQueries.projects(inSpace: work.uuid, in: context).first?.space?.uuid
+                == work.uuid
+        )
+    }
+
+    /// The sidebar's space query drops Focus-hidden spaces and sorts the rest;
+    /// the picker's keeps every space.
+    @Test func spaceDescriptorsDifferOnTheFocusRule() throws {
+        let context = try makeContext()
+        let visible = Space(name: "Visible", sortIndex: 1)
+        let hidden = Space(name: "Hidden", sortIndex: 0)
+        hidden.isHiddenByFocus = true
+        [visible, hidden].forEach(context.insert)
+
+        let sidebar = (try? context.fetch(TodoQueries.visibleSpacesDescriptor())) ?? []
+        let pickers = (try? context.fetch(TodoQueries.allSpacesDescriptor())) ?? []
+
+        #expect(sidebar.map(\.name) == ["Visible"])
+        // Sorted by `sortIndex`, so the hidden one leads when it is included.
+        #expect(pickers.map(\.name) == ["Hidden", "Visible"])
+        #expect(TodoQueries.hiddenSpaceCount(in: context) == 1)
+    }
+
+    /// The sidebar's query matches `visibleUnderFocus`, which it replaced.
+    @Test func visibleSpacesMatchTheArrayRule() throws {
+        let context = try makeContext()
+        let first = Space(name: "First", sortIndex: 2)
+        let second = Space(name: "Second", sortIndex: 1)
+        let hidden = Space(name: "Hidden", sortIndex: 0)
+        hidden.isHiddenByFocus = true
+        [first, second, hidden].forEach(context.insert)
+
+        let fetched = (try? context.fetch(TodoQueries.visibleSpacesDescriptor())) ?? []
+        let expected = [first, second, hidden].visibleUnderFocus
+
+        #expect(fetched.map(\.name) == expected.map(\.name))
+    }
+
     /// Point lookups resolve the same object the array scan used to find.
     @Test func pointLookupsFindTheirTarget() throws {
         let context = try makeContext()

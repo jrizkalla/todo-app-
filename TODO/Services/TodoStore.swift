@@ -146,14 +146,26 @@ struct TodoStore {
     }
 
     /// Append position for a new todo within its container.
+    ///
+    /// Each branch asks SQLite for the highest existing index rather than
+    /// reading the container's contents to take a maximum: appending needs one
+    /// number, and a space or project holding a year of work should not have to
+    /// load it to produce that number.
+    ///
+    /// The subtask branch stays in memory — a parent's `subtaskList` is already
+    /// faulted in by the time something is being added to it, and subtask
+    /// counts are small by construction.
     private func nextSortIndex(inSpace space: Space?, parent: Todo?) -> Int {
         if let parent { return (parent.subtaskList.map(\.sortIndex).max() ?? -1) + 1 }
-        if let space { return (space.todoList.map(\.sortIndex).max() ?? -1) + 1 }
-        // Top-level rows only, and the largest index first, so the append
-        // position is one row rather than a scan of the whole store.
-        var descriptor = FetchDescriptor<Todo>(
-            predicate: #Predicate<Todo> { $0.space == nil && $0.parent == nil }
-        )
+
+        let predicate: Predicate<Todo>
+        if let spaceID = space?.uuid {
+            predicate = #Predicate<Todo> { $0.space?.uuid == spaceID }
+        } else {
+            predicate = #Predicate<Todo> { $0.space == nil && $0.parent == nil }
+        }
+
+        var descriptor = FetchDescriptor<Todo>(predicate: predicate)
         descriptor.sortBy = [SortDescriptor(\Todo.sortIndex, order: .reverse)]
         descriptor.fetchLimit = 1
         return ((try? context.fetch(descriptor))?.first?.sortIndex ?? -1) + 1

@@ -123,7 +123,6 @@ private struct RangedCalendarView: View {
     /// over the handful of rows a page can actually show.
     @Query private var datedTodos: [Todo]
 
-    @Query private var spaces: [Space]
 
     init(
         selectedTodo: Binding<Todo?>,
@@ -554,7 +553,7 @@ private struct RangedCalendarView: View {
             store.move(todo, toSpace: nil)
         case .space(let id):
             store.move(todo, toParent: nil)
-            store.move(todo, toSpace: spaces.first { $0.uuid == id })
+            store.move(todo, toSpace: TodoQueries.space(uuid: id, in: context))
         case .project(let id):
             guard let project = TodoQueries.todo(uuid: id, in: context) else { return }
             _ = store.adopt(todo, asSubtaskOf: project)
@@ -1288,7 +1287,7 @@ private struct RangedCalendarView: View {
     /// A to-do created on a scoped calendar belongs to that container.
     private var creationSpace: Space? {
         if case .space(let id) = destination {
-            return spaces.first { $0.uuid == id }
+            return TodoQueries.space(uuid: id, in: context)
         }
         if case .project(let id) = destination {
             return TodoQueries.todo(uuid: id, in: context)?.space
@@ -1628,7 +1627,7 @@ private struct RangedCalendarView: View {
     private var containerName: String? {
         switch destination {
         case .space(let id):
-            return spaces.first { $0.uuid == id }?.name
+            return TodoQueries.space(uuid: id, in: context)?.name
         case .project(let id):
             return TodoQueries.todo(uuid: id, in: context)?.title
         default:

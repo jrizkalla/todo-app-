@@ -11,7 +11,13 @@ struct TodoDetailView: View {
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
     @Environment(AppSettings.self) private var settings
-    @Query private var spaces: [Space]
+    /// Every space, in display order.
+    ///
+    /// Sorted by SQLite rather than re-sorted at each use site. Deliberately
+    /// *not* Focus-filtered: hiding a space from the sidebar says what the user
+    /// is looking at now, not where work is allowed to be filed.
+    @Query(TodoQueries.allSpacesDescriptor())
+    private var spaces: [Space]
 
     @State private var suggestionModel = TitleSuggestionModel()
     @State private var isEditingNotes = false
@@ -116,7 +122,7 @@ struct TodoDetailView: View {
                     }
                 )) {
                     Text("None").tag(UUID?.none)
-                    ForEach(spaces.sorted { $0.sortIndex < $1.sortIndex }) { space in
+                    ForEach(spaces) { space in
                         Text(space.name).tag(Optional(space.uuid))
                     }
                 }

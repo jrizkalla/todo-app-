@@ -72,6 +72,22 @@ extension FetchDescriptor where T == Todo {
     }
 }
 
+extension FetchDescriptor where T == Space {
+    /// Fault in each space's to-dos alongside the spaces themselves.
+    ///
+    /// `Space.projects`, `looseTodos` and `openCount` all walk `todoList`, so a
+    /// view that draws a row per space touches the relationship once per space
+    /// — and without prefetching that is one round trip each, the N+1 the
+    /// sidebar was paying on every redraw.
+    ///
+    /// Only for callers that actually read the contents. A view listing names
+    /// alone should leave this off rather than pull every to-do in the store
+    /// across to display none of them.
+    mutating func prefetchTodos() {
+        self.relationshipKeyPathsForPrefetching = [\.todos]
+    }
+}
+
 
 /// Filtering rules behind each destination.
 ///
@@ -688,6 +704,121 @@ enum TodoQueries {
         )
         descriptor.fetchLimit = 1
         return fetch(descriptor, in: context).first
+    }
+
+    // MARK: - Spaces
+
+    /// Spaces the active Focus allows, in display order.
+    ///
+    /// The `visibleUnderFocus` rule as a fetch: `isHiddenByFocus` is a stored
+    /// column and `sortIndex` is a sort, so both belong in SQLite rather than
+    /// in a filter-then-sort over every space the store holds.
+    ///
+    /// `prefetchTodos` because the sidebar — this descriptor's reason for
+    /// existing — reads `openCount` and `projects` for every row it draws.
+    ///
+    /// `nonisolated` so it can configure a `@Query`, which is initialized
+    /// outside any actor.
+    nonisolated static func visibleSpacesDescriptor() -> FetchDescriptor<Space> {
+        var descriptor = FetchDescriptor<Space>(
+            predicate: #Predicate<Space> { !$0.isHiddenByFocus }
+        )
+        descriptor.sortBy = [SortDescriptor(\Space.sortIndex)]
+        descriptor.prefetchTodos()
+        return descriptor
+    }
+
+    /// Every space in display order, Focus-hidden ones included.
+    ///
+    /// For the pickers, where a Focus filter has no business narrowing what a
+    /// to-do can be filed into: hiding a space from the sidebar is about what
+    /// the user is looking at now, not about where work is allowed to go.
+    ///
+    /// No prefetch — the pickers show names, not contents.
+    nonisolated static func allSpacesDescriptor() -> FetchDescriptor<Space> {
+        var descriptor = FetchDescriptor<Space>()
+        descriptor.sortBy = [SortDescriptor(\Space.sortIndex)]
+        return descriptor
+    }
+
+    /// How many spaces the active Focus is hiding, counted in SQLite.
+    ///
+    /// The sidebar footer notes this so a missing space never looks like data
+    /// loss; it only ever needed the number.
+    static func hiddenSpaceCount(in context: ModelContext) -> Int {
+        let descriptor = FetchDescriptor<Space>(
+            predicate: #Predicate<Space> { $0.isHiddenByFocus }
+        )
+        do {
+            return try context.fetchCount(descriptor)
+        } catch {
+            AppLog.data.error("Hidden space count failed: \(String(describing: error))")
+            return 0
+        }
+    }
+
+    /// Projects filed in a space, in display order.
+    ///
+    /// Fetched by predicate rather than read off `space.projects`, which walks
+    /// the whole relationship — every loose to-do in the space included — to
+    /// keep the handful that are containers.
+    static func projectsDescriptor(inSpace spaceID: UUID) -> FetchDescriptor<Todo> {
+        var descriptor = FetchDescriptor<Todo>(
+            predicate: #Predicate<Todo> { $0.space?.uuid == spaceID && $0.isProject }
+        )
+        descriptor.sortBy = [SortDescriptor(\Todo.sortIndex)]
+        return descriptor
+    }
+
+    static func projects(inSpace spaceID: UUID, in context: ModelContext) -> [Todo] {
+        fetch(projectsDescriptor(inSpace: spaceID), in: context)
+    }
+
+    /// The sidebar badge: unresolved, non-project work filed in a space.
+    ///
+    /// `Space.openCount` faults in every to-do in the space to count a subset;
+    /// this asks SQLite for the number.
+    static func openCount(inSpace spaceID: UUID, in context: ModelContext) -> Int {
+        let resolved = resolvedRaws
+        let descriptor = FetchDescriptor<Todo>(
+            predicate: #Predicate<Todo> { todo in
+                todo.space?.uuid == spaceID
+                    && !todo.isProject
+                    && !resolved.contains(todo.stateRaw)
+            }
+        )
+        do {
+            return try context.fetchCount(descriptor)
+        } catch {
+            AppLog.data.error("Space open count failed: \(String(describing: error))")
+            return 0
+        }
+    }
+
+    /// What deleting a space would take with it, split the way the prompt reads.
+    ///
+    /// Two counts rather than a fetch of the contents: the dialog quotes
+    /// numbers, and a space holding a year of work should not have to load it
+    /// to say so.
+    static func spaceContentCounts(
+        spaceID: UUID,
+        in context: ModelContext
+    ) -> (projects: Int, others: Int) {
+        let projectsDescriptor = FetchDescriptor<Todo>(
+            predicate: #Predicate<Todo> { $0.space?.uuid == spaceID && $0.isProject }
+        )
+        let othersDescriptor = FetchDescriptor<Todo>(
+            predicate: #Predicate<Todo> { $0.space?.uuid == spaceID && !$0.isProject }
+        )
+        do {
+            return (
+                try context.fetchCount(projectsDescriptor),
+                try context.fetchCount(othersDescriptor)
+            )
+        } catch {
+            AppLog.data.error("Space content count failed: \(String(describing: error))")
+            return (0, 0)
+        }
     }
 
     /// One space by its stable `uuid`.

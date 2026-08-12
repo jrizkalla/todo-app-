@@ -27,7 +27,13 @@ struct MoveDestinationView: View {
         }
     }
 
-    @Query private var spaces: [Space]
+    /// Every space, in display order.
+    ///
+    /// Sorted by SQLite rather than re-sorted at each use site. Deliberately
+    /// *not* Focus-filtered: hiding a space from the sidebar says what the user
+    /// is looking at now, not where work is allowed to be filed.
+    @Query(TodoQueries.allSpacesDescriptor())
+    private var spaces: [Space]
 
     /// Only projects can be moved into, so only projects are fetched — the
     /// picker used to pull every to-do in the store to keep the handful that
@@ -173,15 +179,14 @@ struct MoveDestinationView: View {
             results.append(.none)
         }
 
+        // Both queries arrive sorted, so only the text match is left here.
         results += spaces
-            .sorted { $0.sortIndex < $1.sortIndex }
             .filter { matches($0.name) }
             .map { .space($0.uuid) }
 
         results += projects
             .filter { $0.uuid != todo.uuid && !isDescendant($0, of: todo) }
             .filter { matches($0.title) }
-            .sorted { $0.title < $1.title }
             .map { .project($0.uuid) }
 
         return results

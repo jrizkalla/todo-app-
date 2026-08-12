@@ -50,11 +50,24 @@ final class Space {
     }
 }
 
+/// Contents of a space, read through its relationship.
+///
+/// Each of these walks `todoList`, so they fault in every to-do filed in the
+/// space to return a subset or a count. That is fine when the space is already
+/// loaded and the caller wants its contents anyway — but a view drawing a row
+/// per space pays it once per row.
+///
+/// `TodoQueries` has fetch-backed equivalents that answer the same questions in
+/// SQLite: `projects(inSpace:in:)`, `openCount(inSpace:in:)`, and
+/// `spaceContentCounts(spaceID:in:)`. Prefer those anywhere the number of
+/// spaces is not known to be small — the sidebar uses them. Reach for these
+/// when you hold one `Space` and want the objects themselves.
 extension Space {
     var todoList: [Todo] { todos ?? [] }
 
-    /// Projects in this space, in display order — what the sidebar lists
-    /// beneath the space heading.
+    /// Projects in this space, in display order.
+    ///
+    /// See `TodoQueries.projects(inSpace:in:)` for the fetched form.
     var projects: [Todo] {
         todoList
             .filter { $0.isProject }
@@ -70,6 +83,8 @@ extension Space {
     }
 
     /// Count of unresolved work, shown as the sidebar badge.
+    ///
+    /// See `TodoQueries.openCount(inSpace:in:)`, which counts without loading.
     var openCount: Int {
         todoList.filter { !$0.isProject && !$0.state.isResolved }.count
     }

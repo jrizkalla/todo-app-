@@ -78,7 +78,6 @@ private struct ScopedSidePanel: View {
     /// full-store array.
     @Query private var overdueTodos: [Todo]
 
-    @Query private var spaces: [Space]
 
     init(
         scope: SidePanelScope,
@@ -269,7 +268,7 @@ private struct ScopedSidePanel: View {
     private func scopeName(_ destination: ListDestination) -> String {
         switch destination {
         case .space(let id):
-            spaces.first { $0.uuid == id }?.name ?? "Space"
+            TodoQueries.space(uuid: id, in: context)?.name ?? "Space"
         case .project(let id):
             TodoQueries.todo(uuid: id, in: context)?.title ?? "Project"
         default:
