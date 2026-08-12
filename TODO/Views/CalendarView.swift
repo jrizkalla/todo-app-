@@ -179,9 +179,44 @@ private struct RangedCalendarView: View {
     /// The to-do being dragged to a new time, and how far it has moved.
     @State private var draggingTodoID: UUID?
     @State private var dragTranslation: CGFloat = 0
+    /// Which part of a block the current drag has hold of.
+    @State private var dragMode: DragMode = .move
     /// A block sketched under the finger while a long press is held, before the
     /// to-do is actually created. Mirrors the placeholder Calendar.app shows.
     @State private var draft: DraftBlock?
+
+    /// The block the user has tapped once.
+    ///
+    /// The calendar's tap is two-stage, like the list's: the first tap selects
+    /// a block — which is what puts the checkbox, the chevron and the resize
+    /// handles on it — and only the second opens the editor. `selectedTodo` is
+    /// deliberately not used for this, because that binding *presents* the
+    /// editor, so driving selection through it would collapse both stages into
+    /// one tap.
+    ///
+    /// The keyboard cursor is the same idea by another route, so the two are
+    /// kept in step rather than allowed to mark different blocks: whichever way
+    /// a block was picked, it is the one wearing the controls.
+    private var selectedBlockID: UUID? { cursor.selection }
+
+    /// What a drag on a block is doing to it.
+    ///
+    /// Moving comes from a press anywhere on the block; the two resize modes
+    /// come from the handles a selected block grows at its edges, which is how
+    /// the stock Calendar distinguishes the two gestures as well.
+    private enum DragMode: Equatable, CustomStringConvertible {
+        case move
+        case resizeStart
+        case resizeEnd
+
+        var description: String {
+            switch self {
+            case .move: "move"
+            case .resizeStart: "resizeStart"
+            case .resizeEnd: "resizeEnd"
+            }
+        }
+    }
     /// Width of one day column, measured from the laid-out grid so overlapping
     /// blocks can be positioned as fractions of it.
     @State private var columnWidth: CGFloat = 0
@@ -195,6 +230,9 @@ private struct RangedCalendarView: View {
 
     /// Where the arrow keys are pointing, over the blocks on the visible page.
     @State private var cursor = KeyboardCursor()
+    /// Raised when completing a block is blocked by unfinished subtasks, so the
+    /// calendar's checkbox asks the same question the list's does.
+    @State private var pendingCascade: PendingCascade?
     /// The to-do whose scheduling panel is open, from Cmd+S.
     @State private var schedulingTodo: Todo?
     /// The to-do whose "move to" picker is open, from Cmd+M.
@@ -373,6 +411,24 @@ private struct RangedCalendarView: View {
             )
             .presentationDetents([.medium])
         }
+        // The block checkbox asks the same question the list's does when
+        // unfinished subtasks stand in the way.
+        .confirmationDialog(
+            cascadePrompt,
+            isPresented: .init(
+                get: { pendingCascade != nil },
+                set: { if !$0 { pendingCascade = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let pending = pendingCascade {
+                Button(pending.confirmLabel) {
+                    store.setStateCascading(pending.todo, to: pending.target)
+                    pendingCascade = nil
+                }
+                Button("Keep Subtasks", role: .cancel) { pendingCascade = nil }
+            }
+        }
     }
 
     // MARK: Side panel
@@ -507,7 +563,7 @@ private struct RangedCalendarView: View {
 
         case .toggleDone:
             guard let todo = cursorTodo ?? selectedTodo else { return }
-            _ = store.toggle(todo)
+            handleToggle(todo)
 
         case .showDetail:
             guard let todo = cursorTodo ?? selectedTodo else { return }
@@ -886,14 +942,43 @@ private struct RangedCalendarView: View {
     }
 
     private func chip(for todo: Todo) -> some View {
+        let isSelected = selectedBlockID == todo.uuid
+
         // A plain view rather than a `Button` so `draggable` can claim the
         // long press: a button consumes the touch first and the chip never
         // lifts. Tapping is restored by the explicit tap gesture below.
-        HStack(spacing: 4) {
-            Image(systemName: "square")
-                .font(.caption)
-            InlineMarkdownText(markdown: todo.title.isEmpty ? "Untitled" : todo.title)
-                .font(.caption)
+        return HStack(spacing: 4) {
+            // A real checkbox rather than the empty square this used to draw:
+            // an all-day chip is a to-do like any other, and the box was
+            // already the shape of the control it was standing in for.
+            TodoCheckbox(
+                state: todo.state,
+                tint: tint(for: todo),
+                onToggle: { handleToggle(todo) },
+                onSelect: { handleSetState(todo, to: $0) },
+                scale: .widget
+            )
+            InlineMarkdownText(
+                markdown: todo.title.isEmpty ? "Untitled" : todo.title,
+                strikethrough: todo.state == .completed
+            )
+            .font(.caption)
+
+            Spacer(minLength: 0)
+
+            Button { selectedTodo = todo } label: {
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(tint(for: todo))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Show Details")
+            .frame(width: isSelected ? nil : 0)
+            .opacity(isSelected ? 1 : 0)
+            .allowsHitTesting(isSelected)
+            .accessibilityHidden(!isSelected)
+            .clipped()
         }
         .padding(.horizontal, 7)
         .padding(.vertical, 3)
@@ -903,19 +988,23 @@ private struct RangedCalendarView: View {
                 .fill(tint(for: todo).opacity(0.2))
                 .overlay {
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .stroke(
-                            Color.accentColor,
-                            lineWidth: cursor.selection == todo.uuid ? 2 : 0
-                        )
+                        .stroke(Color.accentColor, lineWidth: isSelected ? 2 : 0)
                 }
         }
         .contentShape(Rectangle())
+        // Same as the timed blocks: on macOS the chip is what the editor's
+        // popover points at, and without this nothing presents it.
+        .todoDetailPopover(for: todo, selection: $selectedTodo)
     // Dragging an all-day chip onto the grid gives it a time. The grid
     // receives it via `dropDestination` below.
         .todoDraggable(todo)
+        // Two-stage, matching the timed blocks: select, then open.
         .onTapGesture {
-            cursor.select(todo.uuid)
-            selectedTodo = todo
+            if isSelected {
+                selectedTodo = todo
+            } else {
+                cursor.select(todo.uuid)
+            }
         }
         .contextMenu { blockMenu(for: todo) }
         .accessibilityAddTraits(.isButton)
@@ -1037,6 +1126,13 @@ private struct RangedCalendarView: View {
                 )
             }
 
+            // Where the block under the finger will land. Drawn after the
+            // blocks so it is never hidden behind one, and before the draft,
+            // which is the only thing that outranks it.
+            if let dragging = draggingTodo, todosOnDay.contains(where: { $0.uuid == dragging.uuid }) {
+                snapIndicator(for: dragging, on: day, slot: slots["todo-\(dragging.uuid.uuidString)"] ?? fullWidth)
+            }
+
             // The placeholder for a long press in progress, drawn last so
             // it sits above whatever is already on the grid.
             if let draft, calendar.isDate(draft.day, inSameDayAs: day) {
@@ -1063,7 +1159,21 @@ private struct RangedCalendarView: View {
         // simultaneous one — claims the enclosing ScrollView's pan and stops
         // the day scrolling. A strip knows its own time, so a plain long press
         // is enough and scrolling is untouched.
-        .overlay { if isActive { creationStrips(for: day) } }
+        // Underneath the blocks, not over them.
+        //
+        // These were an `overlay`, which put 96 live press targets *above* every
+        // block in the column. The occupied ones opt out of hit testing, so a
+        // press that began on a block still reached it — but a *drag* did not:
+        // the moment the finger moved onto a neighbouring empty strip, that
+        // strip's own gesture competed for the touch and the block's drag was
+        // cancelled. Rescheduling by dragging never worked on either platform
+        // for this reason.
+        //
+        // As a background they are behind the blocks, which is the honest
+        // arrangement anyway: a block is a real thing to grab, and the strips
+        // are only the empty space around it. Nothing about creation changes —
+        // an empty slot has no block in front of it to intercept the press.
+        .background { if isActive { creationStrips(for: day) } }
         // Accepts to-dos dropped onto the grid — an all-day chip dragged down
         // from the row above, or something dragged in from the Inbox or a list
         // — scheduling each for the time it was dropped at.
@@ -1158,10 +1268,21 @@ private struct RangedCalendarView: View {
                     Double(index * Self.creationSlotMinutes) * 60
                 )
 
+                let end = start.addingTimeInterval(
+                    Double(Self.creationSlotMinutes) * 60
+                )
+
                 // A press on an occupied slot belongs to the block there,
                 // which has its own drag-to-move gesture, so that slot is left
                 // transparent to touches.
-                if occupied.contains(where: { $0.contains(start) }) {
+                //
+                // A real overlap test, not `contains(start)`. Testing only the
+                // slot's start left every slot that merely *straddles* a
+                // block's edge live — which is exactly where a selected block's
+                // resize handle sits, since the handle deliberately hangs past
+                // the edge. Holding that handle on macOS therefore reached the
+                // strip underneath and created a to-do instead of resizing.
+                if occupied.contains(where: { $0.lowerBound < end && $0.upperBound > start }) {
                     Color.clear
                         .frame(height: slotHeight)
                         .allowsHitTesting(false)
@@ -1173,9 +1294,31 @@ private struct RangedCalendarView: View {
                         .fill(.black.opacity(0.0001))
                         .frame(height: slotHeight)
                         .contentShape(Rectangle())
-                        .onLongPressGesture(minimumDuration: 0.4) {
+                        // A tap on empty grid only clears the selection —
+                        // creating from one made every mistimed tap and every
+                        // tap-to-dismiss leave a stray to-do behind. Creation
+                        // is the long press, which is what Calendar.app asks
+                        // for too.
+                        //
+                        // Attached ahead of the long press so the two do not
+                        // race: without the ordering a quick tap can be
+                        // delivered to the press recognizer, which on macOS
+                        // treats a click held for a frame or two as a press and
+                        // creates the block the tap was trying to avoid.
+                        .highPriorityGesture(
+                            TapGesture().onEnded {
+                                draft = nil
+                                cursor.select(nil)
+                            }
+                        )
+                        .onLongPressGesture(minimumDuration: Self.createPressDuration) {
+                            // Never while a block is being dragged or resized:
+                            // the press that is moving that block is still
+                            // down, and on macOS it is delivered here too.
+                            guard draggingTodoID == nil else { return }
                             createTodo(startingAt: start)
                         } onPressingChanged: { pressing in
+                            guard draggingTodoID == nil else { return }
                             draft = pressing ? DraftBlock(day: day, start: start) : nil
                         }
                 }
@@ -1185,6 +1328,12 @@ private struct RangedCalendarView: View {
 
     /// Granularity of long-press creation, in minutes.
     private static let creationSlotMinutes = 15
+
+    /// How long the grid has to be held before it creates a block.
+    ///
+    /// Long enough that it cannot be reached by a tap that lingers, since a tap
+    /// on empty grid now means "deselect" and the two gestures share a target.
+    private static let createPressDuration: Double = 0.45
 
     /// Spans of the day already covered by a timed to-do.
     ///
@@ -1197,7 +1346,14 @@ private struct RangedCalendarView: View {
                 todo.effectiveDuration(defaultDuration: settings.defaultEventDuration)
             )
             guard end > start else { return nil }
-            return start..<end
+
+            // A selected block's resize handles hang past its edges, so the
+            // grid it covers is a little taller than the block itself. Without
+            // this margin the outer half of each handle sits over a live
+            // creation strip, and holding the handle creates a to-do rather
+            // than resizing the block it belongs to.
+            let margin = Double(Self.resizeHandleTouchHeight / 2) / Double(hourHeight) * 3600
+            return start.addingTimeInterval(-margin)..<end.addingTimeInterval(margin)
         }
     }
 
@@ -1308,124 +1464,520 @@ private struct RangedCalendarView: View {
         slot: CalendarSlot,
         columnWidth: CGFloat
     ) -> some View {
-        let baseOffset = verticalOffset(for: todo, on: day)
-        let height = blockHeight(for: todo)
+        let isSelected = selectedBlockID == todo.uuid
         let isDragging = draggingTodoID == todo.uuid
-        let dragOffset = isDragging ? dragTranslation : 0
+
+        // Geometry follows the finger while a drag is in flight, so the block
+        // itself is the preview: it grows from the top edge when the start
+        // handle is dragged, from the bottom when the end handle is, and simply
+        // travels when the body is. The committed values are unchanged until
+        // the gesture ends — see `commitDrag`.
+        let baseOffset = verticalOffset(for: todo, on: day)
+        let baseHeight = blockHeight(for: todo)
+        let liveOffset = baseOffset + (isDragging && dragMode != .resizeEnd ? dragTranslation : 0)
+        let liveHeight: CGFloat = {
+            guard isDragging else { return baseHeight }
+            switch dragMode {
+            case .move: return baseHeight
+            case .resizeStart: return max(baseHeight - dragTranslation, Self.shortestBlockHeight)
+            case .resizeEnd: return max(baseHeight + dragTranslation, Self.shortestBlockHeight)
+            }
+        }()
 
         // Deliberately not a `Button`: a button swallows the touch before the
         // long-press-then-drag sequence can recognize, which left blocks
         // untappable to drag. Tap and drag are attached as explicit gestures
         // instead, so both work on the same block.
-        return VStack(alignment: .leading, spacing: 2) {
-            InlineMarkdownText(
-                markdown: todo.title.isEmpty ? "Untitled" : todo.title,
-                strikethrough: todo.state == .completed
-            )
-            .font(.caption)
-
-            if height > 30, let assigned = todo.assignedDate {
-                Text(assigned.formatted(date: .omitted, time: .shortened))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+        return blockLabel(for: todo, height: liveHeight, isSelected: isSelected)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .frame(maxWidth: .infinity, minHeight: liveHeight, alignment: .topLeading)
+            .background {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(tint(for: todo).opacity(isDragging ? 0.38 : 0.22))
+                    .overlay(alignment: .leading) {
+                        Rectangle()
+                            .fill(tint(for: todo))
+                            .frame(width: 2.5)
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    // Ring marks the selected block, whether it was picked with
+                    // a tap or with the arrow keys — the same mark the list
+                    // rows carry.
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .stroke(Color.accentColor, lineWidth: isSelected ? 2 : 0)
+                    }
             }
-        }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 3)
-        .frame(maxWidth: .infinity, minHeight: height, alignment: .topLeading)
-        .background {
-            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                .fill(tint(for: todo).opacity(isDragging ? 0.38 : 0.22))
-                .overlay(alignment: .leading) {
-                    Rectangle()
-                        .fill(tint(for: todo))
-                        .frame(width: 2.5)
+            .opacity(todo.state.isResolved ? 0.55 : 1)
+            .contentShape(Rectangle())
+            // The handles are decoration only — no gestures of their own. The
+            // one gesture below reads which of them a grab landed on. See
+            // `blockGesture`.
+            .overlay(alignment: .top) {
+                resizeHandle(edge: .top, isVisible: isSelected)
+            }
+            .overlay(alignment: .bottom) {
+                resizeHandle(edge: .bottom, isVisible: isSelected)
+            }
+            // On macOS the editor is a popover anchored to the thing being
+            // edited, and something has to present it. The list rows and the
+            // side panel already do; the calendar did not, so setting
+            // `selectedTodo` from a block had nothing listening and the editor
+            // never appeared there at all. On iOS this is a no-op and the
+            // pushed page still does the work.
+            //
+            // Attached here, before the gestures and the context menu, for the
+            // same reason the resize handles are: `contextMenu` wraps what it
+            // is applied to, and an overlay added after it does not survive.
+            .todoDetailPopover(for: todo, selection: $selectedTodo)
+            // Overlapping blocks cascade rather than stacking invisibly; `depth`
+            // keeps the later start drawn on top of the one it insets from.
+            .frame(width: max(columnWidth * slot.width - 2, 1), alignment: .topLeading)
+            .offset(x: columnWidth * slot.offset, y: liveOffset)
+            .shadow(color: .black.opacity(isDragging ? 0.2 : 0), radius: isDragging ? 8 : 0)
+            // A selected block draws above its neighbours, so its handles and
+            // chevron are never buried under the block it overlaps.
+            .zIndex(isDragging ? 100 : (isSelected ? 50 : Double(slot.depth)))
+            // The tap is two-stage: the first selects, the second opens the
+            // editor — the same shape the list's rows have.
+            //
+            // Ordinary priority, not high: the block contains a checkbox and a
+            // chevron, and high priority resolves outermost-first, so it beat
+            // both of them and every tap aimed at either opened the editor
+            // instead. At ordinary priority the innermost control that was
+            // actually hit wins, and the block sees only the taps that missed.
+            .gesture(
+                TapGesture().onEnded {
+                    if isSelected {
+                        selectedTodo = todo
+                    } else {
+                        cursor.select(todo.uuid)
+                    }
                 }
-                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-                // Ring marks where the arrow keys are, the same way the list
-                // rows do.
-                .overlay {
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .stroke(
-                            Color.accentColor,
-                            lineWidth: cursor.selection == todo.uuid ? 2 : 0
-                        )
+            )
+            .modifier(
+                BlockDragModifier(
+                    isHighPriority: isSelected,
+                    gesture: blockGesture(
+                        for: todo,
+                        on: day,
+                        isSelected: isSelected,
+                        top: baseOffset,
+                        height: liveHeight
+                    )
+                )
+            )
+            // No `contextMenu` here, and that is the point.
+            //
+            // A context menu owns the long press, and on iOS it does not merely
+            // observe it: UIKit begins its lift the moment the press starts and
+            // cancels whatever else was tracking that touch. That is one
+            // mechanism behind two bugs — the block vanishing at the start of a
+            // drag (it had been lifted away to be the menu's preview), and, once
+            // the drag no longer required a press, the menu still swallowing the
+            // press and cancelling the drag before it travelled far enough to
+            // count. Dragging a block to reschedule it simply never worked.
+            //
+            // Dragging is the more valuable gesture on a calendar and it is the
+            // one with nowhere else to go, so it keeps the press. The menu moves
+            // to the selected block's trailing control — see `blockLabel` — where
+            // it is one tap away and competes with nothing.
+            .accessibilityAddTraits(.isButton)
+    }
+
+    /// A block's contents: the checkbox and chevron a selected block carries,
+    /// around the title and time every block shows.
+    ///
+    /// The checkbox and chevron are mounted at all times and collapsed when the
+    /// block is not selected, rather than inserted by an `if`. Two branches of
+    /// an `if` are separate views to SwiftUI, so it would cross-fade between
+    /// them — and, worse here, tear the block's gesture-bearing subtree out and
+    /// rebuild it the instant selection changed, which drops the very tap that
+    /// selected it.
+    @ViewBuilder
+    private func blockLabel(
+        for todo: Todo,
+        height: CGFloat,
+        isSelected: Bool
+    ) -> some View {
+        let showsControls = isSelected
+        // A block at the default fifteen minutes is one line tall, so its
+        // controls have to sit *beside* the title rather than above it; a
+        // taller one keeps everything hanging from the top edge, where the
+        // title is.
+        let isSingleLine = height < Self.twoLineHeight
+
+        HStack(alignment: isSingleLine ? .center : .top, spacing: 5) {
+            TodoCheckbox(
+                state: todo.state,
+                tint: tint(for: todo),
+                onToggle: { handleToggle(todo) },
+                onSelect: { handleSetState(todo, to: $0) },
+                scale: .compact
+            )
+            .frame(width: showsControls ? nil : 0)
+            .opacity(showsControls ? 1 : 0)
+            .allowsHitTesting(showsControls)
+            .accessibilityHidden(!showsControls)
+            .clipped()
+
+            VStack(alignment: .leading, spacing: 2) {
+                InlineMarkdownText(
+                    markdown: todo.title.isEmpty ? "Untitled" : todo.title,
+                    strikethrough: todo.state == .completed
+                )
+                .font(.caption)
+
+                if height > 30, let assigned = todo.assignedDate {
+                    Text(assigned.formatted(date: .omitted, time: .shortened))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            // The way into the full editor, the same affordance an expanded
+            // list row grows — and, on a long press, the block's menu.
+            //
+            // A `Menu` with a primary action rather than a plain button: the
+            // calendar has no other home for Unschedule, Duplicate and Delete
+            // now that the block itself must keep the long press free for
+            // dragging. Tapping still opens the editor, exactly as the list's
+            // chevron does; holding gets the verbs.
+            Menu {
+                blockMenu(for: todo)
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(tint(for: todo))
+                    .padding(.leading, 4)
+                    .contentShape(Rectangle())
+            } primaryAction: {
+                selectedTodo = todo
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .accessibilityLabel("Show Details")
+            .frame(width: showsControls ? nil : 0)
+            .opacity(showsControls ? 1 : 0)
+            .allowsHitTesting(showsControls)
+            .accessibilityHidden(!showsControls)
+            .clipped()
         }
-        .opacity(todo.state.isResolved ? 0.55 : 1)
-        .contentShape(Rectangle())
-        // Overlapping blocks cascade rather than stacking invisibly; `depth`
-        // keeps the later start drawn on top of the one it insets from.
-        .frame(width: max(columnWidth * slot.width - 2, 1), alignment: .topLeading)
-        .offset(x: columnWidth * slot.offset, y: baseOffset + dragOffset)
-        .shadow(color: .black.opacity(isDragging ? 0.2 : 0), radius: isDragging ? 8 : 0)
-        .zIndex(isDragging ? 100 : Double(slot.depth))
-        // Tap opens the to-do; long press then drag reschedules it, so a plain
-        // drag still scrolls the grid vertically. The tap is registered at high
-        // priority because the long-press sequence otherwise claims the touch
-        // down and a quick tap never resolves.
-        .highPriorityGesture(TapGesture().onEnded {
-            cursor.select(todo.uuid)
-            selectedTodo = todo
-        })
-        // Simultaneous for the same reason as the grid's create gesture: an
-        // exclusive drag here would stop the day scrolling whenever the finger
-        // started on a block.
-        .simultaneousGesture(
+        .animation(Theme.Animation.rowExpand, value: showsControls)
+    }
+
+    /// Shortest a block is drawn while being resized. Matches the floor
+    /// `blockHeight(for:)` applies, so a block shrunk to nothing on screen is
+    /// the same size as one already at its minimum.
+    private static let shortestBlockHeight: CGFloat = 24
+
+    /// Height at which a block has room for a second line, and so lays its
+    /// contents out from the top rather than centring them on the title.
+    private static let twoLineHeight: CGFloat = 34
+
+    // MARK: Block state changes
+
+    /// The calendar's checkbox, routed through the store exactly as the list's
+    /// is, so the subtask rule applies identically on both surfaces.
+    private func handleToggle(_ todo: Todo) {
+        handleSetState(todo, to: todo.toggledState)
+    }
+
+    /// Held as its own typed property rather than written inline in the dialog,
+    /// which keeps an optional chain out of an already large `body`.
+    private var cascadePrompt: String {
+        pendingCascade?.prompt ?? ""
+    }
+
+    private func handleSetState(_ todo: Todo, to newState: CompletionState) {
+        switch store.setState(todo, to: newState) {
+        case .applied:
+            break
+        case .needsSubtaskConfirmation(let count):
+            pendingCascade = PendingCascade(
+                todo: todo,
+                target: newState,
+                blockedCount: count
+            )
+        }
+    }
+
+    // MARK: Dragging blocks
+
+    /// The single gesture on a block: move it, or resize it from either edge.
+    ///
+    /// One gesture rather than three, and that is the whole design. Handles that
+    /// carried their own gestures fought the block's: a handle's touch target is
+    /// deliberately larger than the capsule drawn on it, so one grab reached both
+    /// views and *both* recognizers ran. Which reported first came down to view
+    /// ordering, and every arrangement that made resizing work broke moving or
+    /// the reverse. With one recognizer there is nothing to arbitrate — where the
+    /// grab landed decides, read once at the start.
+    ///
+    /// `top` is the block's own offset down the column, and it is what makes that
+    /// reading possible. `DragGesture` reports `startLocation` in the space the
+    /// gesture is attached in, which here is the day column: a 2:45 PM block
+    /// reported y = 911 for something 286 points tall. Naming a coordinate space
+    /// on the block does not help — `.coordinateSpace(name:)` defines a space for
+    /// a view's *descendants*, and a gesture attached to that same view is not one
+    /// of them, so the name silently resolved to the column anyway. Subtracting
+    /// the block's own top converts the column reading into a block-relative one
+    /// with arithmetic that cannot silently fall back.
+    ///
+    /// A *selected* block drags immediately. An *unselected* one requires a long
+    /// press first, so a plain swipe anywhere on the grid still scrolls the day.
+    private func blockGesture(
+        for todo: Todo,
+        on day: Date,
+        isSelected: Bool,
+        top: CGFloat,
+        height: CGFloat
+    ) -> AnyGesture<Void> {
+        // Where in the block a grab landed, as one of the three things it can
+        // mean. Read from the *start* location every time rather than tracked,
+        // so it stays the same for the whole gesture even as the finger — and
+        // the block's own live height — move.
+        let mode = { (columnY: CGFloat) -> DragMode in
+            let y = columnY - top
+            let band = min(Self.resizeHandleTouchHeight / 2, height / 3)
+            if y <= band { return .resizeStart }
+            if y >= height - band { return .resizeEnd }
+            return .move
+        }
+
+        if isSelected {
+            return AnyGesture(
+                DragGesture(minimumDistance: 4)
+                    .onChanged { value in
+                        begin(mode(value.startLocation.y), on: todo)
+                        dragTranslation = value.translation.height
+                    }
+                    .onEnded { _ in commitDrag(todo, on: day) }
+                    .map { _ in () }
+            )
+        }
+
+        // Unselected blocks have no handles showing, so every drag is a move.
+        return AnyGesture(
             LongPressGesture(minimumDuration: 0.3)
                 .sequenced(before: DragGesture(minimumDistance: 0))
                 .onChanged { value in
                     guard case .second(_, let drag) = value else { return }
-                    if draggingTodoID != todo.uuid {
-                        draggingTodoID = todo.uuid
-                        #if os(iOS)
-                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                        #endif
-                    }
+                    begin(.move, on: todo)
                     dragTranslation = drag?.translation.height ?? 0
                 }
-                .onEnded { _ in
-                    reschedule(todo, on: day, by: dragTranslation)
-                    draggingTodoID = nil
-                    dragTranslation = 0
-                }
+                .onEnded { _ in commitDrag(todo, on: day) }
+                .map { _ in () }
         )
-        // A long press already means "pick this block up and drag it", so the
-        // menu is attached rather than bound to another press of our own: the
-        // system opens it from the same gesture without the two competing, and
-        // a right-click on macOS gets there too.
-        .contextMenu { blockMenu(for: todo) }
-        .accessibilityAddTraits(.isButton)
     }
 
-    /// Move a to-do by however far it was dragged, snapped to a quarter hour.
+    /// The grab handle drawn at a selected block's top or bottom edge.
     ///
-    /// The move is clamped to the day rather than dropped when it would spill
-    /// past midnight, so an overshoot lands at the edge instead of silently
-    /// doing nothing.
-    private func reschedule(_ todo: Todo, on day: Date, by translation: CGFloat) {
-        guard let current = todo.assignedDate, translation != 0 else { return }
+    /// Decoration only: it carries no gesture and is not hit tested. The block's
+    /// single drag gesture is what notices a grab landed on an edge — see
+    /// `blockGesture` — so the handle's job is just to show the user where those
+    /// edges are.
+    private func resizeHandle(edge: VerticalEdge, isVisible: Bool) -> some View {
+        Capsule()
+            .fill(Color.accentColor)
+            .frame(width: Self.resizeHandleWidth, height: Self.resizeHandleThickness)
+            .overlay {
+                Capsule()
+                    .strokeBorder(Color.white.opacity(0.9), lineWidth: 1)
+            }
+            .opacity(isVisible ? 1 : 0)
+            // Centred on the edge rather than tucked inside it, so it marks
+            // exactly where the block starts or ends.
+            .offset(y: edge == .top ? -Self.resizeHandleThickness / 2 : Self.resizeHandleThickness / 2)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
 
-        let minutesMoved = Double(translation / hourHeight) * 60
-        let snapped = (minutesMoved / 15).rounded() * 15
-        guard snapped != 0,
-              let moved = calendar.date(byAdding: .minute, value: Int(snapped), to: current)
-        else { return }
+    private static let resizeHandleWidth: CGFloat = 26
+    private static let resizeHandleThickness: CGFloat = 5
+    /// How deep a band at each edge of a selected block counts as "grabbing the
+    /// handle" rather than the block itself.
+    ///
+    /// Much larger than the capsule drawn there, which is only five points tall
+    /// — Calendar does the same, and without the extra room the handle is
+    /// visible but not reliably grabbable on a phone. Trimmed on a short block
+    /// so the middle always stays wide enough to drag: at the default fifteen
+    /// minutes a block is only about twenty-four points tall.
+    private static let resizeHandleTouchHeight: CGFloat = 34
 
-        let dayStart = calendar.startOfDay(for: day)
-        let duration = todo.effectiveDuration(defaultDuration: settings.defaultEventDuration)
-        let lastStart = dayStart.addingTimeInterval(24 * 3600 - duration)
-        let clamped = min(max(moved, dayStart), max(lastStart, dayStart))
+    /// Mark the start of a drag, once per gesture.
+    ///
+    /// Selection moves to the block being dragged: dragging something is a
+    /// clearer statement of intent than the tap that would otherwise have been
+    /// needed to select it, and leaving the ring on a different block while
+    /// this one moves reads as a bug.
+    ///
+    /// Resizing outranks moving. The handles sit on the block's edges and their
+    /// touch targets are deliberately larger than the capsules drawn there, so
+    /// a grab aimed at a handle also lands on the block — whose own drag runs
+    /// `simultaneousGesture` and would otherwise claim it first and turn every
+    /// attempted resize into a move.
+    private func begin(_ mode: DragMode, on todo: Todo) {
+        // One gesture drives this now, so the mode it picked at the start is the
+        // mode for the whole drag: nothing else can arrive to contest it, and
+        // re-reading it mid-drag would let the finger leaving the edge band turn
+        // a resize into a move.
+        guard draggingTodoID != todo.uuid else { return }
+
+        draggingTodoID = todo.uuid
+        dragMode = mode
+        cursor.select(todo.uuid)
+        #if os(iOS)
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        #endif
+    }
+
+    /// Write the drag's result back and clear the in-flight state.
+    private func commitDrag(_ todo: Todo, on day: Date) {
+        // Only the gesture that actually took this block writes anything. Both
+        // the block's drag and a handle's end here, and whichever ends second
+        // must not undo the first or act on a block it never claimed.
+        guard draggingTodoID == todo.uuid else { return }
+
+        defer {
+            draggingTodoID = nil
+            dragTranslation = 0
+            dragMode = .move
+        }
+
+        guard let proposal = dragProposal(for: todo, on: day) else { return }
 
         store.update(todo) {
-            $0.assignedDate = clamped
+            $0.assignedDate = proposal.start
             $0.assignedHasTime = true
+            $0.duration = proposal.duration
         }
 
         #if os(iOS)
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         #endif
     }
+
+    /// Where the block in flight will land, snapped to the grid.
+    ///
+    /// One definition for both the write on drop and the ghost drawn under the
+    /// finger, so what the user is shown is exactly what they get. Returns nil
+    /// when the drag would change nothing.
+    private func dragProposal(for todo: Todo, on day: Date) -> (start: Date, duration: TimeInterval)? {
+        guard let current = todo.assignedDate else { return nil }
+
+        let duration = todo.effectiveDuration(defaultDuration: settings.defaultEventDuration)
+        let dayStart = calendar.startOfDay(for: day)
+        let dayEnd = dayStart.addingTimeInterval(24 * 3600)
+        let snappedMinutes = snappedMinutes(for: dragTranslation)
+
+        guard snappedMinutes != 0 else { return nil }
+        let shift = TimeInterval(snappedMinutes * 60)
+
+        switch dragMode {
+        case .move:
+            // Clamped to the day rather than dropped when it would spill past
+            // midnight, so an overshoot lands at the edge instead of silently
+            // doing nothing.
+            let lastStart = dayEnd.addingTimeInterval(-duration)
+            let moved = current.addingTimeInterval(shift)
+            let clamped = min(max(moved, dayStart), max(lastStart, dayStart))
+            guard clamped != current else { return nil }
+            return (clamped, duration)
+
+        case .resizeStart:
+            // The end is what stays put: dragging the top edge changes when the
+            // block begins, and therefore how long it runs.
+            let end = current.addingTimeInterval(duration)
+            let latestStart = end.addingTimeInterval(-Self.shortestDuration)
+            let moved = min(max(current.addingTimeInterval(shift), dayStart), latestStart)
+            let newDuration = end.timeIntervalSince(moved)
+            guard moved != current else { return nil }
+            return (moved, newDuration)
+
+        case .resizeEnd:
+            let longest = max(dayEnd.timeIntervalSince(current), Self.shortestDuration)
+            let proposed = min(max(duration + shift, Self.shortestDuration), longest)
+            guard proposed != duration else { return nil }
+            return (current, proposed)
+        }
+    }
+
+    /// The block currently in flight, if any.
+    private var draggingTodo: Todo? {
+        guard let id = draggingTodoID else { return nil }
+        return TodoQueries.todo(uuid: id, in: context)
+    }
+
+    /// The outline showing where a dragged block will snap to.
+    ///
+    /// Drawn as a dashed frame at the proposed slot with the time it would land
+    /// on, so the answer to "where is this going" is on the grid itself rather
+    /// than inferred from the block travelling under the finger — which moves
+    /// continuously and does not, on its own, say which quarter hour it will
+    /// round to.
+    @ViewBuilder
+    private func snapIndicator(for todo: Todo, on day: Date, slot: CalendarSlot) -> some View {
+        if let proposal = dragProposal(for: todo, on: day) {
+            let minutes = CGFloat(calendar.component(.hour, from: proposal.start) * 60
+                + calendar.component(.minute, from: proposal.start))
+            let height = max(CGFloat(proposal.duration / 3600) * hourHeight, Self.shortestBlockHeight)
+
+            Text(snapLabel(for: proposal))
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(Color.accentColor)
+                .padding(.horizontal, 5)
+                .padding(.top, 2)
+                // An exact height, not a minimum: the outline stands for a span
+                // of time, so it has to be exactly as tall as that span. Given
+                // a `minHeight` inside the column's ZStack it stretched to the
+                // full 24 hours instead, which said nothing about where the
+                // block was going.
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .frame(height: height, alignment: .topLeading)
+            .background {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(Color.accentColor.opacity(0.1))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .strokeBorder(
+                                Color.accentColor,
+                                style: StrokeStyle(lineWidth: 1.5, dash: [4, 3])
+                            )
+                    }
+            }
+            .frame(width: max(columnWidth * slot.width - 2, 1), alignment: .topLeading)
+            .offset(x: columnWidth * slot.offset, y: minutes / 60 * hourHeight)
+            .allowsHitTesting(false)
+            .zIndex(90)
+        }
+    }
+
+    /// What the snap outline says: the time it will start at, and — while the
+    /// length is what is being changed — how long it will run.
+    private func snapLabel(for proposal: (start: Date, duration: TimeInterval)) -> String {
+        let start = proposal.start.formatted(date: .omitted, time: .shortened)
+
+        switch dragMode {
+        case .move:
+            return start
+        case .resizeStart, .resizeEnd:
+            let end = proposal.start.addingTimeInterval(proposal.duration)
+            return "\(start) – \(end.formatted(date: .omitted, time: .shortened))"
+        }
+    }
+
+    /// A drag distance in points, as whole snap steps of minutes.
+    private func snappedMinutes(for translation: CGFloat) -> Int {
+        let minutes = Double(translation / hourHeight) * 60
+        return Int((minutes / Double(Self.snapMinutes)).rounded()) * Self.snapMinutes
+    }
+
+    /// Granularity a dragged or resized block snaps to.
+    private static let snapMinutes = 15
 
     private var currentTimeIndicator: some View {
         let now = Date()
@@ -1632,6 +2184,38 @@ private struct RangedCalendarView: View {
             return TodoQueries.todo(uuid: id, in: context)?.title
         default:
             return nil
+        }
+    }
+}
+
+/// Attaches a block's drag gesture at whichever priority that block needs.
+///
+/// A *selected* block's drag is a plain one, and a plain drag attached
+/// simultaneously loses to the enclosing `ScrollView`, which claims the pan on
+/// both platforms — so the block never moved. High priority takes it back.
+///
+/// An *unselected* block keeps its gesture simultaneous, because there it is a
+/// long press followed by a drag: the press is what disambiguates it from a
+/// scroll, and claiming the touch outright would stop the grid scrolling
+/// whenever a finger happened to start on a block.
+///
+/// A `ViewModifier` rather than an `if` at the call site: branching there would
+/// give the two cases different view types, so every change of selection would
+/// tear the block's subtree down mid-gesture. Branching *inside* a modifier is
+/// safe — the host view's type does not change with it.
+private struct BlockDragModifier: ViewModifier {
+    let isHighPriority: Bool
+    let gesture: AnyGesture<Void>
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        // One attachment, not two masked with `including:`. Handing the same
+        // gesture value to two attachments gives SwiftUI two recognizers
+        // sharing one piece of state; they conflict, and neither ever resolves.
+        if isHighPriority {
+            content.highPriorityGesture(gesture)
+        } else {
+            content.simultaneousGesture(gesture)
         }
     }
 }

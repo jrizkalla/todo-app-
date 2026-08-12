@@ -257,8 +257,11 @@ struct AISummaryView : View {
 struct DebugAISummaryView: View {
     var aiSummaryService: AISummaryService
     var body: some View {
-        Text(aiSummaryService.fingerprint().instructions.description)
-            .lineLimit(1...)
+        ScrollView {
+            Text(aiSummaryService.fingerprint().instructions.description)
+                .lineLimit(1...)
+                .padding()
+        }
     }
 }
 

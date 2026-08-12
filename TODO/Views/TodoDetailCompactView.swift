@@ -38,6 +38,8 @@ struct TodoDetailCompactView: View {
     @State private var suggestionModel = TitleSuggestionModel()
     @State private var isConfirmingDelete = false
     @State private var isEditingNotes = false
+    /// Raised when completing this to-do is blocked by unfinished subtasks.
+    @State private var pendingCascade: PendingCascade?
     @FocusState private var focusedField: Field?
 
     private enum Field { case title, notes }
@@ -89,8 +91,47 @@ struct TodoDetailCompactView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
+        .confirmationDialog(
+            cascadePrompt,
+            isPresented: .init(
+                get: { pendingCascade != nil },
+                set: { if !$0 { pendingCascade = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let pending = pendingCascade {
+                Button(pending.confirmLabel) {
+                    store.setStateCascading(pending.todo, to: pending.target)
+                    pendingCascade = nil
+                }
+                Button("Keep Subtasks", role: .cancel) { pendingCascade = nil }
+            }
+        }
         .onAppear { suggestionModel.refresh(for: todo.title, todo: todo, context: context) }
         .onDisappear { Task { await todo.summarizeNotes() } }
+    }
+
+    /// Held as its own typed property rather than written inline in the dialog,
+    /// which keeps an optional chain out of an already large `body`.
+    private var cascadePrompt: String {
+        pendingCascade?.prompt ?? ""
+    }
+
+    /// Apply a state change from the header's checkbox or the status picker.
+    ///
+    /// Asks before cascading rather than resolving subtasks silently, which is
+    /// what the list does and what the same checkbox does everywhere else.
+    private func setState(_ newState: CompletionState) {
+        switch store.setState(todo, to: newState) {
+        case .applied:
+            break
+        case .needsSubtaskConfirmation(let count):
+            pendingCascade = PendingCascade(
+                todo: todo,
+                target: newState,
+                blockedCount: count
+            )
+        }
     }
 
     // MARK: Header
@@ -99,10 +140,16 @@ struct TodoDetailCompactView: View {
     /// three things on its top line.
     private var header: some View {
         HStack(alignment: .top, spacing: 8) {
-            Capsule()
-                .fill(accent)
-                .frame(width: 4)
-                .frame(maxHeight: .infinity)
+            // Where Calendar's popover draws a colored bar, this puts the
+            // checkbox: it carries the same color and, unlike the bar, is the
+            // control the user most often wants at the top of an editor.
+            TodoCheckbox(
+                state: todo.state,
+                tint: accent,
+                onToggle: { setState(todo.toggledState) },
+                onSelect: { setState($0) }
+            )
+            .padding(.top, 2)
 
             VStack(alignment: .leading, spacing: 2) {
                 TextField("New To-Do", text: $todo.title, axis: .vertical)
@@ -201,11 +248,7 @@ struct TodoDetailCompactView: View {
             row("Status") {
                 Picker("", selection: Binding(
                     get: { todo.state },
-                    set: { newState in
-                        if case .needsSubtaskConfirmation = store.setState(todo, to: newState) {
-                            store.setStateCascading(todo, to: newState)
-                        }
-                    }
+                    set: { setState($0) }
                 )) {
                     ForEach(CompletionState.allCases, id: \.self) { state in
                         Label(state.label, systemImage: state.symbolName).tag(state)

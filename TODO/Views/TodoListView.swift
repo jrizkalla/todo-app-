@@ -172,15 +172,6 @@ private struct DestinationTodoList: View {
         destination == .inbox && !importer.pending.isEmpty && !isSearching
     }
 
-    /// A blocked state change awaiting confirmation, per the spec's rule that
-    /// the app should ask before resolving a parent's subtasks.
-    private struct PendingCascade: Identifiable {
-        let id = UUID()
-        let todo: Todo
-        let target: CompletionState
-        let blockedCount: Int
-    }
-
     var body: some View {
         droppableList
         // The app-wide button asks; the list is what knows how to answer.
@@ -304,7 +295,7 @@ private struct DestinationTodoList: View {
             titleVisibility: .visible
         ) {
             if let pending = pendingCascade {
-                Button(pending.target == .completed ? "Complete All" : "Cancel All") {
+                Button(pending.confirmLabel) {
                     store.setStateCascading(pending.todo, to: pending.target)
                     pendingCascade = nil
                 }
@@ -986,11 +977,11 @@ private struct DestinationTodoList: View {
         }
     }
 
+    /// Held as its own typed property rather than written inline in the
+    /// dialog: `body` is already at the type-checker's limit, and an optional
+    /// chain in a `String` position there is enough to push it over.
     private var cascadePrompt: String {
-        guard let pending = pendingCascade else { return "" }
-        let verb = pending.target == .completed ? "complete" : "cancel"
-        let noun = pending.blockedCount == 1 ? "subtask" : "subtasks"
-        return "This to-do has \(pending.blockedCount) unfinished \(noun). Also mark them \(verb == "complete" ? "completed" : "cancelled")?"
+        pendingCascade?.prompt ?? ""
     }
 
     // MARK: Content

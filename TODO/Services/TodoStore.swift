@@ -379,3 +379,27 @@ struct TodoStore {
         }
     }
 }
+
+/// A state change waiting on the user's answer about its subtasks.
+///
+/// Shared rather than declared beside each checkbox: the list and the calendar
+/// both toggle to-dos, and the question they ask has to be the same question —
+/// wording included, which is why the strings live here too.
+struct PendingCascade: Identifiable {
+    let id = UUID()
+    let todo: Todo
+    let target: CompletionState
+    let blockedCount: Int
+
+    /// The confirmation dialog's title.
+    var prompt: String {
+        let noun = blockedCount == 1 ? "subtask" : "subtasks"
+        let verb = target == .completed ? "completed" : "cancelled"
+        return "This to-do has \(blockedCount) unfinished \(noun). Also mark them \(verb)?"
+    }
+
+    /// Label for the button that resolves the subtasks along with the parent.
+    var confirmLabel: String {
+        target == .completed ? "Complete All" : "Cancel All"
+    }
+}

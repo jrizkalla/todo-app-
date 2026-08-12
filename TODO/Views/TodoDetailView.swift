@@ -24,6 +24,8 @@ struct TodoDetailView: View {
     /// Set while confirming deletion, which also takes any subtasks with it.
     @State private var isConfirmingDelete = false
     @State private var isAddingExistingSubtask = false
+    /// Raised when completing this to-do is blocked by unfinished subtasks.
+    @State private var pendingCascade: PendingCascade?
     @FocusState private var focusedField: Field?
     @FocusState private var isTitleFocused: Bool
 
@@ -41,6 +43,9 @@ struct TodoDetailView: View {
                     title: $todo.title,
                     summary: headerSummary,
                     accent: accent,
+                    state: todo.state,
+                    onToggle: { setState(todo.toggledState) },
+                    onSelectState: { setState($0) },
                     focusBinding: $isTitleFocused
                 )
                 .onChange(of: todo.title) { _, newValue in
@@ -76,13 +81,7 @@ struct TodoDetailView: View {
             Section("Status") {
                 Picker("Status", selection: Binding(
                     get: { todo.state },
-                    set: { newState in
-                        // Route through the store so the subtask rule applies
-                        // here just as it does in the list.
-                        if case .needsSubtaskConfirmation = store.setState(todo, to: newState) {
-                            store.setStateCascading(todo, to: newState)
-                        }
-                    }
+                    set: { setState($0) }
                 )) {
                     ForEach(CompletionState.allCases, id: \.self) { state in
                         Label(state.label, systemImage: state.symbolName).tag(state)
@@ -166,6 +165,22 @@ struct TodoDetailView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
+        .confirmationDialog(
+            cascadePrompt,
+            isPresented: .init(
+                get: { pendingCascade != nil },
+                set: { if !$0 { pendingCascade = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let pending = pendingCascade {
+                Button(pending.confirmLabel) {
+                    store.setStateCascading(pending.todo, to: pending.target)
+                    pendingCascade = nil
+                }
+                Button("Keep Subtasks", role: .cancel) { pendingCascade = nil }
+            }
+        }
         .sheet(isPresented: $isAddingExistingSubtask) {
             NavigationStack {
                 ExistingTodoPickerView(parent: todo)
@@ -180,6 +195,31 @@ struct TodoDetailView: View {
                 await todo.summarizeNotes()
             }
         }
+    }
+
+    /// Apply a state change from the header's checkbox or the status picker.
+    ///
+    /// Routed through the store so the subtask rule applies here as it does in
+    /// the list — and, as in the list, the cascade is *asked* about rather than
+    /// applied silently: completing a parent from the editor should not quietly
+    /// close subtasks the user cannot see from here.
+    private func setState(_ newState: CompletionState) {
+        switch store.setState(todo, to: newState) {
+        case .applied:
+            break
+        case .needsSubtaskConfirmation(let count):
+            pendingCascade = PendingCascade(
+                todo: todo,
+                target: newState,
+                blockedCount: count
+            )
+        }
+    }
+
+    /// Held as its own typed property rather than written inline in the dialog,
+    /// which keeps an optional chain out of an already large `body`.
+    private var cascadePrompt: String {
+        pendingCascade?.prompt ?? ""
     }
 
     /// Gray context line in the header, mirroring how Calendar summarizes an
