@@ -176,12 +176,16 @@ private struct ScopedSidePanel: View {
             focusedTodoID = captured
             capturedTodo?.wrappedValue = nil
         }
+        // Typing into a row claims focus; losing the caret does not give it
+        // up, since the panel is still the surface the user is working in.
+        // Focus moves away only when the other list claims it.
         .onChange(of: focusedTodoID) {
-            hasFocus = focusedTodoID != nil
+            if focusedTodoID != nil { hasFocus = true }
         }
         .onChange(of: hasFocus) {
             if !hasFocus {
                 focusedTodoID = nil
+                expandedTodoID = nil
             }
         }
         // The panel is one surface changing what it holds, not two surfaces
@@ -361,6 +365,11 @@ private struct ScopedSidePanel: View {
         // Expanding is the panel's call, not the row's — see `TodoRow`.
         .contentShape(Rectangle())
         .onTapGesture {
+            // Touching the panel claims the keyboard for it, so the main list
+            // beside it stops answering shortcuts. Set even when the row is
+            // already expanded: a second tap is still the user saying the
+            // panel is the surface they are working in.
+            hasFocus = true
             guard expandedTodoID != todo.uuid else { return }
             withAnimation(Theme.Animation.rowExpand) { expandedTodoID = todo.uuid }
         }

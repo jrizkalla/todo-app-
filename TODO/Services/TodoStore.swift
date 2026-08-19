@@ -65,19 +65,43 @@ struct TodoStore {
         return space
     }
 
-    /// Copy a todo, placing the copy directly after the original.
+    /// Copy a todo and its subtasks, placing the copy directly after the
+    /// original.
     ///
-    /// Deliberately shallow: the copy takes the original's own fields — title,
-    /// notes, dates, duration, colour, and its place in the tree — but not its
-    /// subtasks or reminders. Duplicating a project would otherwise clone an
-    /// arbitrary amount of work, and a duplicated reminder is a second
-    /// notification the user never asked for.
+    /// The copy takes the original's own fields — title, notes, dates,
+    /// duration, colour, and its place in the tree — and recursively its
+    /// subtasks, since a project is defined by the work under it and a copy
+    /// that arrived empty would not be a copy of that project.
+    ///
+    /// Reminders are deliberately *not* copied: a duplicated reminder is a
+    /// second notification the user never asked for.
     ///
     /// The copy is *not* resolved even when the original is: duplicating a
     /// finished to-do is how the same work gets done again, so the point of the
-    /// copy is that it is still open.
+    /// copy is that it is still open. The same applies to the subtasks.
     @discardableResult
     func duplicate(_ todo: Todo) -> Todo {
+        let copy = copyTree(of: todo, parent: todo.parent, space: todo.space)
+
+        // Slotted immediately after the original rather than appended, so the
+        // copy appears next to what it was made from instead of at the bottom
+        // of a list the user may have to scroll to find.
+        insert(copy, after: todo)
+
+        save()
+        return copy
+    }
+
+    /// Copy one todo and everything beneath it.
+    ///
+    /// Duplicating a project has to bring its subtasks: a project *is* its
+    /// checklist, and a copy that arrived empty was not the thing the user
+    /// asked for. Recursive rather than one level deep, because a subtask can
+    /// itself be a project with children of its own.
+    ///
+    /// Children keep their `sortIndex` so the copy reads in the same order as
+    /// the original; only the top-level copy is re-slotted, by the caller.
+    private func copyTree(of todo: Todo, parent: Todo?, space: Space?) -> Todo {
         let copy = Todo(
             title: todo.title,
             notes: todo.notes,
@@ -87,19 +111,21 @@ struct TodoStore {
             dueDate: todo.dueDate,
             dueHasTime: todo.dueHasTime,
             isProject: todo.isProject,
-            space: todo.space,
-            parent: todo.parent
+            space: space,
+            parent: parent
         )
         copy.colorHex = todo.colorHex
+        copy.sortIndex = todo.sortIndex
         context.insert(copy)
-
-        // Slotted immediately after the original rather than appended, so the
-        // copy appears next to what it was made from instead of at the bottom
-        // of a list the user may have to scroll to find.
-        insert(copy, after: todo)
-
         copy.refileForCurrentScheduling()
-        save()
+
+        for child in todo.orderedSubtasks {
+            // The child's space follows the copied parent rather than the
+            // original's, so duplicating into a different container does not
+            // leave the children pointing at the old one.
+            _ = copyTree(of: child, parent: copy, space: child.space)
+        }
+
         return copy
     }
 

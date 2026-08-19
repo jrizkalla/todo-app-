@@ -47,10 +47,20 @@ extension Array where Element == Todo {
         }
     }
 
-    func filterResolved(date: Date = Date()) -> Self {
-        self.filter { todo in
+    /// Drop finished work older than the open-ended lists' history window.
+    ///
+    /// The in-memory twin of the `resolvedAt` bound in `resolvedVisible`; the
+    /// two must agree, or the array path would discard rows the fetch admitted.
+    func filterResolved(date: Date = Date(), calendar: Calendar = .current) -> Self {
+        let startOfToday = calendar.startOfDay(for: date)
+        let start = calendar.date(
+            byAdding: .day, value: -TodoQueries.resolvedHistoryDays, to: startOfToday
+        ) ?? startOfToday
+        let end = startOfToday.addingTimeInterval(24 * 3600)
+
+        return self.filter { todo in
             guard todo.state.isResolved, let resolvedAt = todo.resolvedAt else { return true }
-            return Calendar.current.isDateInToday(resolvedAt)
+            return resolvedAt >= start && resolvedAt < end
         }
     }
 
@@ -170,23 +180,38 @@ enum TodoQueries {
         calendar: Calendar
     ) -> Predicate<Todo> {
         let resolved = resolvedRaws
-        let startOfToday = calendar.startOfDay(for: now)
-        let endOfToday = startOfToday.addingTimeInterval(24 * 3600)
+        let start = calendar.date(
+            byAdding: .day, value: -resolvedHistoryDays, to: calendar.startOfDay(for: now)
+        ) ?? calendar.startOfDay(for: now)
+        let endOfToday = calendar.startOfDay(for: now).addingTimeInterval(24 * 3600)
 
         return #Predicate<Todo> { todo in
             (includeResolved || !resolved.contains(todo.stateRaw))
                 && (!resolved.contains(todo.stateRaw)
                     || todo.resolvedAt == nil
-                    || (todo.resolvedAt.flatMap { $0 >= startOfToday && $0 < endOfToday } ?? false))
+                    || (todo.resolvedAt.flatMap { $0 >= start && $0 < endOfToday } ?? false))
         }
     }
 
+    /// How far back the open-ended lists show completed work.
+    ///
+    /// The Inbox, Anytime, spaces and projects have no date window of their
+    /// own, so "show completed" in them would otherwise mean the entire
+    /// archive. A month is enough to see what was just finished without the
+    /// list turning into the Logbook.
+    ///
+    /// The date lists do not use this: their own window already bounds what
+    /// they show — see `unresolvedUnless`.
+    static let resolvedHistoryDays = 30
+
     /// Just the preference half, for the date lists.
     ///
-    /// Today, Tomorrow and This Week never applied `filterResolved()`, so a
-    /// to-do completed last week still shows in a date list that covers its
-    /// date. Kept separate so that difference stays visible rather than being
-    /// quietly unified with `resolvedVisible`.
+    /// Today, Tomorrow and This Week do not bound `resolvedAt` at all: the
+    /// list's own date window is the bound. Completed work shows in the list
+    /// covering the day it was scheduled for, which is what makes "show
+    /// completed" on Today mean *today's* finished work. Kept separate from
+    /// `resolvedVisible` so that difference stays visible rather than being
+    /// quietly unified with it.
     private static func unresolvedUnless(_ includeResolved: Bool) -> Predicate<Todo> {
         let resolved = resolvedRaws
         return #Predicate<Todo> { todo in
@@ -766,16 +791,34 @@ enum TodoQueries {
     /// Fetched by predicate rather than read off `space.projects`, which walks
     /// the whole relationship — every loose to-do in the space included — to
     /// keep the handful that are containers.
-    static func projectsDescriptor(inSpace spaceID: UUID) -> FetchDescriptor<Todo> {
+    ///
+    /// Resolved projects are left out, matching `looseProjectsDescriptor`: the
+    /// sidebar is a list of places to put work, and a finished project is not
+    /// one. It stays reachable through the Logbook.
+    ///
+    /// - Parameter includeResolved: Pass true for callers that need every
+    ///   project regardless of state, such as counting a space's contents.
+    static func projectsDescriptor(
+        inSpace spaceID: UUID,
+        includeResolved: Bool = false
+    ) -> FetchDescriptor<Todo> {
+        let unresolved = unresolvedUnless(includeResolved)
+
         var descriptor = FetchDescriptor<Todo>(
-            predicate: #Predicate<Todo> { $0.space?.uuid == spaceID && $0.isProject }
+            predicate: #Predicate<Todo> { todo in
+                todo.space?.uuid == spaceID && todo.isProject && unresolved.evaluate(todo)
+            }
         )
         descriptor.sortBy = [SortDescriptor(\Todo.sortIndex)]
         return descriptor
     }
 
-    static func projects(inSpace spaceID: UUID, in context: ModelContext) -> [Todo] {
-        fetch(projectsDescriptor(inSpace: spaceID), in: context)
+    static func projects(
+        inSpace spaceID: UUID,
+        in context: ModelContext,
+        includeResolved: Bool = false
+    ) -> [Todo] {
+        fetch(projectsDescriptor(inSpace: spaceID, includeResolved: includeResolved), in: context)
     }
 
     /// The sidebar badge: unresolved, non-project work filed in a space.
@@ -1372,6 +1415,68 @@ enum TodoQueries {
     }
 
     /// Dated items first, in date order; undated items keep manual order.
+    /// Where a to-do sits in the widget's running order.
+    ///
+    /// The widget shows a handful of rows on a home screen, so the ones worth
+    /// the space are the ones that need acting on *now*. Ranked rather than
+    /// sorted by date, because "soon" and "later" are the same clock reading a
+    /// few hours apart and only the bands matter.
+    ///
+    /// Past-scheduled work ranks last despite being the most overdue: it has
+    /// already slipped, so it is a record rather than a prompt, and letting it
+    /// head the list would push the day's actual next thing off the widget.
+    enum WidgetRank: Int, Comparable {
+        /// Timed, and its slot is open now.
+        case now
+        /// Timed, and starting within the hour.
+        case soon
+        /// Timed, later today.
+        case later
+        /// Today's work with no time attached.
+        case unscheduled
+        /// Timed, and its slot has already passed.
+        case past
+
+        static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
+    }
+
+    /// How wide the "now" window is: a to-do is current from its start until
+    /// its duration runs out, or for this long if it has none.
+    static let widgetNowWindow: TimeInterval = 15 * 60
+    /// How far ahead "soon" reaches.
+    static let widgetSoonWindow: TimeInterval = 60 * 60
+
+    /// Classify one to-do for the widget's ordering.
+    static func widgetRank(for todo: Todo, now: Date = Date()) -> WidgetRank {
+        // Untimed work has no slot to be early or late for. This covers items
+        // that are only due-dated as well: a deadline says nothing about when
+        // in the day to act, so it is not a schedule.
+        guard todo.assignedHasTime, let start = todo.assignedDate else { return .unscheduled }
+
+        let end = start.addingTimeInterval(todo.duration ?? widgetNowWindow)
+
+        if now >= start {
+            return now < end ? .now : .past
+        }
+        return start.timeIntervalSince(now) <= widgetSoonWindow ? .soon : .later
+    }
+
+    /// Today's work in the order the home screen widget shows it.
+    ///
+    /// Scheduled now, then soon, then later today, then untimed work, and
+    /// finally what was scheduled earlier and has passed. Within a band the
+    /// usual date-then-manual-order rule applies, so equally urgent items keep
+    /// the order the user arranged them in.
+    static func widgetOrdered(_ todos: [Todo], now: Date = Date()) -> [Todo] {
+        todos
+            .map { (todo: $0, rank: widgetRank(for: $0, now: now)) }
+            .sorted { a, b in
+                if a.rank != b.rank { return a.rank < b.rank }
+                return sortByDateThenOrder(a.todo, b.todo)
+            }
+            .map(\.todo)
+    }
+
     private static func sortByDateThenOrder(_ a: Todo, _ b: Todo) -> Bool {
         if a.state.isResolved != b.state.isResolved { return !a.state.isResolved } // if a is not resolved, it is less than b
         let aDate = a.assignedDate ?? a.dueDate

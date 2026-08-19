@@ -29,12 +29,19 @@ enum ListRowComposition {
     }
 
     /// The subtasks drawn beneath `todo`, empty where the list is already flat.
+    ///
+    /// A *project* never draws its children here, however the list is
+    /// configured. A project is a container the user opens, and spilling its
+    /// checklist into Today or Anytime buries the surrounding work under one
+    /// project's contents. The row's own checklist badge already says how many
+    /// of its subtasks are done, and opening the project is what shows them.
     static func nestedSubtasks(
         of todo: Todo,
         destination: ListDestination,
         isSearching: Bool
     ) -> [Todo] {
-        nestsSubtasks(destination: destination, isSearching: isSearching)
+        guard !todo.isProject else { return [] }
+        return nestsSubtasks(destination: destination, isSearching: isSearching)
             ? todo.orderedSubtasks
             : []
     }
@@ -42,7 +49,10 @@ enum ListRowComposition {
     /// Whether `todo` is already on screen as a nested child of one of `rows`.
     ///
     /// Only the immediate parent is considered, matching `nestedSubtasks`,
-    /// which nests exactly one level deep.
+    /// which nests exactly one level deep. A parent that is a *project* draws
+    /// none of its children, so its subtasks are not on screen through it —
+    /// kept in step with `nestedSubtasks` so the focused row is never dropped
+    /// on the grounds that something else already drew it.
     static func isDrawnAsNestedSubtask(
         _ todo: Todo,
         in rows: [Todo],
@@ -50,8 +60,8 @@ enum ListRowComposition {
         isSearching: Bool
     ) -> Bool {
         guard nestsSubtasks(destination: destination, isSearching: isSearching) else { return false }
-        guard let parentID = todo.parent?.uuid else { return false }
-        return rows.contains { $0.uuid == parentID }
+        guard let parent = todo.parent, !parent.isProject else { return false }
+        return rows.contains { $0.uuid == parent.uuid }
     }
 
     /// The top-level rows to draw, pinning the focused to-do on screen without

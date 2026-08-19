@@ -29,16 +29,31 @@ struct TodoListView: View {
     var createRequest: Binding<Int>?
     var capturedTodo: Binding<UUID?>?
 
+    /// This list's own answer to "show completed", when the user has given one.
+    ///
+    /// `nil` means the Settings preference stands. Held per *destination* —
+    /// cleared below when the list changes — so flipping the toggle in Today
+    /// says nothing about what Anytime should show.
+    @State private var showResolvedOverride: Bool?
+
+    private var includeResolved: Bool {
+        showResolvedOverride ?? settings.showResolved
+    }
+
     var body: some View {
         DestinationTodoList(
             destination: destination,
-            includeResolved: settings.showResolved,
+            includeResolved: includeResolved,
+            showResolvedOverride: $showResolvedOverride,
             selectedTodo: $selectedTodo,
             isFocused: $isFocused,
             createRequest: createRequest,
             capturedTodo: capturedTodo
         )
-        .id(QueryIdentity(destination: destination, includeResolved: settings.showResolved))
+        .id(QueryIdentity(destination: destination, includeResolved: includeResolved))
+        // A per-list override belongs to the list it was set on; the next one
+        // starts from the user's preference again.
+        .onChange(of: destination) { _, _ in showResolvedOverride = nil }
     }
 
     /// What the row query is built from. A change to either rebuilds it.
@@ -50,6 +65,11 @@ struct TodoListView: View {
 
 private struct DestinationTodoList: View {
     let destination: ListDestination
+
+    /// Whether finished work is in the query, and the per-list switch that can
+    /// change it. See `TodoListView.showResolvedOverride`.
+    let includeResolved: Bool
+    @Binding var showResolvedOverride: Bool?
 
     @Environment(\.modelContext) private var context
     @Environment(AppSettings.self) private var settings
@@ -99,12 +119,15 @@ private struct DestinationTodoList: View {
     init(
         destination: ListDestination,
         includeResolved: Bool,
+        showResolvedOverride: Binding<Bool?> = .constant(nil),
         selectedTodo: Binding<Todo?>,
         isFocused: Binding<Bool>,
         createRequest: Binding<Int>? = nil,
         capturedTodo: Binding<UUID?>? = nil
     ) {
         self.destination = destination
+        self.includeResolved = includeResolved
+        self._showResolvedOverride = showResolvedOverride
         self._selectedTodo = selectedTodo
         self._isFocused = isFocused
         self.createRequest = createRequest
@@ -202,14 +225,28 @@ private struct DestinationTodoList: View {
             focusedTodoID = captured
             capturedTodo?.wrappedValue = nil
         }
-        .onChange(of: cursor.selection) {
-            isFocused = cursor.selection != nil
-        }
+        .claimingFocus(cursor: cursor.selection, paneFocused: isListFocused, isFocused: $isFocused)
         .navigationTitle(title)
         #if os(iOS)
         .navigationBarTitleDisplayMode(.large)
         #endif
         .toolbar {
+            ToolbarItem(placement: .secondaryAction) {
+                Toggle(isOn: Binding(
+                    get: { includeResolved },
+                    set: { showResolvedOverride = $0 }
+                )) {
+                    Label(
+                        includeResolved ? "Hide Completed" : "Show Completed",
+                        systemImage: includeResolved ? "eye.slash" : "eye"
+                    )
+                }
+                .help(
+                    includeResolved
+                        ? "Hide completed items in this list"
+                        : "Show completed items in this list"
+                )
+            }
             // Only spaces and projects get one: the cross-cutting lists are
             // already covered by the Calendar tab, which shows the same days
             // unscoped, so a second entry point onto it would just be a
@@ -274,7 +311,7 @@ private struct DestinationTodoList: View {
         .onKeyPress(.downArrow) { moveCursor(.down) }
         // Return opens whatever the cursor is on, matching a double-click.
         .onKeyPress(.return) {
-            guard focusedTodoID == nil, let todo = cursorTodo else { return .ignored }
+            guard isFocused, focusedTodoID == nil, let todo = cursorTodo else { return .ignored }
             showDetail(for: todo)
             return .handled
         }
@@ -710,12 +747,20 @@ private struct DestinationTodoList: View {
         // `selectedTodo` with this list, so the list stands down while it is on
         // top rather than both acting on one keystroke.
         guard !isShowingCalendar else { return false }
+        // On a wide screen the side panel is a second list on the same screen,
+        // and `selectedTodo` is shared with it — so "something is selected" is
+        // not enough to claim the keyboard. The shell arbitrates between the
+        // two, and a list that does not hold focus answers nothing.
+        guard isFocused else { return false }
         return cursor.selection != nil || focusedTodoID != nil || selectedTodo != nil
     }
 
     /// Move the keyboard cursor, unless a text field wants the arrow key.
+    ///
+    /// Ignored outright when the other list on screen holds focus: both panes
+    /// are `.focusable()`, so without this an arrow key moved two cursors.
     private func moveCursor(_ direction: KeyboardCursor.Direction) -> KeyPress.Result {
-        guard focusedTodoID == nil else { return .ignored }
+        guard focusedTodoID == nil, isFocused else { return .ignored }
 
         var next = cursor
         guard next.move(direction, in: visibleRowOrder) else { return .ignored }
@@ -1201,3 +1246,43 @@ private struct TodoListPreviewHost: View {
         .environment(AppSettings.shared)
 }
 #endif
+
+
+/// Claims the shell's keyboard focus for whichever list the user touched.
+///
+/// Two lists are on screen at once on a wide layout, and only one of them may
+/// answer the arrow keys and shortcuts. Both signals mean "the user is working
+/// here": a cursor set by the arrows, and the pane itself taking AppKit focus
+/// from a click or a Tab.
+///
+/// Deliberately one-way. Focus is only ever *taken*, never given up on an
+/// empty cursor — the other list claiming it is what moves it, so the keyboard
+/// never ends up belonging to neither pane.
+///
+/// A `ViewModifier` rather than two more `onChange`s in the list's body: that
+/// chain is long enough that adding to it tips the type-checker over.
+private struct FocusClaimModifier: ViewModifier {
+    let cursor: UUID?
+    let paneFocused: Bool
+    @Binding var isFocused: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: cursor) {
+                if cursor != nil { isFocused = true }
+            }
+            .onChange(of: paneFocused) {
+                if paneFocused { isFocused = true }
+            }
+    }
+}
+
+extension View {
+    fileprivate func claimingFocus(
+        cursor: UUID?,
+        paneFocused: Bool,
+        isFocused: Binding<Bool>
+    ) -> some View {
+        modifier(FocusClaimModifier(cursor: cursor, paneFocused: paneFocused, isFocused: isFocused))
+    }
+}

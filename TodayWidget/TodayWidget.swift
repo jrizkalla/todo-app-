@@ -81,14 +81,46 @@ struct TodayTimelineProvider: TimelineProvider {
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<TodayEntry>) -> Void) {
-        let entry = loadEntry()
+        let now = Date()
+        let entry = loadEntry(now: now)
 
         // Refresh at the next midnight, when "today" changes and the list is
         // wrong by definition. Edits in the app reload the widget explicitly,
         // so there is nothing to gain from polling in between.
-        let midnight = Calendar.current.startOfDay(for: Date().addingTimeInterval(24 * 3600))
+        let midnight = Calendar.current.startOfDay(for: now.addingTimeInterval(24 * 3600))
 
-        completion(Timeline(entries: [entry], policy: .after(midnight)))
+        // ...except that the order is now a function of the clock: an item
+        // moves from "soon" to "now" to "past" without anything being edited.
+        // Waking at the next such boundary keeps the widget's ranking true
+        // without polling — midnight remains the backstop when nothing is
+        // timed.
+        let next = min(nextRankBoundary(after: now) ?? midnight, midnight)
+
+        completion(Timeline(entries: [entry], policy: .after(next)))
+    }
+
+    /// The next moment some to-do changes band, if any is still to come today.
+    ///
+    /// Only the boundaries actually crossed by today's items count, so a day
+    /// with nothing timed schedules no extra wake-ups at all.
+    @MainActor
+    private func nextRankBoundary(after now: Date) -> Date? {
+        let container = ModelContainer.appContainerWithFallback()
+        let today = TodoQueries.todos(for: .today, in: container.mainContext)
+
+        return today
+            .compactMap { todo -> [Date]? in
+                guard todo.assignedHasTime, let start = todo.assignedDate else { return nil }
+                // Entering "soon", entering "now", and falling into "past".
+                return [
+                    start.addingTimeInterval(-TodoQueries.widgetSoonWindow),
+                    start,
+                    start.addingTimeInterval(todo.duration ?? TodoQueries.widgetNowWindow)
+                ]
+            }
+            .flatMap { $0 }
+            .filter { $0 > now }
+            .min()
     }
 
     /// Read today's unfinished work from the shared store.
@@ -96,14 +128,21 @@ struct TodayTimelineProvider: TimelineProvider {
     /// The full Today list, timed items included — `TodoQueries.today` is the
     /// same rule the app's Today destination uses, so the widget and the list it
     /// stands in for can never disagree about what counts as today.
+    ///
+    /// The *order* is the widget's own: what is happening now first, then what
+    /// is coming up, with already-passed slots last. See
+    /// `TodoQueries.widgetOrdered`.
     @MainActor
-    private func loadEntry() -> TodayEntry {
+    private func loadEntry(now: Date = Date()) -> TodayEntry {
         let container = ModelContainer.appContainerWithFallback()
 
         // Filtered by SQLite rather than by pulling the whole store across and
         // narrowing it here — a widget has a hard memory budget, and faulting in
         // every to-do ever written to read the top few is what exceeds it.
-        let today = TodoQueries.todos(for: .today, in: container.mainContext)
+        let fetched = TodoQueries.todos(for: .today, in: container.mainContext)
+        // Reordered before the cut, not after: the widget only shows a few
+        // rows, so the ranking has to decide *which* ones survive `prefix`.
+        let today = TodoQueries.widgetOrdered(fetched, now: now)
 
         let snapshots = today.prefix(Self.maxItems).map { todo in
             TodoSnapshot(

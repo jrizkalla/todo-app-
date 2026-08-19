@@ -456,7 +456,7 @@ private struct RangedCalendarView: View {
     /// Scoped to the days actually on screen, so the cursor never selects
     /// something the user cannot see.
     private var navigableTodoIDs: [UUID] {
-        let days = days(forPage: pageIndex)
+        let days = visibleDays
 
         return days.flatMap { day in
             // `timed` already comes back in start order, which is the order the
@@ -637,7 +637,7 @@ private struct RangedCalendarView: View {
             // cheap — see `creationStrips`, which no longer runs the day's
             // query once per fifteen-minute slot.
             ForEach(pageRange, id: \.self) { offset in
-                dayPage(for: offset)
+                dayPage(for: offset, isActive: offset == pageIndex)
                     .tag(offset)
             }
         }
@@ -662,12 +662,24 @@ private struct RangedCalendarView: View {
         #else
         // No paged TabView on macOS; the chevrons in the header are the way to
         // move between days there.
-        dayPage(for: pageIndex)
+        //
+        // Driven off `anchor` rather than `pageIndex`, because nothing moves
+        // `pageIndex` on this platform: the swipe that owns it — and the
+        // `onChange(of:)` above that syncs it back from the anchor — are both
+        // inside the iOS branch. Reading the stale index here left the grid
+        // pinned to the page it launched on while the header, the row query
+        // and the event fetch all followed the anchor, so the chevrons moved
+        // everything *except* the day being drawn.
+        dayPage(for: page(for: anchor), isActive: true)
         #endif
     }
 
     /// One page: the all-day row and the hour grid for that offset.
-    private func dayPage(for offset: Int) -> some View {
+    ///
+    /// `isActive` marks the page actually on screen. The paged branch builds
+    /// every page in the window and so has to say which one that is; the macOS
+    /// branch builds only the visible page, so it is always the active one.
+    private func dayPage(for offset: Int, isActive: Bool) -> some View {
         let days = days(forPage: offset)
 
         return VStack(spacing: 0) {
@@ -676,7 +688,7 @@ private struct RangedCalendarView: View {
             // Only the page on screen builds its long-press creation targets.
             // They exist purely to be touched, and there are 96 of them per
             // day, so building them for all four hundred pages was pure cost.
-            timedGrid(for: days, isActive: offset == pageIndex)
+            timedGrid(for: days, isActive: isActive)
         }
     }
 

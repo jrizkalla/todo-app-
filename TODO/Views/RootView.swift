@@ -155,9 +155,6 @@ struct RootView: View {
                 tabs
             }
         }
-        .onChange(of: todoFocusHolder) {
-            print("Focus holder: \(todoFocusHolder)")
-        }
         // Showing the panel retires the Inbox tab, so anyone standing on it
         // when that happens has to be moved somewhere that still exists —
         // otherwise the selection points at a tab the bar no longer draws and

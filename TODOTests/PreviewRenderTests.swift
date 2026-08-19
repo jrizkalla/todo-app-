@@ -225,7 +225,7 @@ private struct TodoListRenderHost: View {
 
     var body: some View {
         NavigationStack {
-            TodoListView(destination: destination, selectedTodo: $selected)
+            TodoListView(destination: destination, selectedTodo: $selected, isFocused: .constant(true))
         }
     }
 }
@@ -276,7 +276,7 @@ private struct SidePanelRenderHost: View {
     @State private var selected: Todo?
 
     var body: some View {
-        SidePanelView(selectedTodo: $selected, scope: scope)
+        SidePanelView(selectedTodo: $selected, hasFocus: .constant(false), scope: scope)
     }
 }
 

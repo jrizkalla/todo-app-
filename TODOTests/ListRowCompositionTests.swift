@@ -33,20 +33,47 @@ struct ListRowCompositionTests {
 
     @Test func flatListsDrawNoNestedSubtasks() throws {
         let store = try makeStore()
+        let parent = store.createTodo(title: "Launch")
+        store.addSubtask(to: parent, title: "Book the venue")
+
+        #expect(ListRowComposition.nestedSubtasks(
+            of: parent, destination: .today, isSearching: false
+        ).count == 1)
+
+        #expect(ListRowComposition.nestedSubtasks(
+            of: parent, destination: .logbook, isSearching: false
+        ).isEmpty)
+
+        #expect(ListRowComposition.nestedSubtasks(
+            of: parent, destination: .today, isSearching: true
+        ).isEmpty)
+    }
+
+    /// A project in an ordinary list says it has subtasks rather than spilling
+    /// them: its contents belong to the project's own list, not to Today.
+    @Test func projectsDrawNoNestedSubtasks() throws {
+        let store = try makeStore()
         let project = store.createTodo(title: "Launch", isProject: true)
         store.addSubtask(to: project, title: "Book the venue")
 
         #expect(ListRowComposition.nestedSubtasks(
             of: project, destination: .today, isSearching: false
-        ).count == 1)
-
-        #expect(ListRowComposition.nestedSubtasks(
-            of: project, destination: .logbook, isSearching: false
         ).isEmpty)
-
         #expect(ListRowComposition.nestedSubtasks(
-            of: project, destination: .today, isSearching: true
+            of: project, destination: .anytime, isSearching: false
         ).isEmpty)
+    }
+
+    /// The pinning rule has to agree with the nesting rule: a project's subtask
+    /// is not drawn under it, so it is free to be pinned as a top-level row.
+    @Test func projectSubtaskIsNotConsideredAlreadyDrawn() throws {
+        let store = try makeStore()
+        let project = store.createTodo(title: "Launch", isProject: true)
+        let subtask = store.addSubtask(to: project, title: "Book the venue")
+
+        #expect(!ListRowComposition.isDrawnAsNestedSubtask(
+            subtask, in: [project], destination: .today, isSearching: false
+        ))
     }
 
     // MARK: Focused-row pinning
