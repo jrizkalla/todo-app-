@@ -155,6 +155,10 @@ struct RootView: View {
                 tabs
             }
         }
+        // The undo offer floats above whatever tab is open: the action that
+        // raised it has usually just taken a row off the screen the user was
+        // looking at, so it cannot belong to the list that lost it.
+        .undoToast()
         // Showing the panel retires the Inbox tab, so anyone standing on it
         // when that happens has to be moved somewhere that still exists —
         // otherwise the selection points at a tab the bar no longer draws and

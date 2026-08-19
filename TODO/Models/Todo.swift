@@ -406,6 +406,24 @@ extension Todo {
         return result
     }
 
+    /// Every todo beneath this one, at any depth.
+    ///
+    /// Walks defensively with a visited set for the same reason `ancestors`
+    /// does: a cycle already in the store must not hang the walk.
+    var descendants: [Todo] {
+        var result: [Todo] = []
+        var seen: Set<UUID> = [uuid]
+        var queue = orderedSubtasks
+
+        while let node = queue.first {
+            queue.removeFirst()
+            guard seen.insert(node.uuid).inserted else { continue }
+            result.append(node)
+            queue.append(contentsOf: node.orderedSubtasks)
+        }
+        return result
+    }
+
     /// Whether `candidate` may become a subtask of this todo.
     ///
     /// Rejects the todo itself, anything already parented here, and any

@@ -353,10 +353,10 @@ private struct DestinationTodoList: View {
             SchedulePickerView(
                 todo: todo,
                 onPick: { date, hasTime in
-                    store.update(todo) {
-                        $0.assignedDate = date
-                        $0.assignedHasTime = hasTime
-                    }
+                    // Through `schedule` rather than a bare `update`, so the
+                    // move is undoable: this is the action that takes the row
+                    // off the list the user is looking at.
+                    store.schedule(todo, to: date, hasTime: hasTime)
                     schedulingTodo = nil
                 },
                 onAddReminder: {

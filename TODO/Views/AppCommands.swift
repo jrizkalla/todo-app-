@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 
 /// macOS menu bar commands.
 ///
@@ -9,6 +10,12 @@ import SwiftUI
 /// a shortcut nobody discovers. The menu owns the key, posts a notification,
 /// and whichever surface currently holds the selection acts on it.
 struct AppCommands: Commands {
+    /// The app's container, handed down rather than taken from the
+    /// environment: a `Commands` tree is not inside the scene's view hierarchy,
+    /// so `@Environment(\.modelContext)` there resolves to a default container
+    /// rather than this app's — undo would then quietly act on an empty store.
+    let container: ModelContainer
+
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
             // Deliberately *not* `.create`, which is the + button's request and
@@ -41,6 +48,13 @@ struct AppCommands: Commands {
             command(.delete, key: .delete)
         }
 
+        // Replaces the system Undo/Redo items, which drive `UndoManager` and
+        // would otherwise sit in the menu permanently disabled — this app's
+        // history is `UndoStack`, not the responder chain's.
+        CommandGroup(replacing: .undoRedo) {
+            UndoMenuItems(context: container.mainContext)
+        }
+
         CommandGroup(after: .textEditing) {
             command(.search, key: "f")
         }
@@ -58,6 +72,32 @@ struct AppCommands: Commands {
             NotificationCenter.default.post(name: command.notificationName, object: nil)
         }
         .keyboardShortcut(key, modifiers: .command)
+    }
+}
+
+/// The Edit menu's Undo and Redo.
+///
+/// A view rather than two `Button`s inline, so it can observe `UndoStack` and
+/// name what the shortcut would actually undo — "Undo Complete" rather than a
+/// bare "Undo". Commands are not part of the view hierarchy, so the stack is
+/// reached through its shared instance rather than the environment.
+private struct UndoMenuItems: View {
+    let context: ModelContext
+
+    @State private var undoStack = UndoStack.shared
+
+    var body: some View {
+        Button(undoStack.undoActionName.map { "Undo \($0)" } ?? "Undo") {
+            undoStack.undo(in: context)
+        }
+        .keyboardShortcut("z", modifiers: .command)
+        .disabled(!undoStack.canUndo)
+
+        Button(undoStack.redoActionName.map { "Redo \($0)" } ?? "Redo") {
+            undoStack.redo(in: context)
+        }
+        .keyboardShortcut("z", modifiers: [.command, .shift])
+        .disabled(!undoStack.canRedo)
     }
 }
 

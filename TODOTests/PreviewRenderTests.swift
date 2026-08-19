@@ -29,6 +29,22 @@ struct PreviewRenderTests {
         #endif
     }
 
+    // MARK: Undo
+
+    /// The toast only draws when the stack is offering something, so the test
+    /// records an action first — rendering an empty stack would pass without
+    /// having exercised the view at all.
+    @Test func undoToastRenders() {
+        UndoStack.shared.reset()
+        UndoStack.shared.record(
+            UndoableAction(name: "Schedule", revert: { _ in }, reapply: { _ in })
+        )
+        defer { UndoStack.shared.reset() }
+
+        #expect(UndoStack.shared.toast != nil)
+        render(UndoToast())
+    }
+
     // MARK: Rows
 
     @Test func todoRowRenders() {

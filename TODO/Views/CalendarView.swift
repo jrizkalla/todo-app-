@@ -385,10 +385,9 @@ private struct RangedCalendarView: View {
             SchedulePickerView(
                 todo: todo,
                 onPick: { date, hasTime in
-                    store.update(todo) {
-                        $0.assignedDate = date
-                        $0.assignedHasTime = hasTime
-                    }
+                    // See the same call in `TodoListView`: scheduling is
+                    // recorded so it can be undone.
+                    store.schedule(todo, to: date, hasTime: hasTime)
                     schedulingTodo = nil
                 },
                 onAddReminder: {
@@ -1246,12 +1245,17 @@ private struct RangedCalendarView: View {
     private func schedule(_ todo: Todo, at y: CGFloat, on day: Date) {
         let start = time(atY: y, on: day)
 
-        store.update(todo) {
-            $0.assignedDate = start
-            $0.assignedHasTime = true
-            // Only supply a length if it had none, so an existing duration is
-            // preserved across the move.
-            if $0.duration == nil { $0.duration = settings.defaultEventDuration }
+        // Recorded: a drop from the panel onto the grid takes the row out of
+        // the panel's unscheduled list, which is the disappearance undo exists
+        // for.
+        store.recordingUndo("Schedule", on: todo) {
+            store.update(todo) {
+                $0.assignedDate = start
+                $0.assignedHasTime = true
+                // Only supply a length if it had none, so an existing duration
+                // is preserved across the move.
+                if $0.duration == nil { $0.duration = settings.defaultEventDuration }
+            }
         }
 
         #if os(iOS)
@@ -1858,10 +1862,19 @@ private struct RangedCalendarView: View {
 
         guard let proposal = dragProposal(for: todo, on: day) else { return }
 
-        store.update(todo) {
-            $0.assignedDate = proposal.start
-            $0.assignedHasTime = true
-            $0.duration = proposal.duration
+        // Read before the `defer` above resets it, and into a local so the name
+        // resolves to this view's state rather than a SwiftUI type of the same
+        // name.
+        let wasResize = dragMode == .resizeStart || dragMode == .resizeEnd
+
+        // Moving a block to another day takes it off the page being shown, and
+        // the exact slot it came from is hard to hit again by hand.
+        store.recordingUndo(wasResize ? "Resize" : "Move", on: todo) {
+            store.update(todo) {
+                $0.assignedDate = proposal.start
+                $0.assignedHasTime = true
+                $0.duration = proposal.duration
+            }
         }
 
         #if os(iOS)

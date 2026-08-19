@@ -25,7 +25,7 @@ struct TODOApp: App {
                 .environment(settings)
         }
         .modelContainer(modelContainer)
-        .commands { AppCommands() }
+        .commands { AppCommands(container: modelContainer) }
 
         #if os(macOS)
         // Backs a detail popover torn off into a window of its own.

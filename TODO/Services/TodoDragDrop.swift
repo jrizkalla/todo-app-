@@ -48,6 +48,36 @@ enum TodoDropAction {
         calendar: Calendar = .current,
         now: Date = Date()
     ) -> Bool {
+        // A drop is recorded as one undoable action even where it takes several
+        // store verbs to carry out — dropping onto the Inbox clears the date
+        // *and* the parent *and* the space, and undoing that should put the row
+        // back in one step rather than three.
+        //
+        // Wrapped around the whole switch rather than repeated per case so a
+        // destination added later is undoable by construction.
+        var moved = false
+        store.recordingUndo(dropName(for: destination), on: todo) {
+            moved = applyMove(destination, to: todo, store: store, calendar: calendar, now: now)
+        }
+        return moved
+    }
+
+    /// What the undo entry for a drop onto `destination` is called.
+    private static func dropName(for destination: ListDestination) -> String {
+        switch destination {
+        case .today, .tomorrow, .thisWeek: "Schedule"
+        case .inbox, .anytime: "Unschedule"
+        default: "Move"
+        }
+    }
+
+    private static func applyMove(
+        _ destination: ListDestination,
+        to todo: Todo,
+        store: TodoStore,
+        calendar: Calendar,
+        now: Date
+    ) -> Bool {
         switch destination {
         case .inbox:
             // The Inbox is "unfiled": no home and no date is what puts a to-do

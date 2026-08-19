@@ -89,6 +89,28 @@ struct TodoStore {
         insert(copy, after: todo)
 
         save()
+
+        // Undoing a duplicate removes the copy: the original is untouched, so
+        // there is nothing to restore, only something to take away. Redo makes
+        // a fresh copy of the original rather than resurrecting this one.
+        let copyID = copy.uuid
+        let sourceID = todo.uuid
+        UndoStack.shared.record(
+            UndoableAction(
+                name: "Duplicate",
+                revert: { context in
+                    let store = TodoStore(context: context)
+                    guard let live = TodoQueries.todo(uuid: copyID, in: context) else { return }
+                    context.delete(live)
+                    store.save()
+                },
+                reapply: { context in
+                    let store = TodoStore(context: context)
+                    guard let source = TodoQueries.todo(uuid: sourceID, in: context) else { return }
+                    _ = store.duplicate(source)
+                }
+            )
+        )
         return copy
     }
 
@@ -165,9 +187,25 @@ struct TodoStore {
     /// on a day at all. A deadline is a fact about the work, not a placement,
     /// and unscheduling should not quietly discard it.
     func unschedule(_ todo: Todo) {
-        update(todo) {
-            $0.assignedDate = nil
-            $0.assignedHasTime = false
+        recordingUndo("Unschedule", on: todo) {
+            update(todo) {
+                $0.assignedDate = nil
+                $0.assignedHasTime = false
+            }
+        }
+    }
+
+    /// Schedule a to-do, recording the move so it can be put back.
+    ///
+    /// Separate from `update` because this is the action the brief calls out:
+    /// giving something a date makes it disappear from the list the user was
+    /// looking at, and undo is what saves them hunting for it.
+    func schedule(_ todo: Todo, to date: Date?, hasTime: Bool = false) {
+        recordingUndo("Schedule", on: todo) {
+            update(todo) {
+                $0.assignedDate = date
+                $0.assignedHasTime = hasTime
+            }
         }
     }
 
@@ -212,17 +250,39 @@ struct TodoStore {
     /// The spec: if a user tries to complete or cancel a todo with unfinished
     /// subtasks, ask whether to resolve those too.
     func setState(_ todo: Todo, to newState: CompletionState) -> StateChangeOutcome {
-        if todo.setState(newState) {
-            save()
-            return .applied
+        guard todo.canTransition(to: newState) else {
+            return .needsSubtaskConfirmation(count: todo.blockingSubtasks.count)
         }
-        return .needsSubtaskConfirmation(count: todo.blockingSubtasks.count)
+
+        recordingUndo(undoName(for: newState), on: todo) {
+            _ = todo.setState(newState)
+            save()
+        }
+        return .applied
     }
 
     /// Apply a state change after the user confirms the cascade.
+    ///
+    /// Recorded across the subtasks as well as the parent: the cascade is the
+    /// part the user could not undo by hand, since it resolved rows they never
+    /// touched directly.
     func setStateCascading(_ todo: Todo, to newState: CompletionState) {
-        todo.setState(newState, cascadeToSubtasks: true)
-        save()
+        let affected = [todo] + todo.descendants
+
+        recordingUndo(undoName(for: newState), on: affected) {
+            todo.setState(newState, cascadeToSubtasks: true)
+            save()
+        }
+    }
+
+    /// What the Edit menu and the toast call a state change.
+    private func undoName(for state: CompletionState) -> String {
+        switch state {
+        case .completed: "Complete"
+        case .cancelled: "Cancel"
+        case .started: "Start"
+        case .open: "Reopen"
+        }
     }
 
     /// The checkbox tap: complete an open item, reopen a resolved one.
@@ -256,19 +316,25 @@ struct TodoStore {
     }
 
     func move(_ todo: Todo, toSpace space: Space?) {
-        todo.move(toSpace: space)
-        save()
+        recordingUndo("Move", on: todo) {
+            todo.move(toSpace: space)
+            save()
+        }
     }
 
     func move(_ todo: Todo, toParent parent: Todo?) {
-        todo.move(toParent: parent)
-        save()
+        recordingUndo("Move", on: todo) {
+            todo.move(toParent: parent)
+            save()
+        }
     }
 
     /// Promote a todo to a project so it appears in the sidebar, or demote it.
     func setIsProject(_ todo: Todo, _ promoted: Bool) {
-        todo.setIsProject(promoted)
-        save()
+        recordingUndo(promoted ? "Make Project" : "Make To-Do", on: todo) {
+            todo.setIsProject(promoted)
+            save()
+        }
     }
 
     @discardableResult
@@ -340,9 +406,49 @@ struct TodoStore {
 
     // MARK: Deleting
 
+    /// Delete a to-do and everything under it.
+    ///
+    /// Recorded across the whole subtree, because the cascade delete rule takes
+    /// the subtasks too — restoring only the row the user selected would put
+    /// back an empty project. Snapshots carry their original `uuid`, so the
+    /// parent links between restored rows still resolve.
     func delete(_ todo: Todo) {
+        let subtree = [todo] + todo.descendants
+        let snapshots = subtree.map(TodoSnapshot.init)
+
         context.delete(todo)
         save()
+
+        UndoStack.shared.record(
+            UndoableAction(
+                name: "Delete",
+                revert: { context in
+                    let store = TodoStore(context: context)
+                    // Parents first, so a subtask's `parentID` finds its parent
+                    // already back in the store rather than restoring an
+                    // orphan.
+                    for snapshot in snapshots where snapshot.parentID == nil {
+                        snapshot.reinsert(into: context)
+                    }
+                    for snapshot in snapshots where snapshot.parentID != nil {
+                        snapshot.reinsert(into: context)
+                    }
+                    // A second pass to re-link: a child restored before its
+                    // parent in the pass above would have found nothing.
+                    for snapshot in snapshots {
+                        guard let live = TodoQueries.todo(uuid: snapshot.uuid, in: context) else { continue }
+                        snapshot.apply(to: live, in: context)
+                    }
+                    store.save()
+                },
+                reapply: { context in
+                    let store = TodoStore(context: context)
+                    guard let live = TodoQueries.todo(uuid: snapshots[0].uuid, in: context) else { return }
+                    context.delete(live)
+                    store.save()
+                }
+            )
+        )
     }
 
     func delete(_ space: Space) {
