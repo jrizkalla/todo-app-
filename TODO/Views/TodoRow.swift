@@ -190,11 +190,22 @@ struct TodoRow : View {
             todoDescription = todo.notes
         }
         // Pick up edits made elsewhere — an accepted suggestion stripping a
-        // date out of the title, or the detail editor rewriting the notes —
-        // but never while the field is being typed into, which would fight the
-        // caret.
+        // date out of the title, or the detail editor rewriting the notes.
+        //
+        // Deliberately *not* gated on the field being unfocused. Accepting a
+        // chip is the main case this exists for, and the chips are only ever on
+        // screen while the title has the caret — so a `!isTitleFocused` guard
+        // here skipped precisely the rewrite it was written to deliver, leaving
+        // "today" in the field after the user had scheduled it. The stale local
+        // copy then won the next keystroke and put the phrase back.
+        //
+        // What the guard was protecting against is the echo of the user's own
+        // typing: `todoTitle` is written through to `todo.title` below, which
+        // re-enters here. Comparing against `todoTitle` is enough to tell the
+        // two apart — an echo already matches and is dropped, while a rewrite
+        // from elsewhere differs and is adopted.
         .onChange(of: todo.title) { _, newValue in
-            guard !isTitleFocused, todoTitle != newValue else { return }
+            guard todoTitle != newValue else { return }
             todoTitle = newValue
         }
         .onChange(of: todo.notes) { _, newValue in

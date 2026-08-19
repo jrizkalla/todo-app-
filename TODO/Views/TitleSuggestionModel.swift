@@ -17,15 +17,23 @@ final class TitleSuggestionModel {
     /// - Parameters:
     ///   - todo: The todo being edited, excluded from project matches so a todo
     ///     cannot suggest moving into itself.
-    ///   - context: Used to fetch the candidate projects. Only projects are
-    ///     fetched — the parser matches `#project` names and never looked at
-    ///     anything else, so the old "everything in the store" array was
-    ///     scanned in full to keep a handful of rows.
+    ///   - context: Used to fetch the candidate containers. Only projects and
+    ///     spaces are fetched — those are the two things a title can name and
+    ///     the to-do can be filed into — so the old "everything in the store"
+    ///     array is not scanned in full to keep a handful of rows.
     func refresh(for title: String, todo: Todo, context: ModelContext) {
         var parser = TitleParser()
         parser.projectNames = TodoQueries.projects(in: context)
             .filter { $0.uuid != todo.uuid && $0.uuid != todo.parent?.uuid }
             .map { (name: $0.title, uuid: $0.uuid) }
+
+        // The space the to-do is already in is left out for the same reason its
+        // current project is: a chip offering to file it where it already sits
+        // does nothing when accepted.
+        let spaces = (try? context.fetch(TodoQueries.allSpacesDescriptor())) ?? []
+        parser.spaceNames = spaces
+            .filter { $0.uuid != todo.space?.uuid }
+            .map { (name: $0.name, uuid: $0.uuid) }
 
         suggestions = parser.suggestions(for: title)
     }
@@ -57,6 +65,14 @@ final class TitleSuggestionModel {
         case .project(_, let uuid):
             if let project = TodoQueries.todo(uuid: uuid, in: context) {
                 store.move(todo, toParent: project)
+            }
+        case .space(_, let uuid):
+            if let space = TodoQueries.space(uuid: uuid, in: context) {
+                // Detached from any parent first: a to-do belongs to one
+                // container, and a project it was under may live in a different
+                // space entirely. Same rule the drop targets apply.
+                store.move(todo, toParent: nil)
+                store.move(todo, toSpace: space)
             }
         }
 

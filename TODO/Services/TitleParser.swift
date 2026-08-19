@@ -11,6 +11,8 @@ struct ParsedSuggestion: Identifiable, Equatable, Sendable {
         case duration(TimeInterval)
         /// File under an existing project, matched by name.
         case project(name: String, uuid: UUID)
+        /// File into an existing space, matched by name.
+        case space(name: String, uuid: UUID)
     }
 
     var id: String { "\(kind)-\(matchedRange.location)-\(matchedRange.length)" }
@@ -31,6 +33,8 @@ struct ParsedSuggestion: Identifiable, Equatable, Sendable {
             "Duration \(Self.describe(duration: seconds))"
         case .project(let name, _):
             "Move to \(name)"
+        case .space(let name, _):
+            "Move to \(name)"
         }
     }
 
@@ -40,6 +44,7 @@ struct ParsedSuggestion: Identifiable, Equatable, Sendable {
         case .deadline: "target"
         case .duration: "clock"
         case .project: "folder"
+        case .space: "square.stack"
         }
     }
 
@@ -78,6 +83,8 @@ struct ParsedSuggestion: Identifiable, Equatable, Sendable {
 struct TitleParser {
     /// Names of existing projects to match against, paired with their ids.
     var projectNames: [(name: String, uuid: UUID)] = []
+    /// Names of existing spaces, matched the same way projects are.
+    var spaceNames: [(name: String, uuid: UUID)] = []
     var referenceDate: Date = Date()
     var calendar: Calendar = .current
 
@@ -101,6 +108,7 @@ struct TitleParser {
         results.append(contentsOf: dateSuggestions(in: title))
         results.append(contentsOf: durationSuggestions(in: title))
         results.append(contentsOf: projectSuggestions(in: title))
+        results.append(contentsOf: spaceSuggestions(in: title))
         return results
     }
 
@@ -146,8 +154,38 @@ struct TitleParser {
 
     /// Match a project by name, case-insensitively, on whole words only.
     private func projectSuggestions(in title: String) -> [ParsedSuggestion] {
-        projectNames.compactMap { project in
-            let trimmed = project.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        containerSuggestions(in: title, among: projectNames) { name, uuid in
+            .project(name: name, uuid: uuid)
+        }
+    }
+
+    // MARK: Spaces
+
+    /// Match a space by name, exactly as a project is matched.
+    ///
+    /// Spaces are the other thing a to-do can be filed into, and typing one's
+    /// name is the same gesture as typing a project's — so the two offer the
+    /// same chip rather than only half the containers being recognized.
+    private func spaceSuggestions(in title: String) -> [ParsedSuggestion] {
+        containerSuggestions(in: title, among: spaceNames) { name, uuid in
+            .space(name: name, uuid: uuid)
+        }
+    }
+
+    /// The shared rule behind both: whole-word, case-insensitive, first match
+    /// only.
+    ///
+    /// One match per container kind, because the chip files the to-do in one
+    /// place — offering several would be offering a choice the accept cannot
+    /// express. Names shorter than two characters are skipped: a one-letter
+    /// container would match somewhere in almost any title.
+    private func containerSuggestions(
+        in title: String,
+        among containers: [(name: String, uuid: UUID)],
+        kind: (String, UUID) -> ParsedSuggestion.Kind
+    ) -> [ParsedSuggestion] {
+        containers.compactMap { container in
+            let trimmed = container.name.trimmingCharacters(in: .whitespacesAndNewlines)
             guard trimmed.count >= 2 else { return nil }
 
             let pattern = "\\b\(NSRegularExpression.escapedPattern(for: trimmed))\\b"
@@ -155,7 +193,7 @@ struct TitleParser {
             else { return nil }
 
             return ParsedSuggestion(
-                kind: .project(name: trimmed, uuid: project.uuid),
+                kind: kind(trimmed, container.uuid),
                 matchedText: String(title[range]),
                 matchedRange: NSRange(range, in: title)
             )
