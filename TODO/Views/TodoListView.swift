@@ -25,6 +25,7 @@ struct TodoListView: View {
     @Environment(AppSettings.self) private var settings
 
     @Binding var selectedTodo: Todo?
+    @Binding var isFocused: Bool
     var createRequest: Binding<Int>?
     var capturedTodo: Binding<UUID?>?
 
@@ -33,6 +34,7 @@ struct TodoListView: View {
             destination: destination,
             includeResolved: settings.showResolved,
             selectedTodo: $selectedTodo,
+            isFocused: $isFocused,
             createRequest: createRequest,
             capturedTodo: capturedTodo
         )
@@ -74,6 +76,7 @@ private struct DestinationTodoList: View {
     private var spaces: [Space]
 
     @Binding var selectedTodo: Todo?
+    @Binding var isFocused: Bool
 
     /// Incremented by the app-wide create button. The list answers by adding a
     /// row here and focusing its title — see `createTodoInCurrentList`.
@@ -97,11 +100,13 @@ private struct DestinationTodoList: View {
         destination: ListDestination,
         includeResolved: Bool,
         selectedTodo: Binding<Todo?>,
+        isFocused: Binding<Bool>,
         createRequest: Binding<Int>? = nil,
         capturedTodo: Binding<UUID?>? = nil
     ) {
         self.destination = destination
         self._selectedTodo = selectedTodo
+        self._isFocused = isFocused
         self.createRequest = createRequest
         self.capturedTodo = capturedTodo
 
@@ -196,6 +201,9 @@ private struct DestinationTodoList: View {
             withAnimation(Theme.Animation.rowExpand) { cursor.select(captured) }
             focusedTodoID = captured
             capturedTodo?.wrappedValue = nil
+        }
+        .onChange(of: cursor.selection) {
+            isFocused = cursor.selection != nil
         }
         .navigationTitle(title)
         #if os(iOS)
@@ -365,6 +373,11 @@ private struct DestinationTodoList: View {
                 destination,
                 store: store
             )
+            .onChange(of: isFocused) {
+                if !isFocused {
+                    cursor.select(nil)
+                }
+            }
     }
 
     /// The list, plus its search field.
@@ -396,7 +409,7 @@ private struct DestinationTodoList: View {
     }
 
     #if os(macOS)
-    private let rowInsets = EdgeInsets(top: 10, leading: 5, bottom: 10, trailing: 5)
+    private let rowInsets = EdgeInsets(top: 8, leading: 5, bottom: 8, trailing: 5)
     #else
     private let rowInsets = EdgeInsets(top: 3, leading: 5, bottom: 3, trailing: 5)
     #endif
@@ -541,6 +554,10 @@ private struct DestinationTodoList: View {
                     reordered.move(fromOffsets: indices, toOffset: newOffset)
                     store.reorder(reordered)
                 }
+                
+                Spacer()
+                    .frame(width: 50, height: 400)
+
             }
             .onScrollPhaseChange { oldPhase, newPhase in
                 if newPhase == .decelerating {
@@ -556,6 +573,7 @@ private struct DestinationTodoList: View {
                 Theme.Metrics.listContentMargin,
                 for: .scrollContent
             )
+            .contentMargins(.top, 10, for: .scrollContent)
             // Swiping down over the list dismisses the keyboard raised by
             // inline title editing.
             .scrollDismissesKeyboard(.interactively)
@@ -1145,7 +1163,7 @@ private struct TodoListPreviewHost: View {
 
     var body: some View {
         NavigationStack {
-            TodoListView(destination: destination, selectedTodo: $selected)
+            TodoListView(destination: destination, selectedTodo: $selected, isFocused: .constant(true))
         }
     }
 }

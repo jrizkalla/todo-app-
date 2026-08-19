@@ -1317,9 +1317,6 @@ private struct RangedCalendarView: View {
                             // down, and on macOS it is delivered here too.
                             guard draggingTodoID == nil else { return }
                             createTodo(startingAt: start)
-                        } onPressingChanged: { pressing in
-                            guard draggingTodoID == nil else { return }
-                            draft = pressing ? DraftBlock(day: day, start: start) : nil
                         }
                 }
             }
@@ -1333,7 +1330,7 @@ private struct RangedCalendarView: View {
     ///
     /// Long enough that it cannot be reached by a tap that lingers, since a tap
     /// on empty grid now means "deselect" and the two gestures share a target.
-    private static let createPressDuration: Double = 0.45
+    private static let createPressDuration: Double = 0.25
 
     /// Spans of the day already covered by a timed to-do.
     ///
@@ -1490,7 +1487,7 @@ private struct RangedCalendarView: View {
         // instead, so both work on the same block.
         return blockLabel(for: todo, height: liveHeight, isSelected: isSelected)
             .padding(.horizontal, 6)
-            .padding(.vertical, 3)
+            .padding(.vertical, 6)
             .frame(maxWidth: .infinity, minHeight: liveHeight, alignment: .topLeading)
             .background {
                 RoundedRectangle(cornerRadius: 5, style: .continuous)
@@ -1620,7 +1617,6 @@ private struct RangedCalendarView: View {
             .opacity(showsControls ? 1 : 0)
             .allowsHitTesting(showsControls)
             .accessibilityHidden(!showsControls)
-            .clipped()
 
             VStack(alignment: .leading, spacing: 2) {
                 InlineMarkdownText(

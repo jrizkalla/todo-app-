@@ -22,6 +22,7 @@ import SwiftData
 /// its queries — whenever either does.
 struct SidePanelView: View {
     @Binding var selectedTodo: Todo?
+    @Binding var hasFocus: Bool
 
     /// What to show. Defaults to the Inbox so the panel stands alone in
     /// previews and wherever nothing has claimed it.
@@ -45,10 +46,16 @@ struct SidePanelView: View {
             scope: scope,
             includeResolved: settings.showResolved,
             selectedTodo: $selectedTodo,
+            hasFocus: $hasFocus,
             capturedTodo: capturedTodo,
             onHide: onHide
         )
         .id(QueryIdentity(scope: scope, includeResolved: settings.showResolved))
+        .onChange(of: hasFocus) {
+            if !hasFocus {
+                selectedTodo = nil
+            }
+        }
     }
 
     private struct QueryIdentity: Hashable {
@@ -61,6 +68,7 @@ private struct ScopedSidePanel: View {
     let scope: SidePanelScope
 
     @Binding var selectedTodo: Todo?
+    @Binding var hasFocus: Bool
     var capturedTodo: Binding<UUID?>?
     var onHide: (() -> Void)?
 
@@ -83,11 +91,13 @@ private struct ScopedSidePanel: View {
         scope: SidePanelScope,
         includeResolved: Bool,
         selectedTodo: Binding<Todo?>,
+        hasFocus: Binding<Bool>,
         capturedTodo: Binding<UUID?>? = nil,
         onHide: (() -> Void)? = nil
     ) {
         self.scope = scope
         self._selectedTodo = selectedTodo
+        self._hasFocus = hasFocus
         self.capturedTodo = capturedTodo
         self.onHide = onHide
 
@@ -165,6 +175,14 @@ private struct ScopedSidePanel: View {
             withAnimation(Theme.Animation.rowExpand) { expandedTodoID = captured }
             focusedTodoID = captured
             capturedTodo?.wrappedValue = nil
+        }
+        .onChange(of: focusedTodoID) {
+            hasFocus = focusedTodoID != nil
+        }
+        .onChange(of: hasFocus) {
+            if !hasFocus {
+                focusedTodoID = nil
+            }
         }
         // The panel is one surface changing what it holds, not two surfaces
         // swapping places, so the rows cross-fade in place rather than the
@@ -362,7 +380,7 @@ private struct SidePanelPreviewHost: View {
     @State private var selected: Todo?
 
     var body: some View {
-        SidePanelView(selectedTodo: $selected, scope: scope)
+        SidePanelView(selectedTodo: $selected, hasFocus: .constant(true), scope: scope)
     }
 }
 

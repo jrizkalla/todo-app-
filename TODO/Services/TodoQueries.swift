@@ -261,7 +261,7 @@ enum TodoQueries {
     ) -> FetchDescriptor<Todo> {
         let endOfToday = calendar.startOfDay(for: now).addingTimeInterval(24 * 3600)
         let focus = notHiddenByFocus
-        let window = datedBefore(endOfToday)
+        let window = datedBetween(calendar.startOfDay(for: now), endOfToday)
         let state = unresolvedUnless(includeResolved)
 
         var descriptor = FetchDescriptor<Todo>(
@@ -380,12 +380,16 @@ enum TodoQueries {
     static func overdueDescriptor(now: Date = Date()) -> FetchDescriptor<Todo> {
         let focus = notHiddenByFocus
         let unresolved = unresolvedUnless(false)
+        
+        let startOfToday = Calendar.current.startOfDay(for: now)
 
         var descriptor = FetchDescriptor<Todo>(
             predicate: #Predicate<Todo> { todo in
                 focus.evaluate(todo)
                     && unresolved.evaluate(todo)
-                    && (todo.dueDate.flatMap { $0 < now } ?? false)
+                    && (todo.dueDate.flatMap { $0 < (
+                        todo.dueHasTime ? now : startOfToday
+                    ) } ?? false)
             }
         )
         descriptor.prefetchRelated()
@@ -1095,12 +1099,13 @@ enum TodoQueries {
     /// Overdue work stays in Today so it cannot be missed by moving past its
     /// date.
     static func today(_ todos: [Todo], calendar: Calendar = .current, now: Date = Date(), includeResolved: Bool = false) -> [Todo] {
-        let endOfToday = calendar.startOfDay(for: now).addingTimeInterval(24 * 3600)
+        let startOfDay = calendar.startOfDay(for: now)
+        let endOfToday = startOfDay.addingTimeInterval(24 * 3600)
 
         return topLevel(todos)
             .filter { todo in
-                if let assigned = todo.assignedDate, assigned < endOfToday { return true }
-                if let due = todo.dueDate, due < endOfToday { return true }
+                if let assigned = todo.assignedDate, startOfDay <= assigned && assigned < endOfToday { return true }
+                if let due = todo.dueDate, startOfDay <= due && due < endOfToday { return true }
                 return false
             }
             .filter(includeResolved: includeResolved)

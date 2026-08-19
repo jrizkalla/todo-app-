@@ -53,6 +53,15 @@ struct SidebarView: View {
             }
         }
         .navigationTitle("Lists")
+        .toolbar {
+            Button {
+                isShowingSettings = true
+            } label: {
+                Image(systemName: "gear")
+            }
+            .foregroundStyle(.secondary)
+            .accessibilityLabel("Settings")
+        }
         // Same gesture as inside a list, so the field is where the user
         // reaches for it no matter which column they are in — on iOS. macOS
         // has one toolbar for both columns and only room for one search field,
@@ -69,25 +78,12 @@ struct SidebarView: View {
                             .font(.callout)
                         Spacer()
                     }
+                    .frame(height: 30)
                 }
                 .buttonStyle(.glass)
                 .foregroundStyle(.secondary)
 
                 Spacer()
-
-                // macOS gets the standard Settings scene; on the other
-                // platforms this is the way in.
-                #if !os(macOS)
-                Button {
-                    isShowingSettings = true
-                } label: {
-                    Image(systemName: "gearshape")
-                        .font(.callout)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .accessibilityLabel("Settings")
-                #endif
             }
             .padding(.horizontal, 18)
             .padding(.vertical, 10)

@@ -208,7 +208,12 @@ extension Todo {
 
     var isOverdue: Bool {
         guard let dueDate, !state.isResolved else { return false }
-        return dueDate < Date()
+        let now = Date()
+        return if !dueHasTime && Calendar.current.isDate(now, inSameDayAs: dueDate) {
+            false
+        } else {
+            dueDate < now
+        }
     }
 }
 

@@ -26,6 +26,10 @@ enum AppTab: String, CaseIterable, Identifiable, Hashable {
     }
 }
 
+enum TodoFocusHolder {
+    case none, sidebar, mainList
+}
+
 /// The app shell: four tabs, each with its own navigation stack.
 ///
 /// Inbox and Today are single screens; Lists keeps the sidebar-and-detail
@@ -37,7 +41,7 @@ struct RootView: View {
     @Environment(AppSettings.self) private var settings
 
     /// The app launches on Today, per the spec.
-    @State private var tab: AppTab = .today
+    @State private var tab: AppTab = .lists
 
     /// Per-tab navigation state. Kept here so a tap on a summary card can move
     /// the user to another tab *and* set what that tab is showing.
@@ -67,6 +71,8 @@ struct RootView: View {
             set: { createRequests[tab] = $0 }
         )
     }
+    
+    @State private var todoFocusHolder: TodoFocusHolder = .none
 
     /// A to-do just captured with Cmd+N, waiting for whichever surface shows the
     /// Inbox to put the caret in its title.
@@ -120,6 +126,10 @@ struct RootView: View {
                         if settings.showSidePanel {
                             SidePanelView(
                                 selectedTodo: $selectedTodo,
+                                hasFocus: Binding<Bool>(
+                                    get: { self.todoFocusHolder == .sidebar },
+                                    set: { self.todoFocusHolder = $0 ? .sidebar : nextFocusHolder(for: .sidebar) }
+                                ),
                                 scope: effectivePanelScope,
                                 // Only while it is actually showing the Inbox:
                                 // scoped to a calendar's list, the panel is not
@@ -144,6 +154,9 @@ struct RootView: View {
             } else {
                 tabs
             }
+        }
+        .onChange(of: todoFocusHolder) {
+            print("Focus holder: \(todoFocusHolder)")
         }
         // Showing the panel retires the Inbox tab, so anyone standing on it
         // when that happens has to be moved somewhere that still exists —
@@ -232,6 +245,10 @@ struct RootView: View {
                         TodoListView(
                             destination: .inbox,
                             selectedTodo: $selectedTodo,
+                            isFocused: .init(
+                                get: { todoFocusHolder == .mainList },
+                                set: { todoFocusHolder = $0 ? .mainList : nextFocusHolder(for: .mainList) }
+                            ),
                             createRequest: createCount(for: .inbox),
                             capturedTodo: $capturedTodo
                         )
@@ -326,11 +343,23 @@ struct RootView: View {
                 TodoListView(
                     destination: listSelection ?? .today,
                     selectedTodo: $selectedTodo,
+                    isFocused: .init(
+                        get: { todoFocusHolder == .mainList },
+                        set: { todoFocusHolder = $0 ? .mainList : nextFocusHolder(for: .mainList) }
+                    ),
                     createRequest: createCount(for: .lists)
                 )
                 .frame(maxWidth: .infinity)
                 .todoDetailDestination(selection: $selectedTodo)
             }
+        }
+    }
+    
+    private func nextFocusHolder(for holder: TodoFocusHolder) -> TodoFocusHolder {
+        if todoFocusHolder == holder {
+            .none
+        } else {
+            todoFocusHolder
         }
     }
 
@@ -413,14 +442,17 @@ struct CreateButton: View {
                     width: Theme.Metrics.createButtonSize,
                     height: Theme.Metrics.createButtonSize
                 )
-                .background {
-                    Circle().fill(Color.accentColor)
-                        .shadow(color: .black.opacity(0.22), radius: 9, y: 4)
-                }
+//                .background {
+//                    Circle().fill(Color.accentColor.opacity(0.5))
+//                        .shadow(color: .black.opacity(0.22), radius: 9, y: 4)
+//                        .glassEffect()
+//                }
         }
+        .buttonBorderShape(.circle)
+        .buttonStyle(.glassProminent)
         // The same press response the summary cards use — one feel for every
         // custom control in the app.
-        .buttonStyle(PressableCardStyle(pressedScale: 0.92))
+//        .buttonStyle(PressableCardStyle(pressedScale: 0.92))
         .padding(.trailing, Theme.Metrics.createButtonInset)
         .padding(.bottom, Theme.Metrics.createButtonInset)
         .accessibilityLabel("New To-Do")

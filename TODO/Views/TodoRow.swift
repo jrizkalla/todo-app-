@@ -73,11 +73,12 @@ struct TodoRow : View {
                     // amount of tuning the animation curve removes it. A single
                     // field that is merely disabled while collapsed has nothing
                     // to fade between, so the row only changes height.
-                    TextField("TODO title", text: $todoTitle, axis: .vertical)
-                        .focused($focusedTodoID, equals: todo.uuid)
-                        .textFieldStyle(.plain)
-                        .lineLimit(1...6)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if isSelected {
+                        TextField("TODO title", text: $todoTitle, axis: .vertical)
+                            .focused($focusedTodoID, equals: todo.uuid)
+                            .textFieldStyle(.plain)
+                            .lineLimit(1...6)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         // Return commits the field on macOS rather than
                         // inserting a newline, so it arrives here and never as
                         // text. `onChange(of: todoTitle)` below covers the
@@ -90,13 +91,15 @@ struct TodoRow : View {
                         // dropping is safe now: this reads `todoTitle`, which
                         // SwiftUI has already updated, and the list defers
                         // creating the next row by a runloop turn anyway.
-                        .onSubmit(submitTitle)
-                        // Collapsed, the field is inert: taps pass through to
-                        // the list's own gesture, which is what makes the first
-                        // tap select the row instead of dropping a caret in it.
-                        .disabled(!isSelected)
-                        .foregroundStyle(todo.state.isResolved ? .secondary : .primary)
-                        .strikethrough(todo.state == .completed)
+                            .onSubmit(submitTitle)
+                            .foregroundStyle(todo.state.isResolved ? .secondary : .primary)
+                            .strikethrough(todo.state == .completed)
+                    } else {
+                        Text((try? AttributedString(markdown: todo.title)) ?? .init(todo.title))
+                            .lineLimit(1...6)
+                            .foregroundStyle(todo.state.isResolved ? .secondary : .primary)
+                            .strikethrough(todo.state == .completed)
+                    }
 
                     statusLine
 
@@ -129,12 +132,12 @@ struct TodoRow : View {
                 // arrives with the row's own growth instead of blinking in.
                 Button { onShowDetail(todo) } label: {
                     Image(systemName: "chevron.right")
-                        .padding()
                         .foregroundStyle(todo.color)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Show Details")
                 .frame(width: isSelected ? nil : 0)
+                .frame(height: isSelected ? nil : 0)
                 .opacity(isSelected ? 1 : 0)
                 .allowsHitTesting(isSelected)
                 .accessibilityHidden(!isSelected)
