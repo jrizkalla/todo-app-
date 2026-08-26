@@ -179,6 +179,12 @@ private struct RangedCalendarView: View {
     /// The to-do being dragged to a new time, and how far it has moved.
     @State private var draggingTodoID: UUID?
     @State private var dragTranslation: CGFloat = 0
+    /// Sideways travel, which on a week grid is what changes the day.
+    ///
+    /// Kept separate from the vertical translation because the two answer
+    /// different questions — how many columns across, versus how many minutes
+    /// down — and only the horizontal one is meaningless on a single-day grid.
+    @State private var dragHorizontal: CGFloat = 0
     /// Which part of a block the current drag has hold of.
     @State private var dragMode: DragMode = .move
     /// Whether the block was already selected when the drag began.
@@ -368,6 +374,7 @@ private struct RangedCalendarView: View {
             guard !tracking, let dragged = draggingTodoID else { return }
             draggingTodoID = nil
             dragTranslation = 0
+            dragHorizontal = 0
             dragMode = .move
             // Select here too. A cancelled drag never reaches `commitDrag`, so
             // without this the one path that does not select is the one where
@@ -1184,8 +1191,18 @@ private struct RangedCalendarView: View {
             // Where the block under the finger will land. Drawn after the
             // blocks so it is never hidden behind one, and before the draft,
             // which is the only thing that outranks it.
-            if let dragging = draggingTodo, todosOnDay.contains(where: { $0.uuid == dragging.uuid }) {
-                snapIndicator(for: dragging, on: day, slot: slots["todo-\(dragging.uuid.uuidString)"] ?? fullWidth)
+            //
+            // Drawn by the *destination* column, not the one the block came
+            // from: dragged onto another day, the whole point of the indicator
+            // is to say which day that is. The origin column asks whether the
+            // block still belongs to it, so exactly one column draws it.
+            if let dragging = draggingTodo, let origin = draggingOriginDay,
+               calendar.isDate(draggedDay(from: origin), inSameDayAs: day) {
+                snapIndicator(
+                    for: dragging,
+                    on: origin,
+                    slot: slots["todo-\(dragging.uuid.uuidString)"] ?? fullWidth
+                )
             }
 
             // The placeholder for a long press in progress, drawn last so
@@ -1591,7 +1608,15 @@ private struct RangedCalendarView: View {
             // Overlapping blocks cascade rather than stacking invisibly; `depth`
             // keeps the later start drawn on top of the one it insets from.
             .frame(width: max(columnWidth * slot.width - 2, 1), alignment: .topLeading)
-            .offset(x: columnWidth * slot.offset, y: liveOffset)
+            // Sideways travel is passed straight through rather than snapped,
+            // so the block stays under the finger between columns; the dashed
+            // indicator is what shows which day it will actually land on. Only
+            // while moving — a resize has no horizontal meaning.
+            .offset(
+                x: columnWidth * slot.offset
+                    + (isDragging && dragMode == .move ? dragHorizontal : 0),
+                y: liveOffset
+            )
             .shadow(color: .black.opacity(isDragging ? 0.2 : 0), radius: isDragging ? 8 : 0)
             // A selected block draws above its neighbours, so its handles and
             // chevron are never buried under the block it overlaps.
@@ -1832,6 +1857,7 @@ private struct RangedCalendarView: View {
                     .onChanged { value in
                         begin(mode(value.startLocation.y), on: todo)
                         dragTranslation = value.translation.height
+                        dragHorizontal = value.translation.width
                     }
                     .onEnded { _ in commitDrag(todo, on: day) }
                     .map { _ in () }
@@ -1851,6 +1877,7 @@ private struct RangedCalendarView: View {
                     guard case .second(_, let drag) = value else { return }
                     begin(.move, on: todo)
                     dragTranslation = drag?.translation.height ?? 0
+                    dragHorizontal = drag?.translation.width ?? 0
                 }
                 .onEnded { _ in commitDrag(todo, on: day) }
                 .map { _ in () }
@@ -1938,6 +1965,7 @@ private struct RangedCalendarView: View {
         defer {
             draggingTodoID = nil
             dragTranslation = 0
+            dragHorizontal = 0
             dragMode = .move
             // The selection `begin` deliberately did not make — see there. In
             // the `defer` rather than at the end, so a drag that moved nothing
@@ -1978,11 +2006,21 @@ private struct RangedCalendarView: View {
         guard let current = todo.assignedDate else { return nil }
 
         let duration = todo.effectiveDuration(defaultDuration: settings.defaultEventDuration)
-        let dayStart = calendar.startOfDay(for: day)
+        // The day the block would land on, which on a week grid is not
+        // necessarily the one it started in — see `draggedDay(from:)`.
+        //
+        // Moving only. Resizing sideways has no meaning: the handles change how
+        // long a block runs, and letting a stray horizontal wobble also throw it
+        // onto Tuesday would be a surprise, not a feature.
+        let targetDay = dragMode == .move ? draggedDay(from: day) : day
+        let dayStart = calendar.startOfDay(for: targetDay)
         let dayEnd = dayStart.addingTimeInterval(24 * 3600)
         let snappedMinutes = snappedMinutes(for: dragTranslation)
+        let changesDay = !calendar.isDate(targetDay, inSameDayAs: day)
 
-        guard snappedMinutes != 0 else { return nil }
+        // A pure sideways drag is a real move even though the time of day is
+        // unchanged, so the "nothing happened" test has to consider both axes.
+        guard snappedMinutes != 0 || changesDay else { return nil }
         let shift = TimeInterval(snappedMinutes * 60)
 
         switch dragMode {
@@ -1991,7 +2029,13 @@ private struct RangedCalendarView: View {
             // midnight, so an overshoot lands at the edge instead of silently
             // doing nothing.
             let lastStart = dayEnd.addingTimeInterval(-duration)
-            let moved = current.addingTimeInterval(shift)
+            // Rebuilt on the target day rather than shifted by whole days: the
+            // time of day is what carries over, and adding 24-hour multiples
+            // would drift across a daylight-saving boundary.
+            let movedInDay = current.addingTimeInterval(shift)
+            let moved = changesDay
+                ? combine(day: dayStart, timeOf: movedInDay)
+                : movedInDay
             let clamped = min(max(moved, dayStart), max(lastStart, dayStart))
             guard clamped != current else { return nil }
             return (clamped, duration)
@@ -2014,10 +2058,60 @@ private struct RangedCalendarView: View {
         }
     }
 
+    /// The day a drag has carried the block to, given the day it started on.
+    ///
+    /// On a single-day grid this is always the day itself: there is nowhere
+    /// sideways to go, and treating a horizontal wobble as a day change would
+    /// silently reschedule work the user only meant to nudge.
+    ///
+    /// On a week grid the columns are all `columnWidth` wide and evenly spaced,
+    /// so how far across the finger has travelled divides straight into a
+    /// number of columns. The result is clamped to the week on screen — the
+    /// grid does not page while a block is held, so there is no way to see, or
+    /// aim at, a day outside it.
+    private func draggedDay(from day: Date) -> Date {
+        guard scale == .week, columnWidth > 0 else { return day }
+
+        let columns = (dragHorizontal / columnWidth).rounded()
+        guard columns != 0 else { return day }
+
+        let days = visibleDays
+        guard let index = days.firstIndex(where: { calendar.isDate($0, inSameDayAs: day) })
+        else { return day }
+
+        let target = min(max(index + Int(columns), 0), days.count - 1)
+        return days[target]
+    }
+
+    /// A date on `day` at the same wall-clock time as `timeOf`.
+    ///
+    /// Used instead of adding whole days so a move across a daylight-saving
+    /// boundary keeps the time the user is looking at: 9am dragged to Sunday is
+    /// 9am on Sunday, not 8am or 10am.
+    private func combine(day: Date, timeOf source: Date) -> Date {
+        let time = calendar.dateComponents([.hour, .minute, .second], from: source)
+        return calendar.date(
+            bySettingHour: time.hour ?? 0,
+            minute: time.minute ?? 0,
+            second: time.second ?? 0,
+            of: day
+        ) ?? day
+    }
+
     /// The block currently in flight, if any.
     private var draggingTodo: Todo? {
         guard let id = draggingTodoID else { return nil }
         return TodoQueries.todo(uuid: id, in: context)
+    }
+
+    /// The day the block in flight started on.
+    ///
+    /// Read from the to-do's own date rather than tracked as drag state,
+    /// because nothing writes that date until the drop: while a drag is in
+    /// flight the stored day is still the one it came from, which is exactly
+    /// what `draggedDay(from:)` needs as its origin.
+    private var draggingOriginDay: Date? {
+        draggingTodo?.assignedDate.map { calendar.startOfDay(for: $0) }
     }
 
     /// The outline showing where a dragged block will snap to.
