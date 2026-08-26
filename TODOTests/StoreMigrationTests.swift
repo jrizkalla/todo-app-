@@ -47,13 +47,24 @@ struct StoreMigrationTests {
     @Test func v1StoreWithASavedSummaryOpensUnderV2() throws {
         try withTemporaryStore { url in
             // Write a V1 store: todos, a space, and the summary that blocks it.
+            //
+            // The *frozen* classes, deliberately. A store opened under
+            // `SchemaV1` holds V1's entities, so inserting a live `Todo` into
+            // it traps with "Failed to cast model" — the two same-named classes
+            // are different types to Swift even though CoreData sees one
+            // entity. Writing through the frozen copies is what makes this a
+            // test of a genuinely old store rather than of today's model.
             do {
                 let v1 = try container(at: url, schema: Schema(SchemaV1.models))
                 let context = ModelContext(v1)
-                let space = Space(name: "Work", symbolName: "briefcase")
+                let space = SchemaV2.Space()
+                space.name = "Work"
+                space.symbolName = "briefcase"
                 context.insert(space)
                 for title in ["Alpha", "Beta", "Gamma"] {
-                    context.insert(Todo(title: title))
+                    let todo = SchemaV2.Todo()
+                    todo.title = title
+                    context.insert(todo)
                 }
                 context.insert(SavedAISummary(summary: .init(
                     quickSummary: "A busy day",
@@ -62,17 +73,21 @@ struct StoreMigrationTests {
                 try context.save()
             }
 
-            // Reopen under V2 through the plan.
-            let v2 = try container(
+            // Reopen under the *live* schema through the plan, which is what
+            // the app does — the walk is V1 -> V2 -> V3 in one open.
+            let migrated = try container(
                 at: url,
-                schema: Schema(SchemaV2.models),
+                schema: Schema(AppSchema.models),
                 plan: AppMigrationPlan.self
             )
-            let context = ModelContext(v2)
+            let context = ModelContext(migrated)
 
             // The user's data is what matters: it must all still be there.
             let todos = try context.fetch(FetchDescriptor<Todo>())
             #expect(Set(todos.map(\.title)) == ["Alpha", "Beta", "Gamma"])
+            // And it must arrive as ordinary, non-recurring to-dos: the new
+            // columns are optional, so rows that predate them have no rule.
+            #expect(todos.allSatisfy { !$0.isRecurrenceTemplate })
 
             let spaces = try context.fetch(FetchDescriptor<Space>())
             #expect(spaces.map(\.name) == ["Work"])
@@ -93,12 +108,12 @@ struct StoreMigrationTests {
                 try context.save()
             }
 
-            let v2 = try container(
+            let migrated = try container(
                 at: url,
-                schema: Schema(SchemaV2.models),
+                schema: Schema(AppSchema.models),
                 plan: AppMigrationPlan.self
             )
-            let summaries = try ModelContext(v2).fetch(FetchDescriptor<SavedAISummary>())
+            let summaries = try ModelContext(migrated).fetch(FetchDescriptor<SavedAISummary>())
             #expect(summaries.isEmpty)
         }
     }
@@ -112,12 +127,12 @@ struct StoreMigrationTests {
             fingerprint.todos = ["scheduled|todo|Alpha"]
 
             do {
-                let v2 = try container(
+                let live = try container(
                     at: url,
-                    schema: Schema(SchemaV2.models),
+                    schema: Schema(AppSchema.models),
                     plan: AppMigrationPlan.self
                 )
-                let context = ModelContext(v2)
+                let context = ModelContext(live)
                 context.insert(SavedAISummary(
                     summary: .init(quickSummary: "Done"),
                     fingerprint: fingerprint
@@ -127,7 +142,7 @@ struct StoreMigrationTests {
 
             let reopened = try container(
                 at: url,
-                schema: Schema(SchemaV2.models),
+                schema: Schema(AppSchema.models),
                 plan: AppMigrationPlan.self
             )
             let saved = try ModelContext(reopened).fetch(FetchDescriptor<SavedAISummary>())
@@ -209,16 +224,91 @@ struct StoreMigrationTests {
         #expect(v1 == live)
     }
 
+    /// The V2 -> V3 stage must actually be reachable.
+    ///
+    /// The failure this guards against is silent: if `SchemaV2` named the live
+    /// `Todo` instead of a frozen copy, V2 and V3 would hash identically, the
+    /// stage would never fire, and a real store would fail to open with "Cannot
+    /// use staged migration with an unknown model version". Comparing the two
+    /// versions' `Todo` hashes is what proves the freeze is doing its job.
+    @Test func theV2AndV3TodoShapesDiffer() throws {
+        guard
+            let v2 = NSManagedObjectModel.makeManagedObjectModel(for: SchemaV2.models),
+            let v3 = NSManagedObjectModel.makeManagedObjectModel(for: SchemaV3.models)
+        else {
+            Issue.record("Could not build a managed object model")
+            return
+        }
+
+        #expect(
+            v2.entityVersionHashesByName["Todo"] != v3.entityVersionHashesByName["Todo"],
+            """
+            SchemaV2.Todo hashes the same as the live Todo, so the V2 -> V3 \
+            stage will never run. The frozen copy has drifted into matching \
+            the live model.
+            """
+        )
+        // The entities that did not change must still hash identically, or the
+        // frozen copies have drifted in some way that was not intended.
+        for name in ["Space", "Reminder", "SavedAISummary"] {
+            #expect(
+                v2.entityVersionHashesByName[name] == v3.entityVersionHashesByName[name],
+                "\(name) changed shape between V2 and V3 without a migration stage"
+            )
+        }
+    }
+
+    /// A to-do carrying a recurrence rule survives a write and reopen.
+    ///
+    /// The columns are new in V3, so this is what proves they are actually
+    /// persisted rather than living only in memory — a projection over stored
+    /// properties is easy to get wrong in a way that only shows up on reopen.
+    @Test func aRecurrenceRuleSurvivesAWriteAndReopen() throws {
+        try withTemporaryStore { url in
+            let rule = RecurrenceRule(
+                mode: .afterCompletionOnSchedule,
+                frequency: .weekly,
+                interval: 2,
+                weekdays: [2, 5],
+                timeOfDayMinutes: 15 * 60,
+                status: .paused
+            )
+
+            do {
+                let live = try container(
+                    at: url,
+                    schema: Schema(AppSchema.models),
+                    plan: AppMigrationPlan.self
+                )
+                let context = ModelContext(live)
+                let todo = Todo(title: "Water the plants")
+                todo.recurrenceRule = rule
+                context.insert(todo)
+                try context.save()
+            }
+
+            let reopened = try container(
+                at: url,
+                schema: Schema(AppSchema.models),
+                plan: AppMigrationPlan.self
+            )
+            let todos = try ModelContext(reopened).fetch(FetchDescriptor<Todo>())
+            #expect(todos.count == 1)
+            #expect(todos.first?.recurrenceRule == rule)
+            #expect(todos.first?.isRecurrenceTemplate == true)
+        }
+    }
+
     /// A store already at V2 opens without the plan doing anything to it.
     @Test func anAlreadyMigratedStoreOpensUnchanged() throws {
         try withTemporaryStore { url in
             do {
-                let v2 = try container(
+                let live = try container(
                     at: url,
-                    schema: Schema(SchemaV2.models),
+                    schema: Schema(AppSchema.models),
                     plan: AppMigrationPlan.self
                 )
-                let context = ModelContext(v2)
+                let context = ModelContext(live)
                 context.insert(Todo(title: "Kept"))
                 context.insert(SavedAISummary(summary: .init(quickSummary: "Kept too")))
                 try context.save()
@@ -226,7 +316,7 @@ struct StoreMigrationTests {
 
             let reopened = try container(
                 at: url,
-                schema: Schema(SchemaV2.models),
+                schema: Schema(AppSchema.models),
                 plan: AppMigrationPlan.self
             )
             let context = ModelContext(reopened)

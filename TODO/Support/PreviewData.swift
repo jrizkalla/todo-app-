@@ -120,6 +120,26 @@ enum PreviewData {
         let passport = Todo(title: "Renew passport", dueDate: day(-3))
         context.insert(passport)
 
+        // A live recurring series, so the running app shows a real occurrence
+        // with the recurring glyph and the schedule chip rather than needing
+        // one to be set up by hand first.
+        let plants = Todo(title: "Water the plants", assignedDate: today)
+        context.insert(plants)
+        plants.move(toSpace: home)
+        plants.recurrenceRule = RecurrenceRule(
+            mode: .onSchedule, frequency: .weekly, interval: 1, weekdays: [2, 5]
+        )
+        RecurrenceEngine(context: context).generateInstances(for: plants)
+
+        // And a paused one, which the spec asks to surface in Anytime marked as
+        // a schedule rather than a task.
+        let filters = Todo(title: "Replace the air filters")
+        context.insert(filters)
+        filters.recurrenceRule = RecurrenceRule(
+            mode: .afterCompletion, frequency: .monthly, interval: 3, status: .paused
+        )
+        filters.refileForCurrentScheduling()
+
         // Inbox: one plain, one imported and still unseen.
         let milk = Todo(title: "Buy oat milk")
         context.insert(milk)

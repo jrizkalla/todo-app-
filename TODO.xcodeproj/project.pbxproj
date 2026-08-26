@@ -55,6 +55,7 @@
 			membershipExceptions = (
 				Models/Enums.swift,
 				"Models/ModelContainer+App.swift",
+				Models/Recurrence.swift,
 				Models/Reminder.swift,
 				Models/SavedAISummary.swift,
 				Models/SchemaVersions.swift,

@@ -77,6 +77,50 @@ struct TodoQueriesTests {
         #expect(TodoQueries.today([overdue], calendar: calendar).map(\.title) == ["Overdue"])
     }
 
+    /// Hiding overdue work narrows Today to the day itself.
+    @Test func todayCanExcludeOverdueWork() throws {
+        let context = try makeContext()
+        let overdue = Todo(title: "Overdue", assignedDate: day(offset: -3))
+        let todayTodo = Todo(title: "Today", assignedDate: day(offset: 0))
+        [overdue, todayTodo].forEach(context.insert)
+
+        let shown = TodoQueries.today(
+            [overdue, todayTodo], calendar: calendar, includeOverdue: true
+        )
+        #expect(shown.map(\.title).sorted() == ["Overdue", "Today"])
+
+        let hidden = TodoQueries.today(
+            [overdue, todayTodo], calendar: calendar, includeOverdue: false
+        )
+        #expect(hidden.map(\.title) == ["Today"])
+    }
+
+    /// Overdue work is shown unless asked otherwise — the default the whole
+    /// feature turns on.
+    @Test func todayShowsOverdueByDefault() throws {
+        let context = try makeContext()
+        let overdue = Todo(title: "Overdue", assignedDate: day(offset: -3))
+        context.insert(overdue)
+
+        #expect(TodoQueries.today([overdue], calendar: calendar).map(\.title) == ["Overdue"])
+    }
+
+    /// The same switch applies to This Week, which reaches backwards too.
+    @Test func thisWeekCanExcludeOverdueWork() throws {
+        let context = try makeContext()
+        // Well before the current week, so it is overdue whatever day it is.
+        let overdue = Todo(title: "Overdue", assignedDate: day(offset: -30))
+        context.insert(overdue)
+
+        #expect(
+            TodoQueries.thisWeek([overdue], calendar: calendar, includeOverdue: true)
+                .map(\.title) == ["Overdue"]
+        )
+        #expect(
+            TodoQueries.thisWeek([overdue], calendar: calendar, includeOverdue: false).isEmpty
+        )
+    }
+
     /// A due date alone puts an item in Today.
     @Test func todayIncludesItemsDueToday() throws {
         let context = try makeContext()
@@ -203,8 +247,10 @@ struct TodoQueriesTests {
 
     @Test func overdueListsPastDueUnresolvedWork() throws {
         let context = try makeContext()
-        let late = Todo(title: "Late", dueDate: Date().addingTimeInterval(-7200))
-        let future = Todo(title: "Future", dueDate: Date().addingTimeInterval(7200))
+        // Both carry a time, which is what makes "two hours ago" mean late
+        // rather than "due sometime today".
+        let late = Todo(title: "Late", dueDate: Date().addingTimeInterval(-7200), dueHasTime: true)
+        let future = Todo(title: "Future", dueDate: Date().addingTimeInterval(7200), dueHasTime: true)
         [late, future].forEach(context.insert)
 
         #expect(TodoQueries.overdue([late, future]).map(\.title) == ["Late"])
@@ -667,6 +713,25 @@ struct TodoQueryDescriptorTests {
 
         let today = TodoQueries.todos(for: .today, in: context, calendar: calendar)
         #expect(today.contains { $0.title == "Overdue" })
+    }
+
+    /// The fetch path honours the overdue switch, and agrees with the array
+    /// path — the two encode the same rule twice, so they are checked together.
+    @Test func fetchedTodayCanExcludeOverdueWork() throws {
+        let context = try makeContext()
+        _ = populate(context)
+
+        let shown = TodoQueries.todos(
+            for: .today, in: context, calendar: calendar, includeOverdue: true
+        )
+        #expect(shown.contains { $0.title == "Overdue" })
+
+        let hidden = TodoQueries.todos(
+            for: .today, in: context, calendar: calendar, includeOverdue: false
+        )
+        #expect(!hidden.contains { $0.title == "Overdue" })
+        // Only the overdue row goes: today's own work is untouched.
+        #expect(hidden.contains { $0.title == "Today" })
     }
 
     /// Resolved work is excluded unless asked for, and then only on the day it

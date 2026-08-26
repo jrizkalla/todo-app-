@@ -39,6 +39,16 @@ extension TodoStore {
         let resolvedAt: Date?
         let spaceID: UUID?
         let parentID: UUID?
+        /// The recurrence schedule, so undoing a change to one puts the whole
+        /// rule back rather than leaving a half-edited series.
+        ///
+        /// `recurrenceRule` is a projection over several columns, so restoring
+        /// it restores all of them at once — but `recurrenceNextDate` is not
+        /// part of the rule and has to be carried separately, or an undone
+        /// pause would resume pointing at the wrong date.
+        let recurrenceRule: RecurrenceRule?
+        let recurrenceNextDate: Date?
+        let recurrenceTemplateID: UUID?
 
         @MainActor
         init(_ todo: Todo) {
@@ -58,6 +68,9 @@ extension TodoStore {
             resolvedAt = todo.resolvedAt
             spaceID = todo.space?.uuid
             parentID = todo.parent?.uuid
+            recurrenceRule = todo.recurrenceRule
+            recurrenceNextDate = todo.recurrenceNextDate
+            recurrenceTemplateID = todo.recurrenceTemplate?.uuid
         }
 
         /// Write these fields back onto a live to-do.
@@ -84,6 +97,10 @@ extension TodoStore {
             todo.resolvedAt = resolvedAt
             todo.space = spaceID.flatMap { TodoQueries.space(uuid: $0, in: context) }
             todo.parent = parentID.flatMap { TodoQueries.todo(uuid: $0, in: context) }
+            todo.recurrenceRule = recurrenceRule
+            todo.recurrenceNextDate = recurrenceNextDate
+            todo.recurrenceTemplate = recurrenceTemplateID
+                .flatMap { TodoQueries.todo(uuid: $0, in: context) }
             todo.touch()
         }
 

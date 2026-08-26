@@ -11,6 +11,8 @@ struct SchedulePickerView: View {
     let onPick: (Date?, _ hasTime: Bool) -> Void
     let onAddReminder: () -> Void
     let onDismiss: () -> Void
+    /// Opens the recurrence panel. Nil where there is nowhere to open it.
+    var onRepeat: (() -> Void)?
 
     /// Whether to show the typed-date field and focus it on open.
     ///
@@ -32,7 +34,7 @@ struct SchedulePickerView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            header
+            SchedulePickerParts.Header(title: "When?", onDismiss: onDismiss)
 
             if acceptsTypedDate {
                 QuickDateField(onCommit: { date, hasTime in
@@ -82,6 +84,23 @@ struct SchedulePickerView: View {
             }
             .buttonStyle(.plain)
 
+            // "When?" and "how often?" are the same decision seen twice, so the
+            // way to the repeat panel is here rather than only in the editor —
+            // the swipe that schedules something is also where a user realises
+            // it should recur.
+            if let onRepeat {
+                Button(action: onRepeat) {
+                    Label(
+                        todo.effectiveRecurrenceRule.map { "Repeats \($0.summary)" } ?? "Repeat…",
+                        systemImage: "arrow.trianglehead.2.clockwise.rotate.90"
+                    )
+                    .font(.callout)
+                    .foregroundStyle(todo.isRecurring ? Color.accentColor : .secondary)
+                    .padding(.vertical, 8)
+                }
+                .buttonStyle(.plain)
+            }
+
             clearButton
         }
         .padding(16)
@@ -91,25 +110,8 @@ struct SchedulePickerView: View {
         }
     }
 
-    private var header: some View {
-        HStack {
-            Spacer()
-            Text("When?")
-                .font(.headline)
-            Spacer()
-        }
-        .overlay(alignment: .trailing) {
-            Button(action: onDismiss) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Close")
-        }
-        .padding(.bottom, 12)
-    }
-
+    /// Thin wrapper over the shared row, keeping this file's call sites
+    /// unchanged while the drawing lives in `SchedulePickerParts`.
     private func shortcut(
         title: String,
         symbol: String,
@@ -117,26 +119,13 @@ struct SchedulePickerView: View {
         isSelected: Bool,
         action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                Image(systemName: symbol)
-                    .foregroundStyle(tint)
-                    .frame(width: 22)
-
-                Text(title)
-                    .foregroundStyle(.primary)
-
-                Spacer()
-
-                if isSelected {
-                    Image(systemName: "checkmark")
-                        .foregroundStyle(Color.accentColor)
-                }
-            }
-            .padding(.vertical, 8)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
+        SchedulePickerParts.Shortcut(
+            title: title,
+            symbol: symbol,
+            tint: tint,
+            isSelected: isSelected,
+            action: action
+        )
     }
 
     // MARK: Month grid
@@ -231,20 +220,9 @@ struct SchedulePickerView: View {
     }
 
     private var clearButton: some View {
-        Button {
+        SchedulePickerParts.DestructiveButton(title: "Clear") {
             onPick(nil, false)
-        } label: {
-            Text("Clear")
-                .font(.headline)
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 12)
-                .background {
-                    Capsule().fill(Color.red.opacity(0.85))
-                }
         }
-        .buttonStyle(.plain)
-        .padding(.top, 8)
     }
 
     // MARK: Dates

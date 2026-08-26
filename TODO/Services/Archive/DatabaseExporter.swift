@@ -163,6 +163,40 @@ struct DatabaseExporter {
             pairs.append(("resolvedAt", .scalar(YAMLDateFormats.string(from: resolvedAt))))
         }
 
+        // Recurrence, written only when the to-do actually has a schedule, so
+        // the overwhelming majority of records are unchanged in size and shape.
+        // Each column is written under its own key rather than as a nested map:
+        // the format's whole premise is that a record is hand-editable, and a
+        // flat `recurrenceFrequency: weekly` is far easier to correct than a
+        // nested structure.
+        if let rule = todo.recurrenceRule {
+            pairs.append(("recurrenceMode", .scalar(rule.mode.rawValue)))
+            pairs.append(("recurrenceFrequency", .scalar(rule.frequency.rawValue)))
+            pairs.append(("recurrenceInterval", .scalar(String(rule.interval))))
+            pairs.append(("recurrenceStatus", .scalar(rule.status.rawValue)))
+
+            if !rule.weekdays.isEmpty {
+                pairs.append((
+                    "recurrenceWeekdays",
+                    .scalar(rule.weekdays.sorted().map(String.init).joined(separator: ","))
+                ))
+            }
+            if let dayOfMonth = rule.dayOfMonth {
+                pairs.append(("recurrenceDayOfMonth", .scalar(String(dayOfMonth))))
+            }
+            if let minutes = rule.timeOfDayMinutes {
+                pairs.append(("recurrenceTimeOfDayMinutes", .scalar(String(minutes))))
+            }
+            if let endDate = rule.endDate {
+                pairs.append((
+                    "recurrenceEndDate", .scalar(YAMLDateFormats.string(from: endDate))
+                ))
+            }
+        }
+        if let nextDate = todo.recurrenceNextDate {
+            pairs.append(("recurrenceNextDate", .scalar(YAMLDateFormats.string(from: nextDate))))
+        }
+
         // Relationships by UUID. The inverse sides (`subtasks`, `reminders`) are
         // deliberately not written: they are derivable from the forward edge,
         // and writing both invites the two to disagree in a hand-edited file.
@@ -171,6 +205,11 @@ struct DatabaseExporter {
         }
         if let parentUUID = todo.parent?.uuid {
             pairs.append(("parent", .scalar(parentUUID.uuidString)))
+        }
+        // The forward edge only, matching `parent` above: `recurrenceInstances`
+        // is derivable from it.
+        if let templateUUID = todo.recurrenceTemplate?.uuid {
+            pairs.append(("recurrenceTemplate", .scalar(templateUUID.uuidString)))
         }
 
         return YAMLWriter.document(pairs)

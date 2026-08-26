@@ -285,12 +285,38 @@ struct ModelTests {
         let context = try makeContext()
         let todo = Todo(title: "Late")
         context.insert(todo)
+        // An hour ago, *with* a time: a deadline carrying a time is late as
+        // soon as it passes. Without `dueHasTime` this would be a deadline of
+        // "today", which is not late until today is over.
         todo.dueDate = Date().addingTimeInterval(-3600)
+        todo.dueHasTime = true
 
         #expect(todo.isOverdue)
 
         todo.setState(.completed)
         #expect(todo.isOverdue == false)
+    }
+
+    /// A deadline with no time is a *day*, so it is not late until that day is
+    /// over — otherwise everything due today reads as overdue from midnight.
+    @Test func anUntimedDeadlineIsNotOverdueOnItsOwnDay() throws {
+        let context = try makeContext()
+        let calendar = Calendar.current
+        let todo = Todo(title: "Due today")
+        context.insert(todo)
+
+        // Nine this morning, with no time attached: still "today".
+        todo.dueDate = calendar.date(
+            bySettingHour: 9, minute: 0, second: 0, of: Date()
+        )
+        todo.dueHasTime = false
+
+        let thisAfternoon = calendar.date(bySettingHour: 15, minute: 0, second: 0, of: Date())!
+        #expect(todo.isOverdue(now: thisAfternoon) == false)
+
+        // Tomorrow, the same deadline is late.
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: thisAfternoon)!
+        #expect(todo.isOverdue(now: tomorrow))
     }
 
     /// Deleting a parent removes its subtasks via the cascade rule.

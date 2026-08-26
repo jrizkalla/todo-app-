@@ -150,6 +150,10 @@ struct SettingsView: View {
             Section("TODOs") {
                 Toggle("Show completed TODOs", isOn: $settings.showResolved)
 
+                // The default for Today and This Week. Each list can still
+                // override it from its own toolbar for the session.
+                Toggle("Show overdue TODOs in Today", isOn: $settings.showOverdue)
+
                 // Only offered where the panel can actually appear — a phone
                 // never shows it, so the switch would do nothing there.
                 if isWideLayout {

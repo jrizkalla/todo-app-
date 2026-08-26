@@ -64,6 +64,15 @@ extension Array where Element == Todo {
         }
     }
 
+    /// Drop recurrence templates, whose instances are what the lists show.
+    ///
+    /// The in-memory twin of `TodoQueries.notATemplate`; the two must agree, or
+    /// the widget and the previews would show a schedule as though it were a
+    /// task.
+    func filterTemplates() -> Self {
+        self.filter { !$0.isRecurrenceTemplate }
+    }
+
     func filterCycles() -> Self {
         let uuidSet = Set(self.map { $0.uuid })
         return self.filter { todo in
@@ -163,6 +172,21 @@ enum TodoQueries {
         }
     }
 
+    /// Recurrence templates are not to-dos the user does; they are schedules.
+    ///
+    /// The occurrence generated from a template is what appears in the dated
+    /// lists, so admitting the template as well would show every recurring task
+    /// twice — once as the thing to do today, and once as the rule that says to
+    /// do it. `recurrenceModeRaw` is the stored marker; `#Predicate` cannot read
+    /// the `isRecurrenceTemplate` computed property.
+    ///
+    /// Anytime deliberately does *not* use this: a paused or cancelled series
+    /// has no instance standing in for it, and the spec asks for the template
+    /// itself to surface there so it can be found and resumed.
+    private static var notATemplate: Predicate<Todo> {
+        #Predicate<Todo> { todo in todo.recurrenceModeRaw == nil }
+    }
+
     /// The resolved half of the visibility rules, as one clause.
     ///
     /// Combines `filter(includeResolved:)` with `filterResolved()`: finished
@@ -252,6 +276,7 @@ enum TodoQueries {
     ) -> FetchDescriptor<Todo> {
         let inboxRaw = Bucket.inbox.rawValue
         let focus = notHiddenByFocus
+        let template = notATemplate
         let visible = resolvedVisible(
             includeResolved: includeResolved, now: now, calendar: calendar
         )
@@ -261,6 +286,7 @@ enum TodoQueries {
                 focus.evaluate(todo)
                     && todo.bucketRaw == inboxRaw
                     && !todo.isProject
+                    && template.evaluate(todo)
                     && visible.evaluate(todo)
             },
         )
@@ -282,16 +308,27 @@ enum TodoQueries {
     static func todayDescriptor(
         calendar: Calendar = .current,
         now: Date = Date(),
-        includeResolved: Bool = false
+        includeResolved: Bool = false,
+        includeOverdue: Bool = true
     ) -> FetchDescriptor<Todo> {
-        let endOfToday = calendar.startOfDay(for: now).addingTimeInterval(24 * 3600)
+        let startOfToday = calendar.startOfDay(for: now)
+        let endOfToday = startOfToday.addingTimeInterval(24 * 3600)
         let focus = notHiddenByFocus
-        let window = datedBetween(calendar.startOfDay(for: now), endOfToday)
+        // Open-ended backwards by default, which is what makes Today the list
+        // overdue work cannot fall out of. A day-bounded window drops anything
+        // dated before this morning — the exact items that most need to be
+        // seen — so that shape is used only when the user has asked to hide
+        // overdue work.
+        let window = includeOverdue
+            ? datedBefore(endOfToday)
+            : datedBetween(startOfToday, endOfToday)
         let state = unresolvedUnless(includeResolved)
+        let template = notATemplate
 
         var descriptor = FetchDescriptor<Todo>(
             predicate: #Predicate<Todo> { todo in
                 focus.evaluate(todo) && window.evaluate(todo) && state.evaluate(todo)
+                    && template.evaluate(todo)
             }
         )
         descriptor.prefetchRelated()
@@ -315,10 +352,12 @@ enum TodoQueries {
         let focus = notHiddenByFocus
         let window = datedBetween(startOfTomorrow, endOfTomorrow)
         let state = unresolvedUnless(includeResolved)
+        let template = notATemplate
 
         var descriptor = FetchDescriptor<Todo>(
             predicate: #Predicate<Todo> { todo in
                 focus.evaluate(todo) && window.evaluate(todo) && state.evaluate(todo)
+                    && template.evaluate(todo)
             }
         )
         descriptor.prefetchRelated()
@@ -333,17 +372,24 @@ enum TodoQueries {
     static func thisWeekDescriptor(
         calendar: Calendar = .current,
         now: Date = Date(),
-        includeResolved: Bool = false
+        includeResolved: Bool = false,
+        includeOverdue: Bool = true
     ) -> FetchDescriptor<Todo>? {
         guard let week = calendar.dateInterval(of: .weekOfYear, for: now) else { return nil }
         let weekEnd = week.end
         let focus = notHiddenByFocus
         let state = unresolvedUnless(includeResolved)
-        let window = datedBefore(weekEnd)
+        // Same rule as Today: open-ended backwards unless overdue work is
+        // hidden, in which case the window starts where the week does.
+        let window = includeOverdue
+            ? datedBefore(weekEnd)
+            : datedBetween(week.start, weekEnd)
+        let template = notATemplate
 
         var descriptor = FetchDescriptor<Todo>(
             predicate: #Predicate<Todo> { todo in
                 focus.evaluate(todo) && window.evaluate(todo) && state.evaluate(todo)
+                    && template.evaluate(todo)
             }
         )
         descriptor.prefetchRelated()
@@ -362,12 +408,21 @@ enum TodoQueries {
         let visible = resolvedVisible(
             includeResolved: includeResolved, now: now, calendar: calendar
         )
+        // Anytime is the one list that shows a template — but only a *dormant*
+        // one. An active series already has an occurrence standing in for it
+        // somewhere, so admitting the template too would list the same
+        // recurring task twice.
+        let activeRaw = RecurrenceStatus.active.rawValue
+        let dormantOrPlain = #Predicate<Todo> { todo in
+            todo.recurrenceModeRaw == nil || todo.recurrenceStatusRaw != activeRaw
+        }
 
         var descriptor = FetchDescriptor<Todo>(
             predicate: #Predicate<Todo> { todo in
                 focus.evaluate(todo)
                     && todo.bucketRaw == anytimeRaw
                     && !todo.isProject
+                    && dormantOrPlain.evaluate(todo)
                     && visible.evaluate(todo)
             }
         )
@@ -501,12 +556,14 @@ enum TodoQueries {
         guard let end = calendar.date(byAdding: .day, value: 1, to: start) else { return nil }
         let focus = notHiddenByFocus
         let unresolved = unresolvedUnless(false)
+        let template = notATemplate
 
         var descriptor = FetchDescriptor<Todo>(
             predicate: #Predicate<Todo> { todo in
                 focus.evaluate(todo)
                     && (todo.assignedDate.flatMap { $0 >= start && $0 < end } ?? false)
                     && unresolved.evaluate(todo)
+                    && template.evaluate(todo)
             }
         )
         descriptor.prefetchRelated()
@@ -537,10 +594,14 @@ enum TodoQueries {
             $0.space == nil || $0.space?.isHiddenByFocus == false
         }
         let unresolved = #Predicate<Todo> { !resolved.contains($0.stateRaw) }
+        // A template is a schedule, not a block of time — its instances are
+        // what the grid draws.
+        let template = #Predicate<Todo> { $0.recurrenceModeRaw == nil }
 
         var descriptor = FetchDescriptor<Todo>(
             predicate: #Predicate<Todo> { todo in
                 dated.evaluate(todo) && focus.evaluate(todo) && unresolved.evaluate(todo)
+                    && template.evaluate(todo)
             }
         )
         descriptor.prefetchRelated()
@@ -560,10 +621,12 @@ enum TodoQueries {
             $0.space == nil || $0.space?.isHiddenByFocus == false
         }
         let unresolved = #Predicate<Todo> { !resolved.contains($0.stateRaw) }
+        let template = #Predicate<Todo> { $0.recurrenceModeRaw == nil }
 
         var descriptor = FetchDescriptor<Todo>(
             predicate: #Predicate<Todo> { todo in
                 dated.evaluate(todo) && focus.evaluate(todo) && unresolved.evaluate(todo)
+                    && template.evaluate(todo)
             }
         )
         descriptor.prefetchRelated()
@@ -681,10 +744,12 @@ enum TodoQueries {
     static func unscheduledDescriptor(includeResolved: Bool = false) -> FetchDescriptor<Todo> {
         let focus = notHiddenByFocus
         let state = unresolvedUnless(includeResolved)
+        let template = notATemplate
 
         var descriptor = FetchDescriptor<Todo>(
             predicate: #Predicate<Todo> { todo in
                 focus.evaluate(todo) && todo.assignedDate == nil && state.evaluate(todo)
+                    && template.evaluate(todo)
             }
         )
         descriptor.sortBy = dateThenOrderSort
@@ -892,18 +957,29 @@ enum TodoQueries {
         for destination: ListDestination,
         calendar: Calendar = .current,
         now: Date = Date(),
-        includeResolved: Bool = false
+        includeResolved: Bool = false,
+        includeOverdue: Bool = true
     ) -> FetchDescriptor<Todo> {
         switch destination {
         case .inbox:
             return inboxDescriptor(includeResolved: includeResolved, now: now, calendar: calendar)
         case .today:
-            return todayDescriptor(calendar: calendar, now: now, includeResolved: includeResolved)
+            return todayDescriptor(
+                calendar: calendar,
+                now: now,
+                includeResolved: includeResolved,
+                includeOverdue: includeOverdue
+            )
         case .tomorrow:
+            // Tomorrow has no backward reach to begin with — overdue work
+            // belongs in Today — so the preference does not apply here.
             return tomorrowDescriptor(calendar: calendar, now: now, includeResolved: includeResolved)
         case .thisWeek:
             return thisWeekDescriptor(
-                calendar: calendar, now: now, includeResolved: includeResolved
+                calendar: calendar,
+                now: now,
+                includeResolved: includeResolved,
+                includeOverdue: includeOverdue
             ) ?? matchNothingDescriptor
         case .anytime:
             return anytimeDescriptor(includeResolved: includeResolved, now: now, calendar: calendar)
@@ -971,14 +1047,16 @@ enum TodoQueries {
         in context: ModelContext,
         calendar: Calendar = .current,
         now: Date = Date(),
-        includeResolved: Bool = false
+        includeResolved: Bool = false,
+        includeOverdue: Bool = true
     ) -> [Todo] {
         let fetched = fetch(
             descriptor(
                 for: destination,
                 calendar: calendar,
                 now: now,
-                includeResolved: includeResolved
+                includeResolved: includeResolved,
+                includeOverdue: includeOverdue
             ),
             in: context
         )
@@ -1130,6 +1208,7 @@ enum TodoQueries {
     static func inbox(_ todos: [Todo], includeResolved: Bool = false) -> [Todo] {
         topLevel(todos)
             .filter { $0.bucket == .inbox && !$0.isProject }
+            .filterTemplates()
             .filter(includeResolved: includeResolved)
             .filterResolved()
             .filterCycles()
@@ -1141,16 +1220,27 @@ enum TodoQueries {
     ///
     /// Overdue work stays in Today so it cannot be missed by moving past its
     /// date.
-    static func today(_ todos: [Todo], calendar: Calendar = .current, now: Date = Date(), includeResolved: Bool = false) -> [Todo] {
-        let startOfDay = calendar.startOfDay(for: now)
-        let endOfToday = startOfDay.addingTimeInterval(24 * 3600)
+    static func today(
+        _ todos: [Todo],
+        calendar: Calendar = .current,
+        now: Date = Date(),
+        includeResolved: Bool = false,
+        includeOverdue: Bool = true
+    ) -> [Todo] {
+        let startOfToday = calendar.startOfDay(for: now)
+        let endOfToday = startOfToday.addingTimeInterval(24 * 3600)
+        // Matching `todayDescriptor`: open-ended backwards unless overdue work
+        // is hidden. The two paths answer the same question and must not
+        // disagree.
+        let lowerBound = includeOverdue ? Date.distantPast : startOfToday
 
         return topLevel(todos)
             .filter { todo in
-                if let assigned = todo.assignedDate, startOfDay <= assigned && assigned < endOfToday { return true }
-                if let due = todo.dueDate, startOfDay <= due && due < endOfToday { return true }
+                if let assigned = todo.assignedDate, assigned >= lowerBound, assigned < endOfToday { return true }
+                if let due = todo.dueDate, due >= lowerBound, due < endOfToday { return true }
                 return false
             }
+            .filterTemplates()
             .filter(includeResolved: includeResolved)
             .filterCycles()
             .sorted(by: sortByDateThenOrder)
@@ -1172,6 +1262,7 @@ enum TodoQueries {
                 if let due = todo.dueDate, due >= startOfTomorrow, due < endOfTomorrow { return true }
                 return false
             }
+            .filterTemplates()
             .filter(includeResolved: includeResolved)
             .filterCycles()
             .sorted(by: sortByDateThenOrder)
@@ -1195,15 +1286,23 @@ enum TodoQueries {
     }
 
     /// Items landing in the current week, by the user's week-start preference.
-    static func thisWeek(_ todos: [Todo], calendar: Calendar = .current, now: Date = Date(), includeResolved: Bool = false) -> [Todo] {
+    static func thisWeek(
+        _ todos: [Todo],
+        calendar: Calendar = .current,
+        now: Date = Date(),
+        includeResolved: Bool = false,
+        includeOverdue: Bool = true
+    ) -> [Todo] {
         guard let week = calendar.dateInterval(of: .weekOfYear, for: now) else { return [] }
+        let lowerBound = includeOverdue ? Date.distantPast : week.start
 
         return topLevel(todos)
             .filter { todo in
-                if let assigned = todo.assignedDate, assigned < week.end { return true }
-                if let due = todo.dueDate, due < week.end { return true }
+                if let assigned = todo.assignedDate, assigned >= lowerBound, assigned < week.end { return true }
+                if let due = todo.dueDate, due >= lowerBound, due < week.end { return true }
                 return false
             }
+            .filterTemplates()
             .filter(includeResolved: includeResolved)
             .filterCycles()
             .sorted(by: sortByDateThenOrder)
@@ -1213,6 +1312,9 @@ enum TodoQueries {
     static func anytime(_ todos: [Todo], includeResolved: Bool = false) -> [Todo] {
         topLevel(todos)
             .filter { $0.bucket == .anytime && !$0.isProject }
+            // A dormant series shows itself here; an active one is represented
+            // by its current instance instead. See `anytimeDescriptor`.
+            .filter { !$0.isRecurrenceTemplate || $0.isDormantRecurrenceTemplate }
             .filter(includeResolved: includeResolved)
             .filterResolved()
             .filterCycles()

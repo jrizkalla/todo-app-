@@ -24,6 +24,8 @@ struct TodoDetailView: View {
     /// Set while confirming deletion, which also takes any subtasks with it.
     @State private var isConfirmingDelete = false
     @State private var isAddingExistingSubtask = false
+    /// Set while the recurrence panel is presented over the editor.
+    @State private var isEditingRecurrence = false
     /// Raised when completing this to-do is blocked by unfinished subtasks.
     @State private var pendingCascade: PendingCascade?
     @FocusState private var focusedField: Field?
@@ -77,6 +79,8 @@ struct TodoDetailView: View {
             Section {
                 DurationRow(duration: $todo.duration) { store.save() }
             }
+
+            RecurrenceSection(todo: todo) { isEditingRecurrence = true }
 
             Section("Status") {
                 Picker("Status", selection: Binding(
@@ -180,6 +184,21 @@ struct TodoDetailView: View {
                 }
                 Button("Keep Subtasks", role: .cancel) { pendingCascade = nil }
             }
+        }
+        .sheet(isPresented: $isEditingRecurrence) {
+            RecurrencePickerView(
+                todo: todo,
+                onPick: { rule in
+                    store.setRecurrence(rule, on: todo)
+                    isEditingRecurrence = false
+                },
+                onSetStatus: { status in
+                    store.setRecurrenceStatus(status, on: todo)
+                    isEditingRecurrence = false
+                },
+                onDismiss: { isEditingRecurrence = false }
+            )
+            .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $isAddingExistingSubtask) {
             NavigationStack {

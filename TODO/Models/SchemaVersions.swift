@@ -43,8 +43,13 @@ enum SchemaV1: VersionedSchema {
     /// Only the entity whose shape changed needs freezing; the other three are
     /// identical in both versions, so they stay shared rather than being
     /// duplicated into copies that would drift.
+    /// Both entities that have since changed shape are frozen copies.
+    ///
+    /// `Todo` moved in V3 (recurrence) and `SavedAISummary` in V2 (the prompt
+    /// fingerprint), so naming the live classes here would make this version
+    /// hash like the current one and silently disable both stages.
     static var models: [any PersistentModel.Type] {
-        [Todo.self, Space.self, Reminder.self, SavedAISummary.self]
+        [SchemaV2.Todo.self, SchemaV2.Space.self, SchemaV2.Reminder.self, SavedAISummary.self]
     }
 
     /// `SavedAISummary` as it existed before the prompt fingerprint.
@@ -77,28 +82,136 @@ enum SchemaV2: VersionedSchema {
     /// hashes rather than these numbers, but they must still be ordered.
     static var versionIdentifier: Schema.Version { Schema.Version(2, 0, 0) }
 
-    /// The live models, deliberately.
+    /// `Todo`, `Space`, and `Reminder` are *frozen copies*.
     ///
-    /// The newest version has to *be* the current schema — that is what makes
-    /// the store openable. Freezing a copy here was tried and is actively
-    /// harmful: two `@Model` classes with the same name collide at runtime, and
-    /// fetching a `SavedAISummary` then traps with "Failed to cast model".
+    /// `Todo` has to be frozen for the reason `SchemaV1` freezes
+    /// `SavedAISummary`: V3 adds columns to the live `Todo`, and if both
+    /// versions named the live class they would hash identically, the V2→V3
+    /// stage would never fire, and the migration would be dead code that still
+    /// failed on a real store.
     ///
-    /// The cost is that `theLatestSchemaVersionMatchesTheLiveModels` cannot
-    /// detect drift at *this* version, since both sides move together. What it
-    /// does catch is the next change: adding a V3 whose frozen copy has fallen
-    /// behind the live models. Until then, `theV1SchemaStillMatchesTheShippedStore`
-    /// is the guard with teeth, because V1's hashes are pinned to bytes that
-    /// already exist on disk and cannot be edited into agreement.
+    /// `Space` and `Reminder` come along not because their shape changed — it
+    /// did not — but because they are *related to* `Todo`. A relationship's
+    /// inverse is resolved by key path, so the live `Space.todos`, declared as
+    /// `inverse: \Todo.space`, points at the live `Todo` and not at the copy.
+    /// Pairing the frozen `Todo` with the live `Space` traps at schema
+    /// construction with "Inverse Relationship does not exist". A version has to
+    /// be internally consistent: every model in it referring only to other
+    /// models in it.
+    ///
+    /// `SavedAISummary` stands apart precisely because it relates to nothing,
+    /// and it reached its current shape at V2, so it stays the live class.
+    static var models: [any PersistentModel.Type] {
+        [SchemaV2.Todo.self, SchemaV2.Space.self, SchemaV2.Reminder.self, SavedAISummary.self]
+    }
+
+    /// `Todo` as it existed before recurrence.
+    ///
+    /// Nested so the Swift *class name* stays `Todo`, which is what CoreData
+    /// derives the entity name from — the same trick, and the same reason, as
+    /// `SchemaV1.SavedAISummary`.
+    ///
+    /// Only the *stored* shape reaches a version hash, so these copies carry the
+    /// columns and relationships and none of the behaviour. Keeping them that
+    /// way is deliberate: they describe bytes already on disk, not a working
+    /// model, and must not drift toward the live classes.
+    @Model
+    final class Todo {
+        var uuid: UUID = UUID()
+        var title: String = ""
+        var notes: String = ""
+        var notesSummary: String = ""
+        var stateRaw: String = CompletionState.open.rawValue
+        var bucketRaw: String = Bucket.inbox.rawValue
+        var assignedDate: Date?
+        var assignedHasTime: Bool = false
+        var duration: TimeInterval?
+        var dueDate: Date?
+        var dueHasTime: Bool = false
+        var isProject: Bool = false
+        var colorHex: String?
+        var importedFromReminders: Bool = false
+        var sourceReminderID: String?
+        var sortIndex: Int = 0
+        var isNew: Bool = false
+        var lastViewedPlacement: String?
+        var createdAt: Date = Date()
+        var modifiedAt: Date = Date()
+        var resolvedAt: Date?
+
+        var space: SchemaV2.Space?
+        var parent: SchemaV2.Todo?
+
+        @Relationship(deleteRule: .cascade, inverse: \SchemaV2.Todo.parent)
+        var subtasks: [SchemaV2.Todo]? = []
+
+        @Relationship(deleteRule: .cascade, inverse: \SchemaV2.Reminder.todo)
+        var reminders: [SchemaV2.Reminder]? = []
+
+        init() {}
+    }
+
+    /// `Space` at V2 — unchanged in shape, frozen so the version is closed over
+    /// its own `Todo`.
+    @Model
+    final class Space {
+        var uuid: UUID = UUID()
+        var name: String = ""
+        var symbolName: String = "square.stack"
+        var colorHex: String = Theme.Palette.defaultSpaceColor
+        var sortIndex: Int = 0
+        var createdAt: Date = Date()
+        var isHiddenByFocus: Bool = false
+
+        @Relationship(deleteRule: .cascade, inverse: \SchemaV2.Todo.space)
+        var todos: [SchemaV2.Todo]? = []
+
+        init() {}
+    }
+
+    /// `Reminder` at V2 — likewise unchanged, and likewise frozen.
+    @Model
+    final class Reminder {
+        var uuid: UUID = UUID()
+        var kindRaw: String = ReminderKind.dateTime.rawValue
+        var fireDate: Date?
+        var latitude: Double?
+        var longitude: Double?
+        var radius: Double = 100
+        var placeName: String?
+        var triggerRaw: String = LocationTrigger.onArrival.rawValue
+        var isActive: Bool = true
+        var createdAt: Date = Date()
+
+        var todo: SchemaV2.Todo?
+
+        init() {}
+    }
+}
+
+/// The current shape: `Todo` gains the recurrence columns.
+///
+/// Every added column is optional, which is what makes this a *lightweight*
+/// migration rather than the custom stage V1→V2 needed. Existing rows simply
+/// have no recurrence, which is the correct reading: a to-do that predates the
+/// feature does not repeat.
+enum SchemaV3: VersionedSchema {
+    static var versionIdentifier: Schema.Version { Schema.Version(3, 0, 0) }
+
+    /// The live models, deliberately — the newest version has to *be* the
+    /// current schema, or the store will not open. See the note in `SchemaV2`
+    /// about why freezing a copy here would be actively harmful.
     static var models: [any PersistentModel.Type] {
         [Todo.self, Space.self, Reminder.self, SavedAISummary.self]
     }
 }
 
 enum AppMigrationPlan: SchemaMigrationPlan {
-    static var schemas: [any VersionedSchema.Type] { [SchemaV1.self, SchemaV2.self] }
+    static var schemas: [any VersionedSchema.Type] {
+        [SchemaV1.self, SchemaV2.self, SchemaV3.self]
+    }
 
-    static var stages: [MigrationStage] { [v1ToV2] }
+    static var stages: [MigrationStage] { [v1ToV2, v2ToV3] }
 
     /// Adding the prompt fingerprint to `SavedAISummary`.
     ///
@@ -125,5 +238,20 @@ enum AppMigrationPlan: SchemaMigrationPlan {
             try context.save()
         },
         didMigrate: nil
+    )
+
+    /// Adding recurrence to `Todo`.
+    ///
+    /// Lightweight, unlike the stage above: every new column is optional, so
+    /// CoreData can add them to existing rows without a value and without being
+    /// told what to put there. A to-do that predates the feature simply does
+    /// not recur, which needs no backfill to express.
+    ///
+    /// The stage still has to be *declared* even though it does nothing —
+    /// omitting it leaves V3 unreachable from V2 and the store fails to open
+    /// with "Cannot use staged migration with an unknown model version".
+    static let v2ToV3 = MigrationStage.lightweight(
+        fromVersion: SchemaV2.self,
+        toVersion: SchemaV3.self
     )
 }

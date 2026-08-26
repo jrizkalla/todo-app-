@@ -318,6 +318,12 @@ struct RootView: View {
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active, didRunLaunchTasks else { return }
 
+            // A day can turn over while the app is backgrounded, which is
+            // exactly when a daily series falls due. Generation is idempotent,
+            // so running it on every foreground costs a fetch and cannot
+            // produce a duplicate.
+            RecurrenceEngine(context: context).generateDueInstances()
+
             if let last = importer.lastScanDate,
                Date().timeIntervalSince(last) < rescanDebounce {
                 return
@@ -394,6 +400,13 @@ struct RootView: View {
             tab = .lists
         }
         #endif
+
+        // Materialize whatever the recurring series owe.
+        //
+        // Before the reminder work below, and before the first list is drawn:
+        // an instance due today has to exist by the time Today renders, or the
+        // user sees an empty list that fills in a moment later.
+        RecurrenceEngine(context: context).generateDueInstances()
 
         // Scheduling itself prompts for authorization, so both steps are gated.
         if !skipsPrompts {

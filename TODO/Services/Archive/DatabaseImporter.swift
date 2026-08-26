@@ -363,6 +363,8 @@ struct DatabaseImporter {
             todo.resolvedAt = resolvedAt
         }
 
+        applyRecurrence(from: value, to: todo, report: &report)
+
         // A resolved to-do with no resolution date would sort oddly in the
         // Logbook, so one is synthesized from what the record does carry.
         if todo.state.isResolved && todo.resolvedAt == nil {
@@ -370,6 +372,61 @@ struct DatabaseImporter {
         }
 
         return todo
+    }
+
+    /// Read a recurrence schedule off a record, if it carries one.
+    ///
+    /// The mode is what makes a record a template, so an unrecognized mode
+    /// leaves the to-do non-recurring rather than half-configured: a rule with
+    /// a frequency but no mode would be a schedule the engine could never run.
+    private func applyRecurrence(
+        from value: YAMLValue,
+        to todo: Todo,
+        report: inout ImportReport
+    ) {
+        guard let modeRaw = value.value(forAnyKey: Key.Todo.recurrenceMode)?.stringValue else {
+            return
+        }
+        guard let mode = RecurrenceMode(rawValue: modeRaw) else {
+            report.warnings.append(
+                "Unknown repeat mode ‘\(modeRaw)’ on a to-do; it was imported without a schedule."
+            )
+            return
+        }
+
+        var rule = RecurrenceRule(mode: mode)
+
+        if let raw = value.value(forAnyKey: Key.Todo.recurrenceFrequency)?.stringValue,
+           let frequency = RecurrenceFrequency(rawValue: raw) {
+            rule.frequency = frequency
+        }
+        if let interval = value.value(forAnyKey: Key.Todo.recurrenceInterval)?.intValue {
+            rule.interval = interval
+        }
+        if let raw = value.value(forAnyKey: Key.Todo.recurrenceWeekdays)?.stringValue {
+            rule.weekdays = Set(raw.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) })
+        }
+        if let day = value.value(forAnyKey: Key.Todo.recurrenceDayOfMonth)?.intValue {
+            rule.dayOfMonth = day
+        }
+        if let minutes = value.value(forAnyKey: Key.Todo.recurrenceTimeOfDayMinutes)?.intValue {
+            rule.timeOfDayMinutes = minutes
+        }
+        if let endDate = value.value(forAnyKey: Key.Todo.recurrenceEndDate)?.dateValue {
+            rule.endDate = endDate
+        }
+        if let raw = value.value(forAnyKey: Key.Todo.recurrenceStatus)?.stringValue,
+           let status = RecurrenceStatus(rawValue: raw) {
+            rule.status = status
+        }
+
+        // Normalized on the way in: an archive can be hand-edited, and an
+        // interval of zero would make the engine's date walk non-terminating.
+        todo.recurrenceRule = rule.normalized()
+
+        if let next = value.value(forAnyKey: Key.Todo.recurrenceNextDate)?.dateValue {
+            todo.recurrenceNextDate = next
+        }
     }
 
     /// Attach a to-do to its space and parent.
@@ -404,6 +461,20 @@ struct DatabaseImporter {
                 if todo.space == nil { todo.space = parent.space }
             } else {
                 report.danglingReferences.append("parent \(parentUUID.uuidString)")
+            }
+        }
+
+        if let templateUUID = value.value(forAnyKey: Key.Todo.recurrenceTemplate)?.uuidValue {
+            if templateUUID == todo.uuid {
+                // A record naming itself as its own template would be both a
+                // series and one of its own occurrences.
+                report.warnings.append(
+                    "A to-do listed itself as its own repeat template; the link was dropped."
+                )
+            } else if let template = todos[templateUUID] ?? existingTodo(templateUUID) {
+                todo.recurrenceTemplate = template
+            } else {
+                report.danglingReferences.append("recurrence template \(templateUUID.uuidString)")
             }
         }
     }
@@ -662,12 +733,29 @@ struct DatabaseImporter {
             static let space = ["space", "spaceID", "spaceUUID"]
             static let parent = ["parent", "parentID", "parentUUID"]
 
+            static let recurrenceMode = ["recurrenceMode", "repeatMode"]
+            static let recurrenceFrequency = ["recurrenceFrequency", "repeatFrequency", "frequency"]
+            static let recurrenceInterval = ["recurrenceInterval", "repeatInterval", "interval"]
+            static let recurrenceWeekdays = ["recurrenceWeekdays", "repeatWeekdays", "weekdays"]
+            static let recurrenceDayOfMonth = ["recurrenceDayOfMonth", "dayOfMonth"]
+            static let recurrenceTimeOfDayMinutes = ["recurrenceTimeOfDayMinutes", "recurrenceTime"]
+            static let recurrenceEndDate = ["recurrenceEndDate", "repeatUntil"]
+            static let recurrenceStatus = ["recurrenceStatus", "repeatStatus"]
+            static let recurrenceNextDate = ["recurrenceNextDate", "nextOccurrence"]
+            static let recurrenceTemplate = [
+                "recurrenceTemplate", "recurrenceTemplateID", "template",
+            ]
+
             static let all = [uuid, title, notes, notesSummary, state, bucket,
                               assignedDate, assignedHasTime, dueDate, dueHasTime,
                               duration, isProject, colorHex, sortIndex, isNew,
                               lastViewedPlacement, importedFromReminders,
                               sourceReminderID, createdAt, modifiedAt, resolvedAt,
-                              space, parent]
+                              space, parent,
+                              recurrenceMode, recurrenceFrequency, recurrenceInterval,
+                              recurrenceWeekdays, recurrenceDayOfMonth,
+                              recurrenceTimeOfDayMinutes, recurrenceEndDate,
+                              recurrenceStatus, recurrenceNextDate, recurrenceTemplate]
         }
 
         enum Reminder {

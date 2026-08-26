@@ -254,10 +254,12 @@ struct TodoStore {
             return .needsSubtaskConfirmation(count: todo.blockingSubtasks.count)
         }
 
+        let wasResolved = todo.state.isResolved
         recordingUndo(undoName(for: newState), on: todo) {
             _ = todo.setState(newState)
             save()
         }
+        advanceRecurrence(for: todo, wasResolved: wasResolved, isResolved: newState.isResolved)
         return .applied
     }
 
@@ -269,9 +271,29 @@ struct TodoStore {
     func setStateCascading(_ todo: Todo, to newState: CompletionState) {
         let affected = [todo] + todo.descendants
 
+        let wasResolved = todo.state.isResolved
         recordingUndo(undoName(for: newState), on: affected) {
             todo.setState(newState, cascadeToSubtasks: true)
             save()
+        }
+        advanceRecurrence(for: todo, wasResolved: wasResolved, isResolved: newState.isResolved)
+    }
+
+    /// Let a recurring series react to one of its instances changing state.
+    ///
+    /// Both directions matter, and only on the *edge*: resolving an instance is
+    /// what earns the next one, and reopening it has to take that successor
+    /// back. Gated on the transition rather than the new state so that
+    /// re-completing an already-completed to-do — which the status picker
+    /// allows — does not generate a second occurrence.
+    private func advanceRecurrence(for todo: Todo, wasResolved: Bool, isResolved: Bool) {
+        guard todo.isRecurrenceInstance, wasResolved != isResolved else { return }
+        let engine = RecurrenceEngine(context: context)
+
+        if isResolved {
+            engine.handleResolution(of: todo)
+        } else {
+            engine.handleReopening(of: todo)
         }
     }
 
@@ -369,6 +391,156 @@ struct TodoStore {
     func detachFromParent(_ todo: Todo) {
         todo.move(toParent: nil)
         save()
+    }
+
+    // MARK: Recurrence
+
+    /// Make a to-do repeat, or change the schedule it repeats on.
+    ///
+    /// Which to-do this is called on matters, and the caller should not have to
+    /// think about it: the rule always lands on the *template*, so applying a
+    /// schedule from an instance's row edits the series rather than turning
+    /// that one occurrence into a second template.
+    ///
+    /// Setting a rule on a plain to-do converts it in place: it becomes the
+    /// template and its first occurrence is generated immediately, so the user
+    /// sees a row appear rather than the one they were looking at vanishing.
+    func setRecurrence(_ rule: RecurrenceRule?, on todo: Todo) {
+        let template = todo.recurrenceRoot ?? todo
+        let previous = template.recurrenceRule
+
+        recordingUndo(previous == nil ? "Repeat" : "Change Repeat", on: template) {
+            template.recurrenceRule = rule
+
+            if rule == nil {
+                // No longer a series. Instances are cut loose rather than
+                // deleted — they are real work, some of it already done.
+                for instance in template.recurrenceInstanceList {
+                    instance.recurrenceTemplate = nil
+                }
+            } else if previous?.normalized() != rule?.normalized() {
+                // The schedule moved, so any not-yet-touched future occurrence
+                // is now on the wrong date. Recomputed from scratch below.
+                template.recurrenceNextDate = nil
+                discardUntouchedFutureInstances(of: template)
+            }
+
+            template.refileForCurrentScheduling()
+            template.touch()
+            save()
+        }
+
+        if let rule, rule.status.generatesInstances {
+            RecurrenceEngine(context: context).generateInstances(for: template)
+            save()
+        }
+    }
+
+    /// Pause or resume a series.
+    ///
+    /// Pausing takes the pending occurrence with it: the spec asks a paused
+    /// series to show as the template in Anytime, and leaving a live instance
+    /// on Today would contradict that. Resuming regenerates from the current
+    /// date rather than the one it was paused on, so a series paused for a
+    /// month does not come back overdue.
+    func setRecurrenceStatus(_ status: RecurrenceStatus, on todo: Todo) {
+        guard let template = todo.recurrenceRoot, var rule = template.recurrenceRule else { return }
+
+        let name = switch status {
+        case .active: "Resume Repeat"
+        case .paused: "Pause Repeat"
+        case .cancelled: "Cancel Repeat"
+        }
+
+        recordingUndo(name, on: template) {
+            rule.status = status
+            template.recurrenceRule = rule
+
+            if !status.generatesInstances {
+                discardUntouchedFutureInstances(of: template)
+            } else {
+                // Recomputed on resume so the series picks up from now.
+                template.recurrenceNextDate = nil
+            }
+
+            template.refileForCurrentScheduling()
+            template.touch()
+            save()
+        }
+
+        if status.generatesInstances {
+            RecurrenceEngine(context: context).generateInstances(for: template)
+            save()
+        }
+    }
+
+    /// Remove pending occurrences that the user has not engaged with.
+    ///
+    /// "Untouched" is the important qualifier. An occurrence that is still
+    /// open, still carries the template's title, and has no notes or subtask
+    /// progress of its own is a placeholder the app put there; anything else is
+    /// the user's work and is left alone even when the schedule changes under
+    /// it.
+    private func discardUntouchedFutureInstances(of template: Todo) {
+        for instance in template.recurrenceInstanceList {
+            guard !instance.state.isResolved,
+                  instance.title == template.title,
+                  instance.notes == template.notes,
+                  instance.subtaskList.allSatisfy({ !$0.state.isResolved })
+            else { continue }
+            context.delete(instance)
+        }
+    }
+
+    /// Skip the occurrence in hand and move the series on to the next one.
+    ///
+    /// Distinct from completing it: skipping says the work did not happen and
+    /// should not be recorded as done, but the schedule should still advance.
+    func skipRecurrenceInstance(_ instance: Todo) {
+        guard let template = instance.recurrenceTemplate,
+              let rule = template.recurrenceRule
+        else { return }
+
+        let snapshot = TodoSnapshot(instance)
+        let templateID = template.uuid
+        let previousNext = template.recurrenceNextDate
+
+        // An `.afterCompletion` series measures from the skip, since that is
+        // the moment the user dealt with this occurrence.
+        if rule.mode == .afterCompletion {
+            template.recurrenceNextDate = rule.nextDate(after: Date())
+        }
+
+        context.delete(instance)
+        save()
+        RecurrenceEngine(context: context).generateInstances(for: template)
+        save()
+
+        UndoStack.shared.record(
+            UndoableAction(
+                name: "Skip",
+                revert: { context in
+                    let store = TodoStore(context: context)
+                    guard let template = TodoQueries.todo(uuid: templateID, in: context) else { return }
+                    // Take back whatever the skip generated before putting the
+                    // skipped occurrence back, so the series is not left with
+                    // two live instances.
+                    store.discardUntouchedFutureInstances(of: template)
+                    snapshot.reinsert(into: context)
+                    if let live = TodoQueries.todo(uuid: snapshot.uuid, in: context) {
+                        snapshot.apply(to: live, in: context)
+                        live.recurrenceTemplate = template
+                    }
+                    template.recurrenceNextDate = previousNext
+                    store.save()
+                },
+                reapply: { context in
+                    let store = TodoStore(context: context)
+                    guard let live = TodoQueries.todo(uuid: snapshot.uuid, in: context) else { return }
+                    store.skipRecurrenceInstance(live)
+                }
+            )
+        )
     }
 
     // MARK: Reminders

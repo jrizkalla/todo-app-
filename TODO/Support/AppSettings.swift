@@ -61,6 +61,11 @@ final class AppSettings {
         self.showSidePanel = resolved.object(forKey: Key.showSidePanel) as? Bool ?? true
         self.weekStartsOnMonday = resolved.bool(forKey: Key.weekStartsOnMonday)
         self.showResolved = resolved.object(forKey: Key.showResolved) as? Bool ?? true
+        // Defaults to true: overdue work is the most important thing a to-do
+        // list can surface, so it has to be visible unless the user has said
+        // otherwise. `object(forKey:)` rather than `bool(forKey:)` is what
+        // makes that default hold — `bool` reads an absent key as false.
+        self.showOverdue = resolved.object(forKey: Key.showOverdue) as? Bool ?? true
 
         if let data = resolved.data(forKey: Key.userInfo),
            let decoded = try? JSONDecoder().decode(UserInfo.self, from: data) {
@@ -82,6 +87,7 @@ final class AppSettings {
         static let showCalendarEvents = "showCalendarEvents"
         static let visibleCalendars = "visibleCalendars"
         static let showResolved = "showResolved"
+        static let showOverdue = "showOverdue"
         static let userInfo = "userInfo"
         static let summaryBackground = "summaryBackground"
         static let developerDebugMode = "developerDebugMode"
@@ -189,6 +195,16 @@ final class AppSettings {
 
     var showResolved: Bool {
         didSet { write(showResolved, forKey: Key.showResolved, was: oldValue) }
+    }
+
+    /// Whether the date lists carry work from before today.
+    ///
+    /// On by default. Turning it off narrows Today to the day itself, for
+    /// someone who plans a day at a time and treats a long overdue tail as
+    /// noise — but the default has to be *shown*, because a missed deadline the
+    /// list quietly hides is the one failure a to-do app cannot afford.
+    var showOverdue: Bool {
+        didSet { write(showOverdue, forKey: Key.showOverdue, was: oldValue) }
     }
 
     var userInfo: UserInfo {

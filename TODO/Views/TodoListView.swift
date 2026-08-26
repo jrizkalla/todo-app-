@@ -36,30 +36,47 @@ struct TodoListView: View {
     /// says nothing about what Anytime should show.
     @State private var showResolvedOverride: Bool?
 
+    /// The same, for overdue work. See `AppSettings.showOverdue`.
+    @State private var showOverdueOverride: Bool?
+
     private var includeResolved: Bool {
         showResolvedOverride ?? settings.showResolved
+    }
+
+    private var includeOverdue: Bool {
+        showOverdueOverride ?? settings.showOverdue
     }
 
     var body: some View {
         DestinationTodoList(
             destination: destination,
             includeResolved: includeResolved,
+            includeOverdue: includeOverdue,
             showResolvedOverride: $showResolvedOverride,
+            showOverdueOverride: $showOverdueOverride,
             selectedTodo: $selectedTodo,
             isFocused: $isFocused,
             createRequest: createRequest,
             capturedTodo: capturedTodo
         )
-        .id(QueryIdentity(destination: destination, includeResolved: includeResolved))
+        .id(QueryIdentity(
+            destination: destination,
+            includeResolved: includeResolved,
+            includeOverdue: includeOverdue
+        ))
         // A per-list override belongs to the list it was set on; the next one
         // starts from the user's preference again.
-        .onChange(of: destination) { _, _ in showResolvedOverride = nil }
+        .onChange(of: destination) { _, _ in
+            showResolvedOverride = nil
+            showOverdueOverride = nil
+        }
     }
 
-    /// What the row query is built from. A change to either rebuilds it.
+    /// What the row query is built from. A change to any of these rebuilds it.
     private struct QueryIdentity: Hashable {
         let destination: ListDestination
         let includeResolved: Bool
+        let includeOverdue: Bool
     }
 }
 
@@ -70,6 +87,10 @@ private struct DestinationTodoList: View {
     /// change it. See `TodoListView.showResolvedOverride`.
     let includeResolved: Bool
     @Binding var showResolvedOverride: Bool?
+
+    /// The same, for work dated before today.
+    let includeOverdue: Bool
+    @Binding var showOverdueOverride: Bool?
 
     @Environment(\.modelContext) private var context
     @Environment(AppSettings.self) private var settings
@@ -119,7 +140,9 @@ private struct DestinationTodoList: View {
     init(
         destination: ListDestination,
         includeResolved: Bool,
+        includeOverdue: Bool = true,
         showResolvedOverride: Binding<Bool?> = .constant(nil),
+        showOverdueOverride: Binding<Bool?> = .constant(nil),
         selectedTodo: Binding<Todo?>,
         isFocused: Binding<Bool>,
         createRequest: Binding<Int>? = nil,
@@ -127,7 +150,9 @@ private struct DestinationTodoList: View {
     ) {
         self.destination = destination
         self.includeResolved = includeResolved
+        self.includeOverdue = includeOverdue
         self._showResolvedOverride = showResolvedOverride
+        self._showOverdueOverride = showOverdueOverride
         self._selectedTodo = selectedTodo
         self._isFocused = isFocused
         self.createRequest = createRequest
@@ -137,7 +162,8 @@ private struct DestinationTodoList: View {
             TodoQueries.descriptor(
                 for: destination,
                 calendar: AppSettings.shared.calendar,
-                includeResolved: includeResolved
+                includeResolved: includeResolved,
+                includeOverdue: includeOverdue
             )
         )
     }
@@ -153,6 +179,9 @@ private struct DestinationTodoList: View {
     @State private var schedulingFromKeyboard = false
     /// The to-do whose "move to" picker is open, from Cmd+M.
     @State private var movingTodo: Todo?
+    /// The to-do whose recurrence panel is open, from the row's schedule chip
+    /// or the context menu.
+    @State private var repeatingTodo: Todo?
 
     /// Where the arrow keys are pointing.
     ///
@@ -247,6 +276,29 @@ private struct DestinationTodoList: View {
                         : "Show completed items in this list"
                 )
             }
+            // Only the lists that reach backwards in time can hide anything,
+            // so the switch is offered only there. On Anytime or a project it
+            // would be a control that visibly does nothing.
+            if showsOverdueToggle {
+                ToolbarItem(placement: .secondaryAction) {
+                    Toggle(isOn: Binding(
+                        get: { includeOverdue },
+                        set: { showOverdueOverride = $0 }
+                    )) {
+                        Label(
+                            includeOverdue ? "Hide Overdue" : "Show Overdue",
+                            systemImage: includeOverdue
+                                ? "calendar.badge.minus"
+                                : "calendar.badge.exclamationmark"
+                        )
+                    }
+                    .help(
+                        includeOverdue
+                            ? "Hide work dated before today"
+                            : "Show work dated before today"
+                    )
+                }
+            }
             // Only spaces and projects get one: the cross-cutting lists are
             // already covered by the Calendar tab, which shows the same days
             // unscoped, so a second entry point onto it would just be a
@@ -286,6 +338,23 @@ private struct DestinationTodoList: View {
         .onChange(of: destination) { _, _ in
             focusedTodoID = nil
             searchText = ""
+        }
+        // Any panel raised from this list closes with it.
+        //
+        // The list is rebuilt from scratch whenever the destination or the
+        // resolved preference changes — that is what `QueryIdentity` is for —
+        // and a sheet still on screen when that happens is orphaned: its
+        // presenter is gone, so the close button, the Escape key, and every
+        // action inside it stop doing anything, and the only way out is to
+        // quit the app.
+        //
+        // Reached most easily through the panels themselves, which is why it
+        // matters: pausing a series refiles it from Today into Anytime, and a
+        // user following it there with the panel open would strand it.
+        .onDisappear {
+            repeatingTodo = nil
+            schedulingTodo = nil
+            movingTodo = nil
         }
         .onChange(of: focusedTodoID) { previous, current in
             handleFocusChange(from: previous, to: current)
@@ -365,7 +434,28 @@ private struct DestinationTodoList: View {
                     selectedTodo = todo
                 },
                 onDismiss: { schedulingTodo = nil },
+                onRepeat: {
+                    // Handed over rather than stacked: two sheets deep on a
+                    // phone leaves no room for the panel itself.
+                    schedulingTodo = nil
+                    DispatchQueue.main.async { repeatingTodo = todo }
+                },
                 acceptsTypedDate: schedulingFromKeyboard
+            )
+            .presentationDetents([.medium, .large])
+        }
+        .sheet(item: $repeatingTodo) { todo in
+            RecurrencePickerView(
+                todo: todo,
+                onPick: { rule in
+                    store.setRecurrence(rule, on: todo)
+                    repeatingTodo = nil
+                },
+                onSetStatus: { status in
+                    store.setRecurrenceStatus(status, on: todo)
+                    repeatingTodo = nil
+                },
+                onDismiss: { repeatingTodo = nil }
             )
             .presentationDetents([.medium, .large])
         }
@@ -499,6 +589,7 @@ private struct DestinationTodoList: View {
                             menu: { AnyView(rowMenu(for: todo)) },
                             onSubmitTitle: { createTodoAfterSubmit(from: todo) },
                             onShowDetail: { _ in showDetail(for: todo) },
+                            onEditRecurrence: { openRecurrence(for: $0) },
                             focusedTodoID: $focusedTodoID
                         )
                         // The tap that expands a row is attached here rather
@@ -543,6 +634,7 @@ private struct DestinationTodoList: View {
                                 // to the same parent.
                                 onSubmitTitle: { addSubtaskAfterSubmit(to: todo) },
                                 onShowDetail: { _ in showDetail(for: subtask) },
+                                onEditRecurrence: { openRecurrence(for: $0) },
                                 focusedTodoID: $focusedTodoID
                             )
                             .padding(.leading, 28)
@@ -676,6 +768,13 @@ private struct DestinationTodoList: View {
             cursor.select(subtask.uuid)
             focusedTodoID = subtask.uuid
         }
+    }
+
+    /// Raise the recurrence panel, dropping focus so the keyboard does not sit
+    /// over it.
+    private func openRecurrence(for todo: Todo) {
+        focusedTodoID = nil
+        repeatingTodo = todo
     }
 
     /// Open the detail view, dropping focus so the keyboard does not follow.
@@ -877,6 +976,42 @@ private struct DestinationTodoList: View {
                 todo.isProject ? "Demote to To-Do" : "Make Project",
                 systemImage: todo.isProject ? "arrow.down.square" : "arrow.up.square"
             )
+        }
+
+        Divider()
+
+        Button {
+            openRecurrence(for: todo)
+        } label: {
+            Label(
+                todo.isRecurring ? "Edit Repeat…" : "Repeat…",
+                systemImage: "arrow.trianglehead.2.clockwise.rotate.90"
+            )
+        }
+
+        // Only an instance can be skipped: skipping means "this occurrence did
+        // not happen, move the series on", which has no meaning for a to-do
+        // that is not one of a series.
+        if todo.isRecurrenceInstance {
+            Button {
+                withAnimation(Theme.Animation.listChange) {
+                    store.skipRecurrenceInstance(todo)
+                }
+            } label: {
+                Label("Skip This One", systemImage: "forward.end")
+            }
+        }
+
+        if todo.isRecurring {
+            let status = todo.effectiveRecurrenceRule?.status ?? .active
+            Button {
+                store.setRecurrenceStatus(status == .active ? .paused : .active, on: todo)
+            } label: {
+                Label(
+                    status == .active ? "Pause Repeat" : "Resume Repeat",
+                    systemImage: status == .active ? "pause.circle" : "play.circle"
+                )
+            }
         }
 
         Menu("Move to Space") {
@@ -1120,6 +1255,19 @@ private struct DestinationTodoList: View {
     private var showsCalendarButton: Bool {
         switch destination {
         case .space, .project: true
+        default: false
+        }
+    }
+
+    /// Only the lists whose window reaches back past today can hold overdue
+    /// work, so only they offer the switch.
+    ///
+    /// Tomorrow deliberately does not: it has no backward reach by design —
+    /// late work belongs in Today, where it cannot be missed — so there is
+    /// nothing for the toggle to hide. The undated lists have no window at all.
+    private var showsOverdueToggle: Bool {
+        switch destination {
+        case .today, .thisWeek: true
         default: false
         }
     }

@@ -66,6 +66,58 @@ final class Todo {
     /// Manual ordering within a list. Sidebar and list reordering write here.
     var sortIndex: Int = 0
 
+    // MARK: Recurrence
+    //
+    // A recurring to-do is not a separate entity. The *template* is a `Todo`
+    // carrying these columns, and each generated occurrence is an ordinary
+    // `Todo` pointing back at it through `recurrenceTemplate`. That is what
+    // lets an instance be dragged, scheduled, completed, given subtasks, and
+    // drawn on the calendar by every code path that already exists — a
+    // separate `RecurringTodo` class would have had to re-implement all of it,
+    // and would have doubled the archive and migration surface for no gain.
+    //
+    // `recurrenceModeRaw` being non-nil is what makes a to-do a template. Every
+    // column here is optional so existing rows migrate without a value, and
+    // primitive so CloudKit mirrors them.
+
+    /// Backing storage for `RecurrenceRule.mode`. Non-nil marks a template.
+    var recurrenceModeRaw: String?
+    var recurrenceFrequencyRaw: String?
+    var recurrenceInterval: Int?
+    /// Selected weekdays for a weekly rule, as `Calendar` weekday numbers
+    /// joined by commas ("2,5").
+    ///
+    /// A string rather than `[Int]`: CloudKit mirroring wants primitives, and a
+    /// seven-element set does not earn a transformable column.
+    var recurrenceWeekdaysRaw: String?
+    var recurrenceDayOfMonth: Int?
+    /// Time of day for instances, in minutes since midnight. Nil means the
+    /// instances are whole-day items.
+    var recurrenceTimeOfDayMinutes: Int?
+    /// When the series stops, if it does.
+    var recurrenceEndDate: Date?
+    /// Backing storage for `RecurrenceRule.status`.
+    var recurrenceStatusRaw: String?
+
+    /// The date the *next* instance should be generated for.
+    ///
+    /// Held on the template rather than recomputed from the last instance every
+    /// time, because the two disagree in the case that matters: an
+    /// `.afterCompletion` rule measures from when the last instance was
+    /// completed, and once that instance has been deleted there is nothing left
+    /// to measure from. Storing the answer makes generation idempotent — the
+    /// engine can run on every launch and every completion without producing
+    /// duplicates.
+    var recurrenceNextDate: Date?
+
+    /// The template that generated this to-do, when it is an instance.
+    ///
+    /// Nullify rather than cascade: deleting a series should not delete the
+    /// occurrences the user already has in hand, some of which may be done and
+    /// part of their history. They simply stop being tied to a schedule.
+    @Relationship(deleteRule: .nullify)
+    var recurrenceTemplate: Todo?
+
     /// Whether this todo is unseen in the list it currently belongs to.
     ///
     /// Set when a todo arrives somewhere the user has not looked yet — imported
@@ -102,6 +154,14 @@ final class Todo {
     /// Attached reminders, removed along with the todo.
     @Relationship(deleteRule: .cascade, inverse: \Reminder.todo)
     var reminders: [Reminder]? = []
+
+    /// Occurrences generated from this to-do, when it is a template.
+    ///
+    /// The inverse of `recurrenceTemplate`; declaring it here is what gives
+    /// SwiftData the one place to store the edge, and what lets a template ask
+    /// for its own history without a fetch.
+    @Relationship(deleteRule: .nullify, inverse: \Todo.recurrenceTemplate)
+    var recurrenceInstances: [Todo]? = []
 
     init(
         title: String = "",
@@ -177,6 +237,7 @@ extension Todo {
     /// date, or a home (project or space).
     var isScheduled: Bool {
         assignedDate != nil || dueDate != nil || space != nil || parent != nil
+            || isRecurrenceTemplate
     }
 
     /// Recompute which bucket this todo belongs in after a change to its dates
@@ -189,6 +250,13 @@ extension Todo {
         if space != nil || parent != nil {
             bucket = .space
         } else if assignedDate != nil || dueDate != nil {
+            bucket = .anytime
+        } else if isRecurrenceTemplate {
+            // A template with no date is still not unorganized work — it is a
+            // schedule. Anytime is where the spec asks a paused series to
+            // appear, and filing it there rather than the Inbox keeps a
+            // recurring to-do from reading as something the user forgot to
+            // sort.
             bucket = .anytime
         } else {
             bucket = .inbox
@@ -206,15 +274,24 @@ extension Todo {
         assignedDate.map { calendar.startOfDay(for: $0) }
     }
 
-    var isOverdue: Bool {
+    /// Past its deadline, and still open.
+    ///
+    /// A deadline with a time is late the moment that time passes. One without
+    /// is a *day*, so it is not late until that whole day has gone by — which
+    /// means comparing against the start of today rather than against `now`.
+    /// Comparing an untimed deadline to `now` would call a to-do due "today"
+    /// overdue from one minute past midnight.
+    ///
+    /// This is deliberately the same rule `TodoQueries.overdueDescriptor`
+    /// encodes as a predicate. The two are read against each other — a row this
+    /// calls overdue must be one that fetch returns — so they have to agree,
+    /// and an earlier same-day exemption here did not.
+    func isOverdue(now: Date = Date(), calendar: Calendar = .current) -> Bool {
         guard let dueDate, !state.isResolved else { return false }
-        let now = Date()
-        return if !dueHasTime && Calendar.current.isDate(now, inSameDayAs: dueDate) {
-            false
-        } else {
-            dueDate < now
-        }
+        return dueDate < (dueHasTime ? now : calendar.startOfDay(for: now))
     }
+
+    var isOverdue: Bool { isOverdue() }
 }
 
 // MARK: - Color
@@ -472,3 +549,119 @@ extension Todo {
     }
 }
 
+
+// MARK: - Recurrence
+
+extension Todo {
+    /// The recurrence rule this to-do carries as a template, if it is one.
+    ///
+    /// Projected from the primitive columns rather than stored as a composite,
+    /// for the migration reason spelled out beside the columns themselves.
+    /// Setting it to nil clears every column at once, which is what "stop
+    /// recurring" means.
+    var recurrenceRule: RecurrenceRule? {
+        get {
+            guard let modeRaw = recurrenceModeRaw,
+                  let mode = RecurrenceMode(rawValue: modeRaw)
+            else { return nil }
+
+            return RecurrenceRule(
+                mode: mode,
+                frequency: recurrenceFrequencyRaw
+                    .flatMap(RecurrenceFrequency.init(rawValue:)) ?? .weekly,
+                interval: recurrenceInterval ?? 1,
+                weekdays: Self.decodeWeekdays(recurrenceWeekdaysRaw),
+                dayOfMonth: recurrenceDayOfMonth,
+                timeOfDayMinutes: recurrenceTimeOfDayMinutes,
+                endDate: recurrenceEndDate,
+                status: recurrenceStatusRaw
+                    .flatMap(RecurrenceStatus.init(rawValue:)) ?? .active
+            )
+        }
+        set {
+            guard let rule = newValue?.normalized() else {
+                recurrenceModeRaw = nil
+                recurrenceFrequencyRaw = nil
+                recurrenceInterval = nil
+                recurrenceWeekdaysRaw = nil
+                recurrenceDayOfMonth = nil
+                recurrenceTimeOfDayMinutes = nil
+                recurrenceEndDate = nil
+                recurrenceStatusRaw = nil
+                recurrenceNextDate = nil
+                return
+            }
+
+            recurrenceModeRaw = rule.mode.rawValue
+            recurrenceFrequencyRaw = rule.frequency.rawValue
+            recurrenceInterval = rule.interval
+            recurrenceWeekdaysRaw = Self.encodeWeekdays(rule.weekdays)
+            recurrenceDayOfMonth = rule.dayOfMonth
+            recurrenceTimeOfDayMinutes = rule.timeOfDayMinutes
+            recurrenceEndDate = rule.endDate
+            recurrenceStatusRaw = rule.status.rawValue
+        }
+    }
+
+    /// True when this to-do defines a series rather than being a single task.
+    ///
+    /// A template is never shown as an ordinary row: the list shows whichever
+    /// instance is current instead. The one exception the spec calls for is a
+    /// paused series, which surfaces in Anytime so it can be found and resumed.
+    var isRecurrenceTemplate: Bool { recurrenceModeRaw != nil }
+
+    /// True when this to-do was generated from a template.
+    var isRecurrenceInstance: Bool { recurrenceTemplate != nil }
+
+    /// True when the row should draw the recurring glyph — either because it is
+    /// an occurrence of a series, or because it is the series itself.
+    var isRecurring: Bool { isRecurrenceTemplate || isRecurrenceInstance }
+
+    /// The rule governing this row, wherever it is defined.
+    ///
+    /// An instance carries no rule of its own; it reads its template's. Every
+    /// surface that shows the schedule — the row chip, the details section, the
+    /// picker — goes through this so an instance and its template can never
+    /// disagree about what the schedule says.
+    var effectiveRecurrenceRule: RecurrenceRule? {
+        recurrenceRule ?? recurrenceTemplate?.recurrenceRule
+    }
+
+    /// The to-do that owns the schedule: the template itself, or an instance's.
+    var recurrenceRoot: Todo? {
+        isRecurrenceTemplate ? self : recurrenceTemplate
+    }
+
+    /// Instances of this template, newest first.
+    var recurrenceInstanceList: [Todo] {
+        (recurrenceInstances ?? []).sorted {
+            ($0.assignedDate ?? $0.createdAt) > ($1.assignedDate ?? $1.createdAt)
+        }
+    }
+
+    /// The occurrence currently standing in for the series, if any.
+    ///
+    /// The unresolved one — there is at most one live at a time by
+    /// construction, since the engine will not generate a successor until the
+    /// current one is resolved or its date has passed.
+    var currentRecurrenceInstance: Todo? {
+        recurrenceInstanceList.first { !$0.state.isResolved }
+    }
+
+    /// A paused or cancelled series shows itself in Anytime instead of an
+    /// instance, flagged in the UI as a schedule rather than a task.
+    var isDormantRecurrenceTemplate: Bool {
+        guard let rule = recurrenceRule else { return false }
+        return !rule.status.generatesInstances
+    }
+
+    private static func encodeWeekdays(_ weekdays: Set<Int>) -> String? {
+        guard !weekdays.isEmpty else { return nil }
+        return weekdays.sorted().map(String.init).joined(separator: ",")
+    }
+
+    private static func decodeWeekdays(_ raw: String?) -> Set<Int> {
+        guard let raw, !raw.isEmpty else { return [] }
+        return Set(raw.split(separator: ",").compactMap { Int($0) })
+    }
+}

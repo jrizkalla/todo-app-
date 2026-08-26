@@ -35,6 +35,11 @@ struct TodoRow : View {
     var menu: () -> AnyView
     var onSubmitTitle: () -> Void
     var onShowDetail : (Todo) -> Void
+    /// Opens the recurrence panel for this row.
+    ///
+    /// Optional so the previews and any surface without a panel to present can
+    /// leave the chip inert rather than having to fake one.
+    var onEditRecurrence: ((Todo) -> Void)?
 
     /// Which row's title currently holds focus, keyed by todo id.
     ///
@@ -102,6 +107,20 @@ struct TodoRow : View {
                     }
 
                     statusLine
+
+                    // The schedule summary, revealed with the row.
+                    //
+                    // Clipped to zero height rather than inserted by an `if`,
+                    // for the same reason the notes field below is: a view
+                    // added on expansion fades in out of step with the row's
+                    // growth, and this one sits between two things that are
+                    // already animating.
+                    recurrenceChip
+                        .frame(height: isSelected ? nil : 0, alignment: .top)
+                        .opacity(isSelected ? 1 : 0)
+                        .allowsHitTesting(isSelected)
+                        .accessibilityHidden(!isSelected)
+                        .clipped()
 
                     // Grows out of nothing rather than being inserted.
                     //
@@ -281,6 +300,17 @@ struct TodoRow : View {
     /// uncluttered.
     private var badges: [Badge] {
         var badges: [Badge] = []
+
+        // The recurring glyph goes first, before the dates it qualifies: this
+        // row's date is one occurrence of a series rather than a one-off, and
+        // reading "today" before learning that would be reading it wrong.
+        if todo.isRecurring {
+            badges.append(Badge(
+                text: "",
+                symbol: recurrenceSymbol,
+                color: todo.isDormantRecurrenceTemplate ? .orange : .secondary
+            ))
+        }
         
         if let date = todo.assignedDate ?? todo.dueDate, date < Date() && !Calendar.current.isDateInToday(date) && todo.state != .completed {
             badges.append(.init(
@@ -339,17 +369,94 @@ struct TodoRow : View {
         return badges
     }
     
+    /// A paused series is drawn as a pause glyph rather than the cycling arrows.
+    ///
+    /// The distinction matters at a glance: the arrows say "this comes back",
+    /// and on a template that is exactly what is *not* happening right now.
+    private var recurrenceSymbol: String {
+        guard let rule = todo.effectiveRecurrenceRule else {
+            return "arrow.trianglehead.2.clockwise.rotate.90"
+        }
+        switch rule.status {
+        case .active: return "arrow.trianglehead.2.clockwise.rotate.90"
+        case .paused: return "pause.circle"
+        case .cancelled: return "xmark.circle"
+        }
+    }
+
+    /// The clickable summary of the schedule, shown only while expanded.
+    ///
+    /// Text rather than a full control, per the spec: it reads as a sentence
+    /// ("every Monday at 3 PM") and only reveals itself as tappable by being
+    /// tinted. A button-shaped control here would compete with the checkbox and
+    /// the chevron for a row that is mostly text.
+    @ViewBuilder
+    private var recurrenceChip: some View {
+        if let rule = todo.effectiveRecurrenceRule {
+            Button {
+                onEditRecurrence?(todo)
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: recurrenceSymbol)
+                        .font(.caption2)
+                    Text(rule.summary)
+                        .font(.caption)
+                        .lineLimit(1)
+                }
+                .foregroundStyle(rule.status.generatesInstances ? Color.accentColor : .orange)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background {
+                    Capsule().fill(
+                        (rule.status.generatesInstances ? Color.accentColor : .orange)
+                            .opacity(0.12)
+                    )
+                }
+                .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(onEditRecurrence == nil)
+            .accessibilityLabel("Repeats \(rule.summary). Edit schedule")
+        }
+    }
+
+    /// The "this is a schedule, not a task" marker on a dormant template.
+    ///
+    /// The spec asks a paused series to be visibly not a real to-do. Without
+    /// this it is indistinguishable from an ordinary Anytime item, and ticking
+    /// its checkbox would look like completing work that was never scheduled.
+    @ViewBuilder
+    private var templateMarker: some View {
+        if todo.isDormantRecurrenceTemplate {
+            Text(todo.effectiveRecurrenceRule?.status == .cancelled ? "Cancelled series" : "Paused series")
+                .font(.caption2)
+                .fontWeight(.medium)
+                .foregroundStyle(.orange)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background {
+                    Capsule().strokeBorder(Color.orange.opacity(0.5), lineWidth: 1)
+                }
+        }
+    }
+
     @ViewBuilder
     var statusLine: some View {
         HStack {
+            templateMarker
+
             ForEach(badges) { badge in
-                HStack {
+                HStack(spacing: 3) {
                     Image(systemName: badge.symbol)
                         .foregroundStyle(badge.color.opacity(0.85))
                         .font(.footnote)
-                    Text(badge.text)
-                        .foregroundStyle(Color.secondary)
-                        .font(.footnote)
+                    // A glyph-only badge — the recurring marker — carries no
+                    // text, and an empty `Text` would still claim spacing.
+                    if !badge.text.isEmpty {
+                        Text(badge.text)
+                            .foregroundStyle(Color.secondary)
+                            .font(.footnote)
+                    }
                 }
             }
         }

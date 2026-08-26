@@ -72,6 +72,124 @@ struct PreviewRenderTests {
         render(TodoRowRenderHost(todo: PreviewData.longTitled, isSelected: true))
     }
 
+    /// Today drawn in both overdue states.
+    ///
+    /// The preference changes the query *and* the toolbar, so both are
+    /// rendered rather than only the one that ships by default. Driven through
+    /// `AppSettings` because the switch reaches the list that way — the inner
+    /// view that takes it directly is private to its own file.
+    @Test func todoListRendersWithOverdueShownAndHidden() {
+        let settings = AppSettings.shared
+        let original = settings.showOverdue
+        defer { settings.showOverdue = original }
+
+        for shown in [true, false] {
+            settings.showOverdue = shown
+            render(
+                TodoListView(
+                    destination: .today,
+                    selectedTodo: .constant(nil),
+                    isFocused: .constant(false)
+                )
+            )
+        }
+    }
+
+    // MARK: Recurrence
+
+    /// A recurring occurrence draws the extra glyph and, expanded, the schedule
+    /// chip — a different hierarchy from a plain row, so it gets its own pass.
+    @Test func todoRowRendersARecurringInstance() {
+        let template = Todo(title: "Water the plants")
+        PreviewData.context.insert(template)
+        template.recurrenceRule = RecurrenceRule(
+            mode: .onSchedule, frequency: .weekly, interval: 1, weekdays: [2]
+        )
+
+        let instance = Todo(title: "Water the plants", assignedDate: Date())
+        PreviewData.context.insert(instance)
+        instance.recurrenceTemplate = template
+
+        render(TodoRowRenderHost(todo: instance))
+        render(TodoRowRenderHost(todo: instance, isSelected: true))
+    }
+
+    /// A paused template carries the "Paused series" marker, which is the thing
+    /// that stops it reading as an ordinary Anytime to-do.
+    @Test func todoRowRendersAPausedTemplate() {
+        let template = Todo(title: "Replace the air filters")
+        PreviewData.context.insert(template)
+        template.recurrenceRule = RecurrenceRule(
+            mode: .afterCompletion, frequency: .monthly, interval: 3, status: .paused
+        )
+
+        #expect(template.isDormantRecurrenceTemplate)
+        render(TodoRowRenderHost(todo: template))
+        render(TodoRowRenderHost(todo: template, isSelected: true))
+    }
+
+    @Test func recurrencePickerRenders() {
+        render(
+            RecurrencePickerView(
+                todo: PreviewData.todo(titled: "Water the plants"),
+                onPick: { _ in },
+                onSetStatus: { _ in },
+                onDismiss: {}
+            )
+        )
+    }
+
+    /// The picker seeded from an existing rule, which is the branch that reads
+    /// the template's schedule back into the draft.
+    @Test func recurrencePickerRendersAnExistingSchedule() {
+        let todo = Todo(title: "Pay rent")
+        PreviewData.context.insert(todo)
+        todo.recurrenceRule = RecurrenceRule(
+            mode: .afterCompletionOnSchedule,
+            frequency: .monthly,
+            interval: 1,
+            dayOfMonth: 1,
+            timeOfDayMinutes: 9 * 60
+        )
+
+        render(
+            RecurrencePickerView(
+                todo: todo,
+                onPick: { _ in },
+                onSetStatus: { _ in },
+                onDismiss: {}
+            )
+        )
+    }
+
+    /// Both halves of the editor section: the "does not repeat" state and a
+    /// live series with its action buttons.
+    @Test func recurrenceSectionRenders() {
+        let plain = PreviewData.todo(titled: "One-off")
+        render(Form { RecurrenceSection(todo: plain) {} }.formStyle(.grouped))
+
+        let recurring = Todo(title: "Standup")
+        PreviewData.context.insert(recurring)
+        recurring.recurrenceRule = RecurrenceRule(
+            mode: .onSchedule, frequency: .daily, interval: 1
+        )
+        render(Form { RecurrenceSection(todo: recurring) {} }.formStyle(.grouped))
+    }
+
+    /// The schedule panel now carries a route into the repeat panel, so it is
+    /// re-rendered with that button present.
+    @Test func schedulePickerRendersWithTheRepeatRoute() {
+        render(
+            SchedulePickerView(
+                todo: PreviewData.todo(titled: "Review"),
+                onPick: { _, _ in },
+                onAddReminder: {},
+                onDismiss: {},
+                onRepeat: {}
+            )
+        )
+    }
+
     @Test func pendingReminderRowRenders() {
         render(
             PendingReminderRow(reminder: PreviewData.pendingReminders[0]) {}

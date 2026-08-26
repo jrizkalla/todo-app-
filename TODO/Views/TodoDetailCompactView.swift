@@ -38,6 +38,8 @@ struct TodoDetailCompactView: View {
     @State private var suggestionModel = TitleSuggestionModel()
     @State private var isConfirmingDelete = false
     @State private var isEditingNotes = false
+    /// Set while the recurrence panel is shown, as a popover over this card.
+    @State private var isEditingRecurrence = false
     /// Raised when completing this to-do is blocked by unfinished subtasks.
     @State private var pendingCascade: PendingCascade?
     @FocusState private var focusedField: Field?
@@ -60,6 +62,7 @@ struct TodoDetailCompactView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     scheduleCard
+                    recurrenceCard
                     statusCard
                     notesCard
                     subtasksCard
@@ -240,6 +243,62 @@ struct TodoDetailCompactView: View {
                 .labelsHidden()
                 .pickerStyle(.menu)
             }
+        }
+    }
+
+    /// Repeat, in the same card shape as the schedule above it.
+    ///
+    /// The popover is anchored here rather than presented as a sheet: this view
+    /// is itself often a popover, and a sheet raised from one on macOS covers
+    /// the window it belongs to.
+    private var recurrenceCard: some View {
+        card {
+            VStack(alignment: .leading, spacing: 8) {
+                RecurrenceSummaryRow(todo: todo) { isEditingRecurrence = true }
+
+                if todo.isRecurring {
+                    Divider()
+                    HStack(spacing: 8) {
+                        let status = todo.effectiveRecurrenceRule?.status ?? .active
+
+                        Button(status == .active ? "Pause" : "Resume") {
+                            store.setRecurrenceStatus(
+                                status == .active ? .paused : .active, on: todo
+                            )
+                        }
+                        .buttonStyle(.borderless)
+
+                        if todo.isRecurrenceInstance {
+                            Button("Skip") { store.skipRecurrenceInstance(todo) }
+                                .buttonStyle(.borderless)
+                        }
+
+                        Spacer(minLength: 0)
+
+                        Button("Stop") { store.setRecurrence(nil, on: todo) }
+                            .buttonStyle(.borderless)
+                            .foregroundStyle(.red)
+                    }
+                    .font(.callout)
+
+                    RecurrenceSeriesFootnote(todo: todo)
+                }
+            }
+        }
+        .popover(isPresented: $isEditingRecurrence, arrowEdge: .trailing) {
+            RecurrencePickerView(
+                todo: todo,
+                onPick: { rule in
+                    store.setRecurrence(rule, on: todo)
+                    isEditingRecurrence = false
+                },
+                onSetStatus: { status in
+                    store.setRecurrenceStatus(status, on: todo)
+                    isEditingRecurrence = false
+                },
+                onDismiss: { isEditingRecurrence = false }
+            )
+            .frame(width: 380, height: 560)
         }
     }
 
