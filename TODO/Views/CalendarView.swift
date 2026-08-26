@@ -365,10 +365,14 @@ private struct RangedCalendarView: View {
         // `draggingTodoID`, so the guard below finds nothing to do and the
         // committed move is never second-guessed here.
         .onChange(of: isTracking) { _, tracking in
-            guard !tracking, draggingTodoID != nil else { return }
+            guard !tracking, let dragged = draggingTodoID else { return }
             draggingTodoID = nil
             dragTranslation = 0
             dragMode = .move
+            // Select here too. A cancelled drag never reaches `commitDrag`, so
+            // without this the one path that does not select is the one where
+            // the user grabbed a block and got nothing at all.
+            cursor.select(dragged)
         }
         // A scoped calendar takes over the side panel for as long as it is on
         // screen, so the grid's dated work and the panel's undated work make up
@@ -1101,6 +1105,16 @@ private struct RangedCalendarView: View {
             .onAppear {
                 proxy.scrollTo(scrollAnchorHour, anchor: .top)
             }
+            // The grid stops scrolling for as long as a block is being dragged.
+            //
+            // An unselected block's gesture is attached *simultaneously* —
+            // deliberately, so a swipe starting on a block still scrolls the
+            // day — which leaves the `ScrollView` tracking the same touch after
+            // the long press has won, free to claim the pan and cancel the drag
+            // partway through. Only while a drag is actually in flight, so the
+            // scroll-from-a-block gesture is untouched: before the press
+            // succeeds there is nothing to disable.
+            .scrollDisabled(draggingTodoID != nil)
         }
     }
 
@@ -1896,12 +1910,19 @@ private struct RangedCalendarView: View {
         // a resize into a move.
         guard draggingTodoID != todo.uuid else { return }
 
-        // Recorded *before* the selection moves below, so the gesture
-        // attachment this block is drawn with does not change mid-drag.
+        // Recorded here, applied in `commitDrag`. Moving the cursor *now* is
+        // what made dragging a block impossible: `isSelected` feeds the block's
+        // label, its handles and its `zIndex`, so selecting it mid-gesture
+        // rebuilt the very subtree the recognizer was attached to and cancelled
+        // it. The drag arrived once with a nil value and then stopped dead,
+        // which is exactly the block refusing to follow the finger.
+        //
+        // The selection still lands — dragging something is a clear statement
+        // of intent, and leaving the ring on another block would read as a bug
+        // — it just waits until the gesture that depends on it is over.
         dragStartedSelected = cursor.selection == todo.uuid
         draggingTodoID = todo.uuid
         dragMode = mode
-        cursor.select(todo.uuid)
         #if os(iOS)
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         #endif
@@ -1918,6 +1939,12 @@ private struct RangedCalendarView: View {
             draggingTodoID = nil
             dragTranslation = 0
             dragMode = .move
+            // The selection `begin` deliberately did not make — see there. In
+            // the `defer` rather than at the end, so a drag that moved nothing
+            // still selects the block the user grabbed: that is the same
+            // outcome the tap would have produced, and by here the gesture is
+            // over, so rebuilding the block costs nothing.
+            cursor.select(todo.uuid)
         }
 
         guard let proposal = dragProposal(for: todo, on: day) else { return }

@@ -141,7 +141,12 @@ struct TodoRow : View {
                         .clipped()
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+                // Deliberately no `contentShape` here. The two fields inside
+                // take their own taps, so a hit area over the whole column only
+                // makes the *gaps* between them greedy — and those gaps are most
+                // of an expanded row. It swallowed every tap before the list's
+                // row gesture could see it, which is why a second tap on a
+                // to-do appeared to do nothing.
 
                 // Only while expanded: the way into the full editor. A real
                 // button rather than a tap gesture, so it keeps its hit area
