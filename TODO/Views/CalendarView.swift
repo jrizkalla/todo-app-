@@ -181,6 +181,20 @@ private struct RangedCalendarView: View {
     @State private var dragTranslation: CGFloat = 0
     /// Which part of a block the current drag has hold of.
     @State private var dragMode: DragMode = .move
+    /// Whether the block was already selected when the drag began.
+    ///
+    /// Selection changes as a drag starts — see `begin` — and the gesture is
+    /// attached differently for a selected block. Remembering the value from
+    /// the start keeps that attachment stable for the life of the gesture
+    /// instead of swapping it out from under the finger.
+    @State private var dragStartedSelected = false
+    /// True for exactly as long as a block's drag recognizer is alive.
+    ///
+    /// Reset by SwiftUI on cancellation as well as on a normal end, unlike
+    /// `onEnded`, which only runs when a gesture finishes cleanly. Watched
+    /// below to clear the in-flight state a cancelled drag would otherwise
+    /// leave behind.
+    @GestureState private var isTracking = false
     /// A block sketched under the finger while a long press is held, before the
     /// to-do is actually created. Mirrors the placeholder Calendar.app shows.
     @State private var draft: DraftBlock?
@@ -340,6 +354,22 @@ private struct RangedCalendarView: View {
         #endif
         // Reload whenever the visible range or the calendar preferences change.
         .task(id: eventReloadKey) { await reloadEvents() }
+        // A cancelled drag never reaches `commitDrag`, so the block it was
+        // moving would otherwise stay lifted — shadowed, half-opaque, and
+        // offset — with nothing tracking the finger any more. `isTracking`
+        // drops on cancellation too, which is what makes it a reliable place to
+        // put the block back.
+        //
+        // This is only the cancellation path. A drag that ends normally has
+        // already run `commitDrag` synchronously inside `onEnded` and cleared
+        // `draggingTodoID`, so the guard below finds nothing to do and the
+        // committed move is never second-guessed here.
+        .onChange(of: isTracking) { _, tracking in
+            guard !tracking, draggingTodoID != nil else { return }
+            draggingTodoID = nil
+            dragTranslation = 0
+            dragMode = .move
+        }
         // A scoped calendar takes over the side panel for as long as it is on
         // screen, so the grid's dated work and the panel's undated work make up
         // the whole container between them. The Calendar *tab* claims nothing:
@@ -1571,13 +1601,27 @@ private struct RangedCalendarView: View {
             )
             .modifier(
                 BlockDragModifier(
-                    isHighPriority: isSelected,
+                    // Fixed for the whole gesture. `isSelected` flips the
+                    // instant a drag on an unselected block calls
+                    // `cursor.select` — and switching branches here swaps
+                    // `simultaneousGesture` for `highPriorityGesture` mid-drag,
+                    // tearing out the recognizer that was tracking the finger.
+                    // The block then stuck in its dragging appearance with
+                    // nothing driving it. A block already being dragged keeps
+                    // whichever attachment it started with.
+                    isHighPriority: isDragging ? dragStartedSelected : isSelected,
                     gesture: blockGesture(
                         for: todo,
                         on: day,
                         isSelected: isSelected,
                         top: baseOffset,
-                        height: liveHeight
+                        // Base, not live. `liveHeight` changes on every frame of
+                        // a resize, which handed SwiftUI a fresh gesture value
+                        // continuously and let it rebuild the recognizer under
+                        // the finger. The grab band is read from where the block
+                        // *was* when the gesture began, which is the geometry
+                        // the user actually grabbed.
+                        height: baseHeight
                     )
                 )
             )
@@ -1763,6 +1807,14 @@ private struct RangedCalendarView: View {
         if isSelected {
             return AnyGesture(
                 DragGesture(minimumDistance: 4)
+                    // `updating` is the cancellation net. `onEnded` does not run
+                    // when a recognizer is cancelled — by a scroll view claiming
+                    // the touch, or by the view tree changing under it — which
+                    // is what left a block stuck in its dragging appearance with
+                    // no gesture still driving it. SwiftUI always resets
+                    // `@GestureState`, so `isTracking` falling back to false is
+                    // the one signal that arrives either way.
+                    .updating($isTracking) { _, tracking, _ in tracking = true }
                     .onChanged { value in
                         begin(mode(value.startLocation.y), on: todo)
                         dragTranslation = value.translation.height
@@ -1776,6 +1828,11 @@ private struct RangedCalendarView: View {
         return AnyGesture(
             LongPressGesture(minimumDuration: 0.3)
                 .sequenced(before: DragGesture(minimumDistance: 0))
+                .updating($isTracking) { value, tracking, _ in
+                    // Only once the press has succeeded and the drag has taken
+                    // over; the press phase alone is not a drag in flight.
+                    if case .second = value { tracking = true }
+                }
                 .onChanged { value in
                     guard case .second(_, let drag) = value else { return }
                     begin(.move, on: todo)
@@ -1839,6 +1896,9 @@ private struct RangedCalendarView: View {
         // a resize into a move.
         guard draggingTodoID != todo.uuid else { return }
 
+        // Recorded *before* the selection moves below, so the gesture
+        // attachment this block is drawn with does not change mid-drag.
+        dragStartedSelected = cursor.selection == todo.uuid
         draggingTodoID = todo.uuid
         dragMode = mode
         cursor.select(todo.uuid)

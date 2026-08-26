@@ -71,6 +71,36 @@ struct RootView: View {
             set: { createRequests[tab] = $0 }
         )
     }
+
+    /// The side panel's own create counter.
+    ///
+    /// Separate from the per-tab ones for the same reason those are separate
+    /// from each other: the panel is a second list on screen beside the tab's,
+    /// and a counter shared with the tab would have both of them create a row
+    /// from one tap.
+    @State private var panelCreateRequests = 0
+
+    private var panelCreateCount: Binding<Int> { $panelCreateRequests }
+
+    /// Where a tap on + should create.
+    ///
+    /// On a wide layout two lists are visible at once — the tab's and the
+    /// panel's — and "the list I'm in" is whichever one the user last worked
+    /// in. `todoFocusHolder` already tracks exactly that for the keyboard, so
+    /// it is what decides here rather than a second notion of the same thing.
+    /// The + used to bump the tab's counter unconditionally, which is why a
+    /// to-do added while working in the panel landed in the Inbox instead.
+    private func requestCreate() {
+        let panelIsActive = isWideLayout
+            && settings.showSidePanel
+            && todoFocusHolder == .sidebar
+
+        if panelIsActive {
+            panelCreateRequests += 1
+        } else {
+            createRequests[tab, default: 0] += 1
+        }
+    }
     
     @State private var todoFocusHolder: TodoFocusHolder = .none
 
@@ -135,7 +165,8 @@ struct RootView: View {
                                 // scoped to a calendar's list, the panel is not
                                 // where a captured to-do went.
                                 capturedTodo: effectivePanelScope == .inbox ? $capturedTodo : nil,
-                                onHide: { settings.showSidePanel = false }
+                                onHide: { settings.showSidePanel = false },
+                                createRequest: panelCreateCount
                             )
                             .frame(width: panelColumn)
                             .transition(.move(edge: .trailing).combined(with: .opacity))
@@ -299,7 +330,7 @@ struct RootView: View {
         .overlay(alignment: .bottomTrailing) {
             if tab != .today {
                 CreateButton {
-                    createRequests[tab, default: 0] += 1
+                    requestCreate()
                 }
                 .padding(.bottom, Theme.Metrics.createButtonTabBarClearance)
                 // Scales out of the corner it sits in rather than blinking, so

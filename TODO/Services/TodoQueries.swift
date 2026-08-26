@@ -64,6 +64,24 @@ extension Array where Element == Todo {
         }
     }
 
+    /// Keep finished work inside a window, leaving open work untouched.
+    ///
+    /// The in-memory twin of `TodoQueries.resolvedWithin`; the two must agree.
+    /// Used by the date lists that reach backwards without limit — Today and
+    /// This Week — where the reach exists for overdue work and must not also
+    /// admit the entire archive of completed items.
+    ///
+    /// A resolved item with no `resolvedAt` is dropped: it is finished but
+    /// cannot be placed in time, and the alternative is showing it in every
+    /// period forever.
+    func filterResolved(within start: Date, _ end: Date) -> Self {
+        self.filter { todo in
+            guard todo.state.isResolved else { return true }
+            guard let resolvedAt = todo.resolvedAt else { return false }
+            return resolvedAt >= start && resolvedAt < end
+        }
+    }
+
     /// Drop recurrence templates, whose instances are what the lists show.
     ///
     /// The in-memory twin of `TodoQueries.notATemplate`; the two must agree, or
@@ -230,16 +248,35 @@ enum TodoQueries {
 
     /// Just the preference half, for the date lists.
     ///
-    /// Today, Tomorrow and This Week do not bound `resolvedAt` at all: the
-    /// list's own date window is the bound. Completed work shows in the list
-    /// covering the day it was scheduled for, which is what makes "show
-    /// completed" on Today mean *today's* finished work. Kept separate from
-    /// `resolvedVisible` so that difference stays visible rather than being
-    /// quietly unified with it.
+    /// Tomorrow uses this on its own: its window is a single day with no
+    /// backward reach, so the window already bounds what finished work can
+    /// appear and nothing more is needed. Today and This Week reach backwards
+    /// without limit and need `resolvedWithin` as well — see below.
     private static func unresolvedUnless(_ includeResolved: Bool) -> Predicate<Todo> {
         let resolved = resolvedRaws
         return #Predicate<Todo> { todo in
             includeResolved || !resolved.contains(todo.stateRaw)
+        }
+    }
+
+    /// Keep finished work inside a window, while leaving open work alone.
+    ///
+    /// The lists that reach backwards without limit — Today and This Week —
+    /// need this and the state rule both. Their window is deliberately
+    /// open-ended so overdue work cannot fall out of the back, but that same
+    /// reach applied to *resolved* rows meant "show completed" turned Today
+    /// into the entire archive: every item ever completed was also dated before
+    /// the end of today, so all of it qualified.
+    ///
+    /// Open work is untouched here, which is what preserves overdue: an
+    /// unresolved item dated weeks ago still passes. Only resolved rows are
+    /// held to the window, so what shows is the work *finished in that period*
+    /// alongside everything still outstanding.
+    private static func resolvedWithin(_ start: Date, _ end: Date) -> Predicate<Todo> {
+        let resolved = resolvedRaws
+        return #Predicate<Todo> { todo in
+            !resolved.contains(todo.stateRaw)
+                || (todo.resolvedAt.flatMap { $0 >= start && $0 < end } ?? false)
         }
     }
 
@@ -300,11 +337,18 @@ enum TodoQueries {
     /// Overdue work stays in Today so it cannot be missed by moving past its
     /// date.
     ///
-    /// Open-ended backwards, exactly as the array version is: the only bound is
-    /// the end of today, so anything dated before it — including work days or
-    /// weeks overdue — is in the list. A half-open day window here would drop
-    /// overdue items out of Today, which is the one list that must never lose
-    /// them.
+    /// Open-ended backwards for *open* work, exactly as the array version is:
+    /// anything unresolved and dated before the end of today — including work
+    /// days or weeks overdue — is in the list. A half-open day window here
+    /// would drop overdue items out of Today, which is the one list that must
+    /// never lose them.
+    ///
+    /// Finished work is bounded to today, and that asymmetry is the point.
+    /// Today is a list of what is outstanding plus what was struck off it
+    /// *today*; something completed last week belongs to that day's Today and
+    /// to the Logbook, not to this one. The two rules are separate predicates
+    /// so the reach that overdue depends on is not the reach that decides how
+    /// far back completed work is shown.
     static func todayDescriptor(
         calendar: Calendar = .current,
         now: Date = Date(),
@@ -323,12 +367,17 @@ enum TodoQueries {
             ? datedBefore(endOfToday)
             : datedBetween(startOfToday, endOfToday)
         let state = unresolvedUnless(includeResolved)
+        // Completed items are held to today even though the window above
+        // reaches past it. Without this, "show completed" listed every item
+        // ever finished: each one is also dated before the end of today, so the
+        // window alone admitted the whole archive.
+        let finished = resolvedWithin(startOfToday, endOfToday)
         let template = notATemplate
 
         var descriptor = FetchDescriptor<Todo>(
             predicate: #Predicate<Todo> { todo in
                 focus.evaluate(todo) && window.evaluate(todo) && state.evaluate(todo)
-                    && template.evaluate(todo)
+                    && finished.evaluate(todo) && template.evaluate(todo)
             }
         )
         descriptor.prefetchRelated()
@@ -384,12 +433,15 @@ enum TodoQueries {
         let window = includeOverdue
             ? datedBefore(weekEnd)
             : datedBetween(week.start, weekEnd)
+        // And the same asymmetry: the backward reach is for overdue work, not
+        // for the archive. Completed items are held to the week itself.
+        let finished = resolvedWithin(week.start, weekEnd)
         let template = notATemplate
 
         var descriptor = FetchDescriptor<Todo>(
             predicate: #Predicate<Todo> { todo in
                 focus.evaluate(todo) && window.evaluate(todo) && state.evaluate(todo)
-                    && template.evaluate(todo)
+                    && finished.evaluate(todo) && template.evaluate(todo)
             }
         )
         descriptor.prefetchRelated()
@@ -1242,6 +1294,12 @@ enum TodoQueries {
             }
             .filterTemplates()
             .filter(includeResolved: includeResolved)
+            // The in-memory twin of `resolvedWithin` in `todayDescriptor`: the
+            // backward reach above is for overdue work, so finished work is
+            // held to today separately. Without it, showing completed items
+            // listed the whole archive — everything ever finished is also dated
+            // before the end of today.
+            .filterResolved(within: startOfToday, endOfToday)
             .filterCycles()
             .sorted(by: sortByDateThenOrder)
     }
@@ -1304,6 +1362,8 @@ enum TodoQueries {
             }
             .filterTemplates()
             .filter(includeResolved: includeResolved)
+            // Matching `thisWeekDescriptor`, and for the same reason as Today.
+            .filterResolved(within: week.start, week.end)
             .filterCycles()
             .sorted(by: sortByDateThenOrder)
     }

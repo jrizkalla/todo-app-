@@ -39,6 +39,14 @@ struct SidePanelView: View {
     /// the panel draws the control but does not decide what hiding means.
     var onHide: (() -> Void)?
 
+    /// How many times the panel has been asked to create something.
+    ///
+    /// The shell's one + button routes here when the panel is the list the user
+    /// is working in — see `RootView.activeCreateTarget`. Without this the
+    /// button always created into the tab's main list, so a to-do added while
+    /// working in the panel appeared in a different list entirely.
+    var createRequest: Binding<Int>?
+
     @Environment(AppSettings.self) private var settings
 
     var body: some View {
@@ -48,7 +56,8 @@ struct SidePanelView: View {
             selectedTodo: $selectedTodo,
             hasFocus: $hasFocus,
             capturedTodo: capturedTodo,
-            onHide: onHide
+            onHide: onHide,
+            createRequest: createRequest
         )
         .id(QueryIdentity(scope: scope, includeResolved: settings.showResolved))
         .onChange(of: hasFocus) {
@@ -71,6 +80,7 @@ private struct ScopedSidePanel: View {
     @Binding var hasFocus: Bool
     var capturedTodo: Binding<UUID?>?
     var onHide: (() -> Void)?
+    var createRequest: Binding<Int>?
 
     @Environment(AppSettings.self) private var settings
     @Environment(\.modelContext) private var context
@@ -93,13 +103,15 @@ private struct ScopedSidePanel: View {
         selectedTodo: Binding<Todo?>,
         hasFocus: Binding<Bool>,
         capturedTodo: Binding<UUID?>? = nil,
-        onHide: (() -> Void)? = nil
+        onHide: (() -> Void)? = nil,
+        createRequest: Binding<Int>? = nil
     ) {
         self.scope = scope
         self._selectedTodo = selectedTodo
         self._hasFocus = hasFocus
         self.capturedTodo = capturedTodo
         self.onHide = onHide
+        self.createRequest = createRequest
 
         switch scope {
         case .inbox:
@@ -166,6 +178,14 @@ private struct ScopedSidePanel: View {
             }
         }
         .listStyle(.sidebar)
+        // Touching anywhere in the panel — not only on a row — claims it as the
+        // surface being worked in, which is what the + button reads to decide
+        // where a new to-do goes. Rows claim focus in their own tap handler;
+        // this covers the empty space around them, and an empty panel, which
+        // otherwise had no way to become the active list at all: with no rows
+        // to tap, the + could never be aimed at the Inbox beside the list.
+        .contentShape(Rectangle())
+        .simultaneousGesture(TapGesture().onEnded { hasFocus = true })
         // Cmd+N created a to-do into the Inbox this panel is showing. Expanding
         // it and taking the caret is what makes the shortcut usable: the row is
         // untitled, and an untitled row nobody types into is discarded when it
@@ -175,6 +195,10 @@ private struct ScopedSidePanel: View {
             withAnimation(Theme.Animation.rowExpand) { expandedTodoID = captured }
             focusedTodoID = captured
             capturedTodo?.wrappedValue = nil
+        }
+        // The shell's + button, when the panel is the list being worked in.
+        .onChange(of: createRequest?.wrappedValue) { _, _ in
+            createTodoInPanel()
         }
         // Typing into a row claims focus; losing the caret does not give it
         // up, since the panel is still the surface the user is working in.
@@ -238,6 +262,38 @@ private struct ScopedSidePanel: View {
     /// scope — the Inbox rules for `.inbox`, undated work for a list. What is
     /// left here is only what a predicate cannot say: the container walk for a
     /// scoped panel, and the residual passes. See `TodoQueries`.
+    /// Create a to-do belonging to whatever the panel is showing, and put the
+    /// caret in its title.
+    ///
+    /// Scoped to a space or project, the panel holds that container's undated
+    /// remainder, so a row added here joins it rather than dropping into the
+    /// Inbox. No date either way: the panel *is* the unscheduled half of the
+    /// pair, and dating a new row would move it straight onto the grid beside
+    /// it and out of the list the user was adding to.
+    private func createTodoInPanel() {
+        let created: Todo
+        switch scope {
+        case .inbox:
+            created = store.createTodo()
+        case .list(let destination):
+            switch destination {
+            case .space(let id):
+                created = store.createTodo(
+                    space: TodoQueries.space(uuid: id, in: context)
+                )
+            case .project(let id):
+                let project = TodoQueries.todo(uuid: id, in: context)
+                created = store.createTodo(space: project?.space, parent: project)
+            default:
+                created = store.createTodo()
+            }
+        }
+
+        withAnimation(Theme.Animation.rowExpand) { expandedTodoID = created.uuid }
+        focusedTodoID = created.uuid
+        hasFocus = true
+    }
+
     private var contents: [Todo] {
         switch scope {
         case .inbox:

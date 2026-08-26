@@ -30,6 +30,8 @@ struct SidebarView: View {
     @State private var editingSpace: Space?
     /// Set while confirming a space deletion, which takes its contents with it.
     @State private var pendingDeletion: Space?
+    /// Same, for a project — which takes its subtasks with it.
+    @State private var pendingProjectDeletion: Todo?
 
     private var store: TodoStore { TodoStore(context: context) }
 
@@ -301,6 +303,44 @@ struct SidebarView: View {
             .project(project.uuid),
             store: store
         )
+        // A project is a to-do, so its own detail page is already the editor
+        // for everything on it — title, scheduled date, deadline, place. The
+        // sidebar simply had no way to reach it: the row navigated to the
+        // project's *list*, and nothing anywhere opened the project itself.
+        .contextMenu {
+            Button {
+                selectedTodo = project
+            } label: {
+                Label("Edit Project…", systemImage: "slider.horizontal.3")
+            }
+
+            Button(role: .destructive) {
+                pendingProjectDeletion = project
+            } label: {
+                Label("Delete Project", systemImage: "trash")
+            }
+        }
+        .confirmationDialog(
+            deleteProjectPrompt,
+            isPresented: .init(
+                get: { pendingProjectDeletion?.uuid == project.uuid },
+                set: { if !$0 { pendingProjectDeletion = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete Project", role: .destructive) {
+                // The list being shown is about to disappear.
+                if case .project(let id) = selection, id == project.uuid {
+                    selection = .today
+                }
+                store.delete(project)
+                pendingProjectDeletion = nil
+            }
+            Button("Cancel", role: .cancel) { pendingProjectDeletion = nil }
+        }
+        // macOS presents the editor as a popover anchored to the row it is
+        // about; on iOS this is a no-op and the detail page is pushed instead.
+        .todoDetailPopover(for: project, selection: $selectedTodo)
     }
 
     /// Inbox is deliberately absent: it is its own tab, and listing it here too
@@ -326,6 +366,18 @@ struct SidebarView: View {
             return "Delete “\(space.name)”? This cannot be undone."
         }
         return "Deleting “\(space.name)” also deletes its \(parts.joined(separator: " and ")). This cannot be undone."
+    }
+
+    /// Same for a project, which takes its subtasks with it.
+    private var deleteProjectPrompt: String {
+        guard let project = pendingProjectDeletion else { return "" }
+        let name = project.title.isEmpty ? "Untitled Project" : project.title
+        let count = project.subtaskList.count
+
+        guard count > 0 else {
+            return "Delete “\(name)”? This cannot be undone."
+        }
+        return "Deleting “\(name)” also deletes its \(count) to-do\(count == 1 ? "" : "s"). This cannot be undone."
     }
 
     /// Whether a Focus is currently hiding at least one space, which the footer

@@ -299,6 +299,26 @@ private struct DestinationTodoList: View {
                     )
                 }
             }
+            // A project's own title, dates and place are edited on its detail
+            // page. Reaching it from here matters because the sidebar row and
+            // this list both navigate to the project's *contents*: without
+            // this, the only way to change a project was to find it as a row in
+            // some other list.
+            if let project = currentProject {
+                ToolbarItem(placement: .secondaryAction) {
+                    Button {
+                        showDetail(for: project)
+                    } label: {
+                        Label("Edit Project…", systemImage: "slider.horizontal.3")
+                    }
+                    .help("Edit this project's title, dates, and place")
+                    // The project is not one of the rows below, so no row can
+                    // anchor its popover on macOS. The button that opens it
+                    // does instead; on iOS this is a no-op and the detail page
+                    // is pushed as usual.
+                    .todoDetailPopover(for: project, selection: $selectedTodo)
+                }
+            }
             // Only spaces and projects get one: the cross-cutting lists are
             // already covered by the Calendar tab, which shows the same days
             // unscoped, so a second entry point onto it would just be a
@@ -546,9 +566,25 @@ private struct DestinationTodoList: View {
         if visibleTodos.isEmpty && isSearching {
             SearchEmptyState(query: searchText, scopeDescription: searchScopeDescription)
         } else if visibleTodos.isEmpty && !showsPendingReminders {
-            emptyState
+            // The project's own dates still belong on screen when it has no
+            // to-dos yet: an empty project with a deadline is exactly the case
+            // where the deadline is worth seeing.
+            VStack(spacing: 0) {
+                projectMetadataHeader
+                    .padding(.horizontal)
+                emptyState
+            }
         } else {
             List {
+                // What the project itself is scheduled for, above the work it
+                // holds. Shown only for a project — the cross-cutting lists are
+                // date rules rather than things with dates of their own.
+                if datedProject != nil {
+                    projectMetadataHeader
+                        .listRowInsets(rowInsets)
+                        .listRowSeparator(.hidden)
+                }
+
                 // Waiting in the Reminders app, not yet copied here.
                 if showsPendingReminders {
                     Section {
@@ -600,8 +636,7 @@ private struct DestinationTodoList: View {
                         // field instead of being swallowed.
                         .contentShape(Rectangle())
                         .onTapGesture {
-                            guard cursor.selection != todo.uuid else { return }
-                            withAnimation(Theme.Animation.rowExpand) { selectRow(todo) }
+                            handleRowTap(todo)
                         }
                         // A row in any list can be dragged to any other list,
                         // to a space or project in the sidebar, or onto the
@@ -640,8 +675,7 @@ private struct DestinationTodoList: View {
                             .padding(.leading, 28)
                             .contentShape(Rectangle())
                             .onTapGesture {
-                                guard cursor.selection != subtask.uuid else { return }
-                                withAnimation(Theme.Animation.rowExpand) { selectRow(subtask) }
+                                handleRowTap(subtask)
                             }
                             // Dragging a subtask out is how it leaves its
                             // parent — the drop destinations already detach it,
@@ -775,6 +809,24 @@ private struct DestinationTodoList: View {
     private func openRecurrence(for todo: Todo) {
         focusedTodoID = nil
         repeatingTodo = todo
+    }
+
+    /// A tap on a row, in either of the two stages it can be.
+    ///
+    /// The first tap on an unselected row selects it; a tap on the row that is
+    /// already selected opens the detail. That second stage used to be missing
+    /// — the handler returned early on the selected row — so the only way into
+    /// the detail was the chevron, and tapping a to-do appeared to do nothing.
+    ///
+    /// A tap that lands on the title field never arrives here: the field is an
+    /// inner control and takes its own taps, so typing in an expanded row is
+    /// unaffected by this. Only taps that missed every control reach the row.
+    private func handleRowTap(_ todo: Todo) {
+        if cursor.selection == todo.uuid {
+            showDetail(for: todo)
+        } else {
+            withAnimation(Theme.Animation.rowExpand) { selectRow(todo) }
+        }
     }
 
     /// Open the detail view, dropping focus so the keyboard does not follow.
@@ -1224,6 +1276,33 @@ private struct DestinationTodoList: View {
             TodoQueries.todo(uuid: id, in: context)?.title ?? "Project"
         default:
             destination.title
+        }
+    }
+
+    /// The project this list is showing, if it is showing one.
+    private var currentProject: Todo? {
+        guard case .project(let id) = destination else { return nil }
+        return TodoQueries.todo(uuid: id, in: context)
+    }
+
+    /// The project whose dates are worth a header, if there is one.
+    ///
+    /// `nil` for every other destination: the cross-cutting lists are date
+    /// *rules*, so there is nothing of their own to show, and a space's dates
+    /// live on the space editor rather than on its to-dos. Also nil for a
+    /// project with no dates at all, which would give an empty strip.
+    private var datedProject: Todo? {
+        guard let project = currentProject,
+              project.assignedDate != nil || project.dueDate != nil
+        else { return nil }
+        return project
+    }
+
+    /// The project's own dates, drawn above the work it holds.
+    @ViewBuilder
+    private var projectMetadataHeader: some View {
+        if let project = datedProject {
+            ProjectMetadataHeader(project: project) { showDetail(for: project) }
         }
     }
 

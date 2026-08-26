@@ -139,6 +139,68 @@ struct TodoQueriesTests {
         #expect(TodoQueries.today([done], calendar: calendar).isEmpty)
     }
 
+    /// Showing completed work on Today means work completed *today*.
+    ///
+    /// Today reaches backwards without limit so overdue work cannot fall out of
+    /// it, and that reach used to apply to finished work too: every item ever
+    /// completed is also dated before the end of today, so turning on "show
+    /// completed" listed the entire archive.
+    @Test func todayShowsOnlyWorkCompletedToday() throws {
+        let context = try makeContext()
+        let doneToday = Todo(title: "Done today", assignedDate: day(offset: 0))
+        let doneEarlier = Todo(title: "Done earlier", assignedDate: day(offset: -3))
+        [doneToday, doneEarlier].forEach(context.insert)
+
+        doneToday.setState(.completed)
+        doneEarlier.setState(.completed)
+        // `setState` stamps the current time; this one was finished days ago.
+        doneEarlier.resolvedAt = day(offset: -3)
+
+        let shown = TodoQueries.today(
+            [doneToday, doneEarlier], calendar: calendar, includeResolved: true
+        )
+
+        #expect(shown.map(\.title) == ["Done today"])
+    }
+
+    /// The completed-work bound must not cost Today its overdue work.
+    ///
+    /// The two rules are deliberately separate: the date window still reaches
+    /// back without limit for anything *unresolved*, and only finished work is
+    /// held to today.
+    @Test func todayKeepsOverdueWhileBoundingCompletedWork() throws {
+        let context = try makeContext()
+        let overdue = Todo(title: "Overdue", assignedDate: day(offset: -5))
+        let doneEarlier = Todo(title: "Done earlier", assignedDate: day(offset: -5))
+        [overdue, doneEarlier].forEach(context.insert)
+
+        doneEarlier.setState(.completed)
+        doneEarlier.resolvedAt = day(offset: -5)
+
+        let shown = TodoQueries.today(
+            [overdue, doneEarlier], calendar: calendar, includeResolved: true
+        )
+
+        #expect(shown.map(\.title) == ["Overdue"])
+    }
+
+    /// This Week reaches backwards the same way and gets the same bound.
+    @Test func thisWeekShowsOnlyWorkCompletedThisWeek() throws {
+        let context = try makeContext()
+        let overdue = Todo(title: "Overdue", assignedDate: day(offset: -30))
+        let doneLongAgo = Todo(title: "Done long ago", assignedDate: day(offset: -30))
+        [overdue, doneLongAgo].forEach(context.insert)
+
+        doneLongAgo.setState(.completed)
+        doneLongAgo.resolvedAt = day(offset: -30)
+
+        let shown = TodoQueries.thisWeek(
+            [overdue, doneLongAgo], calendar: calendar, includeResolved: true
+        )
+
+        #expect(shown.map(\.title) == ["Overdue"])
+    }
+
     // MARK: Tomorrow
 
     /// Tomorrow covers the next day only — not today, not the day after.
@@ -713,6 +775,31 @@ struct TodoQueryDescriptorTests {
 
         let today = TodoQueries.todos(for: .today, in: context, calendar: calendar)
         #expect(today.contains { $0.title == "Overdue" })
+    }
+
+    /// The fetch path bounds completed work to today, as the array path does.
+    ///
+    /// Both encode the same rule, so the SQL side is pinned separately: a
+    /// predicate that admitted the whole archive would not be caught by the
+    /// array tests alone.
+    @Test func fetchedTodayShowsOnlyWorkCompletedToday() throws {
+        let context = try makeContext()
+        let doneToday = Todo(title: "Done today", assignedDate: day(offset: 0))
+        let doneEarlier = Todo(title: "Done earlier", assignedDate: day(offset: -4))
+        let overdue = Todo(title: "Overdue", assignedDate: day(offset: -4))
+        [doneToday, doneEarlier, overdue].forEach(context.insert)
+
+        doneToday.setState(.completed)
+        doneEarlier.setState(.completed)
+        doneEarlier.resolvedAt = day(offset: -4)
+
+        let shown = TodoQueries.todos(
+            for: .today, in: context, calendar: calendar, includeResolved: true
+        )
+
+        #expect(shown.contains { $0.title == "Done today" })
+        #expect(shown.contains { $0.title == "Overdue" })
+        #expect(!shown.contains { $0.title == "Done earlier" })
     }
 
     /// The fetch path honours the overdue switch, and agrees with the array
