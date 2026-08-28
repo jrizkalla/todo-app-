@@ -603,6 +603,46 @@ extension Todo {
         }
     }
 
+    /// Strip the one-off scheduling a template must not carry.
+    ///
+    /// A template is a *schedule*, not an occurrence of one. Its dates belong
+    /// to the instances it generates, and leaving them on the template itself
+    /// makes it read as a task that is due — a row saying "Overdue" for a date
+    /// that was only ever the series' starting point, which no amount of
+    /// filtering downstream can undo because the row is telling the truth about
+    /// the columns it has.
+    ///
+    /// `assignedDate` is not simply dropped: it is the date the user picked
+    /// before making the to-do repeat, so it is the series' first occurrence
+    /// and is moved into `recurrenceNextDate`, which is the field that actually
+    /// means "when the next instance falls". Anything already scheduled there
+    /// wins, since that is generation's own bookkeeping and is further along.
+    ///
+    /// The seed is normalized through the rule on the way in, because
+    /// generation only runs `firstDate` when `recurrenceNextDate` is empty —
+    /// filling it here skips that path, and an unnormalized seed would put the
+    /// first occurrence at midnight on a rule that says three o'clock.
+    ///
+    /// `duration` stays. It describes how long the work takes, which is a
+    /// property of the task and true of every occurrence — unlike a date, which
+    /// can only ever be true of one.
+    func clearScheduleForTemplate(calendar: Calendar = .current) {
+        if recurrenceNextDate == nil, let assigned = assignedDate {
+            recurrenceNextDate = recurrenceRule?
+                .applyingTimeOfDay(to: assigned, calendar: calendar) ?? assigned
+        }
+
+        assignedDate = nil
+        assignedHasTime = false
+        // Deliberately cleared rather than carried onto each occurrence. One
+        // fixed deadline copied onto a weekly series makes every instance after
+        // the first one overdue from birth; a recurring deadline is a property
+        // of the rule, which is what `recurrenceEndDate` and the time of day
+        // are for.
+        dueDate = nil
+        dueHasTime = false
+    }
+
     /// True when this to-do defines a series rather than being a single task.
     ///
     /// A template is never shown as an ordinary row: the list shows whichever

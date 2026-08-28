@@ -129,6 +129,11 @@ enum PreviewData {
         plants.recurrenceRule = RecurrenceRule(
             mode: .onSchedule, frequency: .weekly, interval: 1, weekdays: [2, 5]
         )
+        // The date seeds the first occurrence and then comes off the template,
+        // exactly as `setRecurrence` does it — a template holding a date of its
+        // own draws a row claiming to be overdue.
+        plants.clearScheduleForTemplate()
+        plants.refileForCurrentScheduling()
         RecurrenceEngine(context: context).generateInstances(for: plants)
 
         // And a paused one, which the spec asks to surface in Anytime marked as

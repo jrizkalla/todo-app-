@@ -50,14 +50,46 @@ struct RecurrenceEngine {
     func generateDueInstances(now: Date = Date(), calendar: Calendar = .current) -> [Todo] {
         var created: [Todo] = []
 
+        let healed = healTemplateScheduling(calendar: calendar)
+
         for template in activeTemplates() {
             created.append(contentsOf: generateInstances(for: template, now: now, calendar: calendar))
         }
 
-        if !created.isEmpty {
+        if !created.isEmpty || healed {
             TodoStore(context: context).save()
         }
         return created
+    }
+
+    /// Strip one-off scheduling from templates that still carry it.
+    ///
+    /// New templates are cleared where they are created, but a store predating
+    /// that rule holds templates carrying the date the to-do had before it was
+    /// made to repeat — and such a template draws a row claiming to be overdue.
+    /// Repairing on launch rather than in a schema migration means it also
+    /// catches rows arriving later from CloudKit or from an archive written by
+    /// an older build.
+    ///
+    /// Sweeps *every* template, not just the active ones: a paused series is
+    /// precisely the case that shows its template as a row, so it is the one
+    /// that most needs to not claim to be late. It is a no-op once clean, which
+    /// is what makes it safe to run on every launch.
+    @discardableResult
+    private func healTemplateScheduling(calendar: Calendar = .current) -> Bool {
+        let descriptor = FetchDescriptor<Todo>(
+            predicate: #Predicate<Todo> { todo in
+                todo.recurrenceModeRaw != nil
+                    && (todo.assignedDate != nil || todo.dueDate != nil)
+            }
+        )
+        let stale = (try? context.fetch(descriptor)) ?? []
+
+        for template in stale {
+            template.clearScheduleForTemplate(calendar: calendar)
+            template.refileForCurrentScheduling()
+        }
+        return !stale.isEmpty
     }
 
     /// Every to-do that defines a live series.
@@ -91,7 +123,7 @@ struct RecurrenceEngine {
 
         // A template that has never run needs a starting point.
         if template.recurrenceNextDate == nil {
-            template.recurrenceNextDate = firstDate(for: template, rule: rule, now: now, calendar: calendar)
+            template.recurrenceNextDate = firstDate(rule: rule, now: now, calendar: calendar)
         }
 
         // One live occurrence at a time, in every mode.
@@ -151,18 +183,17 @@ struct RecurrenceEngine {
 
     /// Where a brand-new series starts.
     ///
-    /// The template's own assigned date if it has one — the user picked a date
-    /// and then made it repeat, so the first occurrence is that date, not one
-    /// interval after it. Otherwise the rule's first fire from now.
+    /// Only reached when the series has no starting point at all. A to-do that
+    /// carried a date when it was made to repeat keeps that date as its first
+    /// occurrence, but it is not read here: a template holds no one-off
+    /// scheduling of its own, so `clearScheduleForTemplate` moves the date
+    /// straight into `recurrenceNextDate` — already normalized through the rule
+    /// — and the caller's `nil` check then skips this entirely.
     private func firstDate(
-        for template: Todo,
         rule: RecurrenceRule,
         now: Date,
         calendar: Calendar
     ) -> Date? {
-        if let assigned = template.assignedDate {
-            return rule.applyingTimeOfDay(to: assigned, calendar: calendar)
-        }
         // Stepping from yesterday rather than now, so a rule whose day is today
         // fires today instead of skipping to the next interval.
         let yesterday = calendar.date(byAdding: .day, value: -1, to: calendar.startOfDay(for: now)) ?? now
@@ -183,8 +214,6 @@ struct RecurrenceEngine {
             assignedDate: date,
             assignedHasTime: rule.hasTime,
             duration: template.duration,
-            dueDate: template.dueDate,
-            dueHasTime: template.dueHasTime,
             space: template.space,
             parent: template.parent
         )

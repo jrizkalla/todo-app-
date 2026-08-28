@@ -83,6 +83,136 @@ struct RecurrenceEngineTests {
         #expect(!anytime.contains { $0.uuid == todo.uuid })
     }
 
+    // MARK: A template carries no dates of its own
+
+    /// The bug this rule was written for: a to-do that had a date before it was
+    /// made to repeat kept that date on the template, so the schedule drew a
+    /// row claiming to be overdue.
+    @Test func becomingATemplateClearsItsOwnScheduling() throws {
+        let store = try makeStore()
+        let todo = store.createTodo(title: "Renew the licence")
+        let past = Date().addingTimeInterval(-10 * 24 * 3600)
+        store.schedule(todo, to: past)
+        todo.dueDate = past
+        todo.dueHasTime = false
+
+        store.setRecurrence(dailyRule(), on: todo)
+
+        #expect(todo.assignedDate == nil)
+        #expect(todo.dueDate == nil)
+        #expect(!todo.assignedHasTime)
+        #expect(!todo.dueHasTime)
+        // And so it cannot read as overdue, whatever the date used to be.
+        #expect(!todo.isOverdue)
+    }
+
+    /// Clearing the date must not lose it: it is the series' starting point,
+    /// and moves to the field that means exactly that.
+    @Test func theClearedDateSeedsTheFirstOccurrence() throws {
+        let store = try makeStore()
+        let todo = store.createTodo(title: "Water the plants")
+        let calendar = Calendar.current
+        let inThreeDays = calendar.startOfDay(for: Date().addingTimeInterval(3 * 24 * 3600))
+        store.schedule(todo, to: inThreeDays)
+
+        store.setRecurrence(dailyRule(), on: todo)
+
+        let instance = try #require(todo.currentRecurrenceInstance)
+        #expect(calendar.isDate(
+            try #require(instance.assignedDate), inSameDayAs: inThreeDays
+        ))
+    }
+
+    /// A due date is a single deadline, so copying it onto every occurrence
+    /// made each one after the first overdue from birth.
+    @Test func occurrencesDoNotInheritAFrozenDueDate() throws {
+        let store = try makeStore()
+        let todo = store.createTodo(title: "File the report")
+        todo.dueDate = Date().addingTimeInterval(-5 * 24 * 3600)
+
+        store.setRecurrence(dailyRule(), on: todo)
+
+        let instance = try #require(todo.currentRecurrenceInstance)
+        #expect(instance.dueDate == nil)
+        #expect(!instance.isOverdue)
+    }
+
+    /// The template a paused series shows is the one the user reads, so it is
+    /// the one that must not claim to be late.
+    @Test func aPausedTemplateStandingInIsNotOverdue() throws {
+        let store = try makeStore()
+        let todo = store.createTodo(title: "Deep clean")
+        store.schedule(todo, to: Date().addingTimeInterval(-30 * 24 * 3600))
+        todo.dueDate = Date().addingTimeInterval(-30 * 24 * 3600)
+
+        store.setRecurrence(dailyRule(), on: todo)
+        store.setRecurrenceStatus(.paused, on: todo)
+
+        #expect(todo.standsInForItsSeries)
+        #expect(!todo.isOverdue)
+        #expect(todo.assignedDate == nil)
+        #expect(todo.dueDate == nil)
+    }
+
+    /// A timed rule puts its time on the seeded first occurrence too — the
+    /// path that skips `firstDate` because the seed is already set.
+    @Test func theSeededFirstOccurrenceCarriesTheRulesTimeOfDay() throws {
+        let store = try makeStore()
+        let todo = store.createTodo(title: "Standup")
+        let calendar = Calendar.current
+        store.schedule(todo, to: calendar.startOfDay(for: Date().addingTimeInterval(24 * 3600)))
+
+        var rule = dailyRule()
+        rule.timeOfDayMinutes = 15 * 60
+        store.setRecurrence(rule, on: todo)
+
+        let instance = try #require(todo.currentRecurrenceInstance)
+        let date = try #require(instance.assignedDate)
+        #expect(calendar.component(.hour, from: date) == 15)
+        #expect(instance.assignedHasTime)
+    }
+
+    /// A store written before templates gave up their dates repairs itself on
+    /// launch, including the paused series that is actually on screen.
+    @Test func launchRepairsATemplateStillCarryingDates() throws {
+        let store = try makeStore()
+        let todo = store.createTodo(title: "Replace the filters")
+        store.setRecurrence(dailyRule(), on: todo)
+        store.setRecurrenceStatus(.paused, on: todo)
+
+        // Simulate the old shape: a paused template holding a stale date.
+        let past = Date().addingTimeInterval(-20 * 24 * 3600)
+        todo.assignedDate = past
+        todo.dueDate = past
+        #expect(todo.isOverdue)
+
+        engine(store).generateDueInstances()
+
+        #expect(todo.assignedDate == nil)
+        #expect(todo.dueDate == nil)
+        #expect(!todo.isOverdue)
+        // Still the row standing in for its series, just no longer a late one.
+        #expect(todo.standsInForItsSeries)
+    }
+
+    /// The seed fixture is what the running app shows, so the template it
+    /// builds must obey the same rule: no dates, and no "Overdue".
+    @Test func seededSampleDataHasNoDatedTemplates() throws {
+        let container = try ModelContainer.appContainer(inMemory: true)
+        let context = ModelContext(container)
+        PreviewData.seedIfEmpty(into: context)
+
+        let templates = ((try? context.fetch(FetchDescriptor<Todo>())) ?? [])
+            .filter(\.isRecurrenceTemplate)
+        #expect(!templates.isEmpty)
+
+        for template in templates {
+            #expect(template.assignedDate == nil)
+            #expect(template.dueDate == nil)
+            #expect(!template.isOverdue)
+        }
+    }
+
     // MARK: One row per series
 
     /// The rule the lists follow: whichever of the two exists stands for the

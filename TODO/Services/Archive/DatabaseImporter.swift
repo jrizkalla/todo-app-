@@ -427,6 +427,13 @@ struct DatabaseImporter {
         if let next = value.value(forAnyKey: Key.Todo.recurrenceNextDate)?.dateValue {
             todo.recurrenceNextDate = next
         }
+
+        // A template carries no one-off scheduling of its own. Applied on the
+        // way in because an archive can predate that rule — or be hand-edited —
+        // and a template arriving with a stale due date reads as an overdue
+        // task rather than a schedule. Runs after `recurrenceNextDate` is read
+        // so the archive's own seed wins over the assigned date.
+        todo.clearScheduleForTemplate()
     }
 
     /// Attach a to-do to its space and parent.

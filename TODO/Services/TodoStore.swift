@@ -425,6 +425,16 @@ struct TodoStore {
                 discardUntouchedFutureInstances(of: template)
             }
 
+            if rule != nil {
+                // Becoming a template means giving up one-off scheduling: the
+                // dates belong to the occurrences now. Runs after the branch
+                // above so a changed schedule has already cleared
+                // `recurrenceNextDate` and the assigned date can seed it
+                // afresh, and before the refile so the bucket is decided on
+                // what the template actually carries.
+                template.clearScheduleForTemplate()
+            }
+
             template.refileForCurrentScheduling()
             template.touch()
             save()
