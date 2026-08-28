@@ -82,13 +82,21 @@ extension Array where Element == Todo {
         }
     }
 
-    /// Drop recurrence templates, whose instances are what the lists show.
+    /// Show one row per series: the live occurrence, or the template itself.
     ///
-    /// The in-memory twin of `TodoQueries.notATemplate`; the two must agree, or
-    /// the widget and the previews would show a schedule as though it were a
-    /// task.
+    /// A series is represented by exactly one row. While a scheduled occurrence
+    /// exists it is the row — it is the thing the user actually does — and the
+    /// template is dropped, which is what stops a recurring task appearing
+    /// twice. With no occurrence live, the template stands in for the series so
+    /// it can still be found, resumed, and edited; `TodoRow` draws it with a
+    /// dashed border to say it is a schedule rather than a task.
+    ///
+    /// The in-memory twin of `TodoQueries.notATemplate` plus the
+    /// `standsInForItsSeries` pass the descriptors run; all three must agree, or
+    /// the widget and the previews would disagree with the lists about what a
+    /// recurring to-do looks like.
     func filterTemplates() -> Self {
-        self.filter { !$0.isRecurrenceTemplate }
+        self.filter { !$0.isRecurrenceTemplate || $0.standsInForItsSeries }
     }
 
     func filterCycles() -> Self {
@@ -198,11 +206,29 @@ enum TodoQueries {
     /// do it. `recurrenceModeRaw` is the stored marker; `#Predicate` cannot read
     /// the `isRecurrenceTemplate` computed property.
     ///
-    /// Anytime deliberately does *not* use this: a paused or cancelled series
-    /// has no instance standing in for it, and the spec asks for the template
-    /// itself to surface there so it can be found and resumed.
+    /// Used by the *dated* lists, where a template genuinely has no place: a
+    /// template carries a schedule, not a date, so there is no day for it to sit
+    /// on. The undated lists — Inbox, Anytime, a space, a project — admit
+    /// templates and narrow them with `standingInTemplates` instead, so a
+    /// series with no live occurrence is still reachable somewhere.
     private static var notATemplate: Predicate<Todo> {
         #Predicate<Todo> { todo in todo.recurrenceModeRaw == nil }
+    }
+
+    /// Drop the templates whose series already has a row.
+    ///
+    /// The undated lists — Inbox, Anytime, a space, a project — admit templates
+    /// in the fetch and narrow them here, because the test is "does this series
+    /// have a live occurrence?" and `#Predicate` cannot ask a to-many
+    /// relationship whether any of its members is unresolved. Templates are few
+    /// enough that faulting them in to check one property is cheaper than
+    /// denormalizing the answer into a column that could then go stale.
+    ///
+    /// The twin of the array path's `filterTemplates()`; the two must agree.
+    /// Applied in `finish(...)`, so every caller of a descriptor that admits
+    /// templates gets it.
+    private static func standingInTemplates(_ todos: [Todo]) -> [Todo] {
+        todos.filter { !$0.isRecurrenceTemplate || $0.standsInForItsSeries }
     }
 
     /// The resolved half of the visibility rules, as one clause.
@@ -313,17 +339,19 @@ enum TodoQueries {
     ) -> FetchDescriptor<Todo> {
         let inboxRaw = Bucket.inbox.rawValue
         let focus = notHiddenByFocus
-        let template = notATemplate
         let visible = resolvedVisible(
             includeResolved: includeResolved, now: now, calendar: calendar
         )
 
+        // Templates are admitted here and narrowed by `standingInTemplates` in
+        // `finish(...)`: a series whose occurrence is live is represented by
+        // that occurrence, and only a series with nothing standing in for it
+        // shows its own row.
         var descriptor = FetchDescriptor<Todo>(
             predicate: #Predicate<Todo> { todo in
                 focus.evaluate(todo)
                     && todo.bucketRaw == inboxRaw
                     && !todo.isProject
-                    && template.evaluate(todo)
                     && visible.evaluate(todo)
             },
         )
@@ -460,21 +488,17 @@ enum TodoQueries {
         let visible = resolvedVisible(
             includeResolved: includeResolved, now: now, calendar: calendar
         )
-        // Anytime is the one list that shows a template — but only a *dormant*
-        // one. An active series already has an occurrence standing in for it
-        // somewhere, so admitting the template too would list the same
-        // recurring task twice.
-        let activeRaw = RecurrenceStatus.active.rawValue
-        let dormantOrPlain = #Predicate<Todo> { todo in
-            todo.recurrenceModeRaw == nil || todo.recurrenceStatusRaw != activeRaw
-        }
-
+        // Templates are admitted and narrowed by `standingInTemplates` in
+        // `finish(...)`. That test — "has this series a live occurrence?" — is
+        // strictly better than the status test that used to be here: a paused
+        // series was the common case of a series with nothing standing in for
+        // it, but not the only one, and an active series whose end date has
+        // passed used to disappear from every list in the app.
         var descriptor = FetchDescriptor<Todo>(
             predicate: #Predicate<Todo> { todo in
                 focus.evaluate(todo)
                     && todo.bucketRaw == anytimeRaw
                     && !todo.isProject
-                    && dormantOrPlain.evaluate(todo)
                     && visible.evaluate(todo)
             }
         )
@@ -1075,8 +1099,14 @@ enum TodoQueries {
     static func finish(_ fetched: [Todo], for destination: ListDestination) -> [Todo] {
         switch destination {
         case .inbox:
-            return fetched.filterCycles()
-        case .today, .tomorrow, .thisWeek, .anytime:
+            return standingInTemplates(fetched).filterCycles()
+        case .anytime:
+            return standingInTemplates(fetched)
+                .filterCycles()
+                .sorted(by: sortByDateThenOrder)
+        case .today, .tomorrow, .thisWeek:
+            // No template pass: the dated descriptors exclude templates in the
+            // fetch, since a schedule has no day to sit on.
             return fetched.filterCycles().sorted(by: sortByDateThenOrder)
         case .logbook:
             // SQL orders NULLs first under `.reverse`; the array version ranks a
@@ -1085,7 +1115,7 @@ enum TodoQueries {
                 ($0.resolvedAt ?? .distantPast) > ($1.resolvedAt ?? .distantPast)
             }
         case .space, .project:
-            return fetched
+            return standingInTemplates(fetched)
         }
     }
 
@@ -1372,9 +1402,10 @@ enum TodoQueries {
     static func anytime(_ todos: [Todo], includeResolved: Bool = false) -> [Todo] {
         topLevel(todos)
             .filter { $0.bucket == .anytime && !$0.isProject }
-            // A dormant series shows itself here; an active one is represented
-            // by its current instance instead. See `anytimeDescriptor`.
-            .filter { !$0.isRecurrenceTemplate || $0.isDormantRecurrenceTemplate }
+            // A series with no live occurrence shows itself here; one that has
+            // an occurrence is represented by that instead. See
+            // `anytimeDescriptor`.
+            .filterTemplates()
             .filter(includeResolved: includeResolved)
             .filterResolved()
             .filterCycles()
@@ -1404,6 +1435,7 @@ enum TodoQueries {
     static func inSpace(_ todos: [Todo], spaceID: UUID, includeResolved: Bool = false) -> [Todo] {
         todos
             .filter { $0.space?.uuid == spaceID && $0.parent == nil && !$0.isProject }
+            .filterTemplates()
             .filter(includeResolved: includeResolved)
             .filterResolved()
             .sorted(by: sortByOrder)
@@ -1413,6 +1445,7 @@ enum TodoQueries {
     static func inProject(_ todos: [Todo], projectID: UUID, includeResolved: Bool = false) -> [Todo] {
         todos
             .filter { $0.parent?.uuid == projectID }
+            .filterTemplates()
             .filter(includeResolved: includeResolved)
             .filterResolved()
             .sorted(by: sortByOrder)

@@ -655,6 +655,24 @@ extension Todo {
         return !rule.status.generatesInstances
     }
 
+    /// True when this template is the row the lists should draw for its series.
+    ///
+    /// The rule the whole feature turns on: a series is represented by exactly
+    /// one row. Normally that is the scheduled occurrence — the thing the user
+    /// actually does — and the template stays out of the way. But a series with
+    /// no live occurrence has nothing standing in for it, and hiding the
+    /// template as well would make the whole series vanish from every list with
+    /// no way to find it again.
+    ///
+    /// A paused or cancelled series is the usual reason there is no occurrence,
+    /// but not the only one: an active series whose end date has passed, or one
+    /// whose generation has not run yet, is in the same position. So the test is
+    /// the absence of the instance rather than the status that usually causes
+    /// it — see `TodoQueries.filterTemplates`.
+    var standsInForItsSeries: Bool {
+        isRecurrenceTemplate && currentRecurrenceInstance == nil
+    }
+
     private static func encodeWeekdays(_ weekdays: Set<Int>) -> String? {
         guard !weekdays.isEmpty else { return nil }
         return weekdays.sorted().map(String.init).joined(separator: ",")

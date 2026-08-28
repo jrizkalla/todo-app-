@@ -128,6 +128,22 @@ struct PreviewRenderTests {
         render(TodoRowRenderHost(todo: template, isSelected: true))
     }
 
+    /// An *active* template with no occurrence live — a series past its end
+    /// date, say — draws the same dashed frame but reads as a plain "Schedule"
+    /// rather than borrowing the paused row's orange.
+    @Test func todoRowRendersAnActiveTemplateStandingInForItsSeries() {
+        let template = Todo(title: "Quarterly review")
+        PreviewData.context.insert(template)
+        template.recurrenceRule = RecurrenceRule(
+            mode: .onSchedule, frequency: .monthly, interval: 3
+        )
+
+        #expect(template.standsInForItsSeries)
+        #expect(!template.isDormantRecurrenceTemplate)
+        render(TodoRowRenderHost(todo: template))
+        render(TodoRowRenderHost(todo: template, isSelected: true))
+    }
+
     @Test func recurrencePickerRenders() {
         render(
             RecurrencePickerView(

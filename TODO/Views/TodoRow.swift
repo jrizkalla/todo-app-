@@ -290,8 +290,34 @@ struct TodoRow : View {
     /// row has finished growing.
     var borderOverlay: some View {
         RoundedRectangle(cornerRadius: Theme.Metrics.cornerRadius)
-            .strokeBorder(todo.color)
-            .opacity(isSelected ? 1 : 0)
+            .strokeBorder(borderColor, style: borderStyle)
+            .opacity(isSelected || todo.standsInForItsSeries ? 1 : 0)
+    }
+
+    /// A template standing in for its series is drawn dashed.
+    ///
+    /// The row is a *schedule*, not a task: there is no occurrence of it to do
+    /// right now, and ticking its checkbox is not completing today's work. A
+    /// dashed outline says that at a glance and in every list, without adding a
+    /// badge that would have to compete with the ones the row already carries.
+    ///
+    /// Solid whenever the row is a real to-do, so the expanded-row border keeps
+    /// the appearance it has everywhere else.
+    private var borderStyle: StrokeStyle {
+        todo.standsInForItsSeries
+            ? StrokeStyle(lineWidth: 1, dash: [5, 4])
+            : StrokeStyle(lineWidth: 1)
+    }
+
+    /// The dashed frame follows the schedule's state rather than the to-do's
+    /// colour: a paused or cancelled series is already flagged orange by its
+    /// chip and its marker, and matching that keeps one series speaking with
+    /// one voice.
+    private var borderColor: Color {
+        if todo.standsInForItsSeries && !isSelected {
+            return todo.isDormantRecurrenceTemplate ? .orange : todo.color.opacity(0.7)
+        }
+        return todo.color
     }
     
     private struct Badge: Identifiable {
@@ -425,23 +451,40 @@ struct TodoRow : View {
         }
     }
 
-    /// The "this is a schedule, not a task" marker on a dormant template.
+    /// The "this is a schedule, not a task" marker on a template drawing its
+    /// own row.
     ///
-    /// The spec asks a paused series to be visibly not a real to-do. Without
-    /// this it is indistinguishable from an ordinary Anytime item, and ticking
-    /// its checkbox would look like completing work that was never scheduled.
+    /// The spec asks a series with no occurrence to be visibly not a real
+    /// to-do. Without this it is indistinguishable from an ordinary item, and
+    /// ticking its checkbox would look like completing work that was never
+    /// scheduled. Pairs with the dashed border, which carries the same fact at
+    /// a distance the caption cannot.
+    ///
+    /// A paused or cancelled series names its state, since that is *why* it has
+    /// no occurrence and it is the thing the user came to change. An active one
+    /// with nothing scheduled — a series past its end date — reads simply as a
+    /// schedule.
     @ViewBuilder
     private var templateMarker: some View {
-        if todo.isDormantRecurrenceTemplate {
-            Text(todo.effectiveRecurrenceRule?.status == .cancelled ? "Cancelled series" : "Paused series")
+        if todo.standsInForItsSeries {
+            let tint: Color = todo.isDormantRecurrenceTemplate ? .orange : .secondary
+            Text(templateMarkerText)
                 .font(.caption2)
                 .fontWeight(.medium)
-                .foregroundStyle(.orange)
+                .foregroundStyle(tint)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
                 .background {
-                    Capsule().strokeBorder(Color.orange.opacity(0.5), lineWidth: 1)
+                    Capsule().strokeBorder(tint.opacity(0.5), lineWidth: 1)
                 }
+        }
+    }
+
+    private var templateMarkerText: String {
+        switch todo.effectiveRecurrenceRule?.status {
+        case .cancelled: "Cancelled series"
+        case .paused: "Paused series"
+        default: "Schedule"
         }
     }
 

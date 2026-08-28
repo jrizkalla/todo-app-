@@ -139,49 +139,54 @@ struct RootView: View {
         // Phones fall through to the bare tab view untouched.
         Group {
             if isWideLayout {
-                // The panel is an *overlay*, not a sibling in a stack, so it
-                // draws above the tab content rather than beside it; `tabs`
-                // reserves the width with a matching trailing inset, so no
-                // content ends up hidden behind the card.
+                // The panel is a *sibling* of the tab content, not an overlay
+                // over it: an `HStack` is what makes the content narrow to make
+                // room, so nothing ends up underneath the card. A trailing
+                // `safeAreaPadding` on the `TabView` was the previous attempt
+                // and does not reach far enough — the inset does not cross into
+                // the `NavigationSplitView` the Lists tab builds, so that tab's
+                // list ran its full width and the panel covered the right of
+                // it.
                 //
-                // It deliberately stops below the toolbar. On macOS the search
-                // field is a window toolbar item spanning the whole window — it
-                // is not confined to the tab column and pays no attention to
-                // content safe areas — so anything drawn up into that strip
-                // collides with it. Running the card to the window's very top
-                // is what put the field on top of it.
-                tabs
-                    .safeAreaPadding(.trailing, settings.showSidePanel ? panelColumn : 0)
-                    .overlay(alignment: .trailing) {
-                        if settings.showSidePanel {
-                            SidePanelView(
-                                selectedTodo: $selectedTodo,
-                                hasFocus: Binding<Bool>(
-                                    get: { self.todoFocusHolder == .sidebar },
-                                    set: { self.todoFocusHolder = $0 ? .sidebar : nextFocusHolder(for: .sidebar) }
-                                ),
-                                scope: effectivePanelScope,
-                                // Only while it is actually showing the Inbox:
-                                // scoped to a calendar's list, the panel is not
-                                // where a captured to-do went.
-                                capturedTodo: effectivePanelScope == .inbox ? $capturedTodo : nil,
-                                onHide: { settings.showSidePanel = false },
-                                createRequest: panelCreateCount
-                            )
-                            .frame(width: panelColumn)
-                            .transition(.move(edge: .trailing).combined(with: .opacity))
-                        }
+                // The panel deliberately stops below the toolbar. On macOS the
+                // search field is a window toolbar item spanning the whole
+                // window — it is not confined to the tab column and pays no
+                // attention to content safe areas — so anything drawn up into
+                // that strip collides with it. Running the card to the window's
+                // very top is what put the field on top of it.
+                HStack(spacing: 0) {
+                    tabs
+                        .frame(maxWidth: .infinity)
+
+                    if settings.showSidePanel {
+                        SidePanelView(
+                            selectedTodo: $selectedTodo,
+                            hasFocus: Binding<Bool>(
+                                get: { self.todoFocusHolder == .sidebar },
+                                set: { self.todoFocusHolder = $0 ? .sidebar : nextFocusHolder(for: .sidebar) }
+                            ),
+                            scope: effectivePanelScope,
+                            // Only while it is actually showing the Inbox:
+                            // scoped to a calendar's list, the panel is not
+                            // where a captured to-do went.
+                            capturedTodo: effectivePanelScope == .inbox ? $capturedTodo : nil,
+                            onHide: { settings.showSidePanel = false },
+                            createRequest: panelCreateCount
+                        )
+                        .frame(width: panelColumn)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
                     }
-                    .animation(Theme.Animation.panel, value: settings.showSidePanel)
-                    // Bringing the panel back once hidden: the toggle in
-                    // Settings still works, but a control on the shell itself
-                    // means the user does not have to leave the screen to undo
-                    // a collapse.
-                    .overlay(alignment: .topTrailing) {
-                        if !settings.showSidePanel {
-                            showPanelButton
-                        }
+                }
+                .animation(Theme.Animation.panel, value: settings.showSidePanel)
+                // Bringing the panel back once hidden: the toggle in
+                // Settings still works, but a control on the shell itself
+                // means the user does not have to leave the screen to undo
+                // a collapse.
+                .overlay(alignment: .topTrailing) {
+                    if !settings.showSidePanel {
+                        showPanelButton
                     }
+                }
             } else {
                 tabs
             }

@@ -83,6 +83,79 @@ struct RecurrenceEngineTests {
         #expect(!anytime.contains { $0.uuid == todo.uuid })
     }
 
+    // MARK: One row per series
+
+    /// The rule the lists follow: whichever of the two exists stands for the
+    /// series, and never both. An active series is its occurrence.
+    @Test func aSeriesWithALiveInstanceIsRepresentedByTheInstance() throws {
+        let store = try makeStore()
+        let todo = store.createTodo(title: "Standup")
+        store.setRecurrence(dailyRule(), on: todo)
+
+        #expect(try #require(todo.currentRecurrenceInstance).state == .open)
+        #expect(!todo.standsInForItsSeries)
+    }
+
+    /// And a series with nothing scheduled is the template — otherwise pausing
+    /// a series would erase it from the app.
+    @Test func aSeriesWithNoLiveInstanceIsRepresentedByTheTemplate() throws {
+        let store = try makeStore()
+        let todo = store.createTodo(title: "Deep clean")
+        store.setRecurrence(dailyRule(), on: todo)
+        store.setRecurrenceStatus(.paused, on: todo)
+
+        // Pausing retires the occurrence, leaving the template to stand in.
+        #expect(todo.currentRecurrenceInstance == nil)
+        #expect(todo.standsInForItsSeries)
+    }
+
+    /// The bug this rule was written for: a template filed in a space showed up
+    /// beside its own occurrence, so one recurring task drew two rows.
+    @Test func aSpaceShowsOneRowForASeriesNotTwo() throws {
+        let store = try makeStore()
+        let space = store.createSpace(name: "Home")
+        let todo = store.createTodo(title: "Water the plants")
+        store.move(todo, toSpace: space)
+        store.setRecurrence(dailyRule(), on: todo)
+
+        let rows = TodoQueries.inSpace(allTodos(store), spaceID: space.uuid)
+        let forSeries = rows.filter { $0.uuid == todo.uuid || $0.recurrenceTemplate?.uuid == todo.uuid }
+        #expect(forSeries.count == 1)
+        // And it is the occurrence, since the series has one live.
+        #expect(forSeries.first?.recurrenceTemplate?.uuid == todo.uuid)
+    }
+
+    /// The other half of the same rule: pause the series and the space still
+    /// shows exactly one row, now the template.
+    @Test func aSpaceShowsTheTemplateOnceTheSeriesIsPaused() throws {
+        let store = try makeStore()
+        let space = store.createSpace(name: "Home")
+        let todo = store.createTodo(title: "Water the plants")
+        store.move(todo, toSpace: space)
+        store.setRecurrence(dailyRule(), on: todo)
+        store.setRecurrenceStatus(.paused, on: todo)
+
+        let rows = TodoQueries.inSpace(allTodos(store), spaceID: space.uuid)
+        let forSeries = rows.filter { $0.uuid == todo.uuid || $0.recurrenceTemplate?.uuid == todo.uuid }
+        #expect(forSeries.count == 1)
+        #expect(forSeries.first?.uuid == todo.uuid)
+    }
+
+    /// The same rule inside a project, which is a separate query path.
+    @Test func aProjectShowsOneRowForASeries() throws {
+        let store = try makeStore()
+        let project = store.createTodo(title: "Kitchen")
+        project.isProject = true
+        let todo = store.createTodo(title: "Wipe counters")
+        store.move(todo, toParent: project)
+        store.setRecurrence(dailyRule(), on: todo)
+
+        let rows = TodoQueries.inProject(allTodos(store), projectID: project.uuid)
+        let forSeries = rows.filter { $0.uuid == todo.uuid || $0.recurrenceTemplate?.uuid == todo.uuid }
+        #expect(forSeries.count == 1)
+        #expect(forSeries.first?.recurrenceTemplate?.uuid == todo.uuid)
+    }
+
     // MARK: Generation is idempotent
 
     /// The property that lets the engine run on every launch and every
