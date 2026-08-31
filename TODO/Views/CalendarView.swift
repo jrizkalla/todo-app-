@@ -241,6 +241,10 @@ private struct RangedCalendarView: View {
     /// blocks can be positioned as fractions of it.
     @State private var columnWidth: CGFloat = 0
 
+    /// Height of one all-day chip, measured rather than assumed so the row's
+    /// cap holds at every Dynamic Type size. See `chipHeightProbe`.
+    @State private var chipHeight: CGFloat = AllDayMetrics.chipHeightEstimate
+
     /// A not-yet-created to-do being sketched by a long press.
     private struct DraftBlock: Equatable {
         let day: Date
@@ -923,6 +927,44 @@ private struct RangedCalendarView: View {
         // A cap that has not been reached is not a scroll view the user should
         // be able to bounce.
         .scrollBounceBehavior(.basedOnSize)
+        // The cap is only correct if `chipHeight` matches what a chip actually
+        // measures, so one real chip reports its height rather than the layout
+        // trusting a constant. Hidden, unhittable, and zero-width, so it costs
+        // a measurement and nothing else.
+        .background(alignment: .topLeading) { chipHeightProbe }
+    }
+
+    /// An off-screen stand-in for a chip, used to learn what one really
+    /// measures.
+    ///
+    /// The row's cap used to be built from a hardcoded 22pt, which was already
+    /// short of what a chip takes at the default text size and fell further
+    /// behind at every larger one. Being short is what made the bug visible:
+    /// the `ScrollView` was framed smaller than its own content, so the chips
+    /// painted over the divider and the first hour of the grid.
+    ///
+    /// Only the two things that set a chip's height are reproduced — the
+    /// caption line and the checkbox it sits beside, under the same vertical
+    /// padding — rather than building a whole `chip(for:)`, which would drag in
+    /// drag-and-drop, a popover, and a to-do to hang them off, none of which
+    /// changes the number being measured. The padding is the shared constant
+    /// `chip(for:)` uses, so the two cannot drift apart on that axis; the font
+    /// and the checkbox scale have to be kept in step by hand.
+    private var chipHeightProbe: some View {
+        HStack(spacing: 4) {
+            TodoCheckboxShape(state: .open, tint: .accentColor, scale: .widget)
+            Text("Chip").font(.caption)
+        }
+        .padding(.vertical, AllDayMetrics.chipPadding)
+        .fixedSize()
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+            guard height > 0, height != chipHeight else { return }
+            chipHeight = height
+        }
+        .frame(width: 0, height: 0)
+        .hidden()
+        .accessibilityHidden(true)
+        .allowsHitTesting(false)
     }
 
     /// Tallest the all-day row is allowed to get: about five chips.
@@ -934,18 +976,8 @@ private struct RangedCalendarView: View {
             untimedOn(day).count + allDayEvents(on: day).count
         }.max() ?? 0
 
-        let rows = min(max(mostChips, 1), Self.allDayVisibleChips)
-        return CGFloat(rows) * Self.allDayChipHeight
-            + CGFloat(max(rows - 1, 0)) * Self.allDayChipSpacing
-            + Self.allDayRowPadding * 2
+        return AllDayMetrics.rowHeight(chipCount: mostChips, chipHeight: chipHeight)
     }
-
-    /// How many chips the all-day row shows before it starts scrolling.
-    private static let allDayVisibleChips = 5
-    /// Height of one chip: caption text plus its own vertical padding.
-    private static let allDayChipHeight: CGFloat = 22
-    private static let allDayChipSpacing: CGFloat = 4
-    private static let allDayRowPadding: CGFloat = 6
 
     private func allDayContent(for days: [Date]) -> some View {
         HStack(alignment: .top, spacing: 0) {
@@ -957,7 +989,7 @@ private struct RangedCalendarView: View {
 
             HStack(alignment: .top, spacing: 0) {
                 ForEach(days, id: \.self) { day in
-                    VStack(spacing: Self.allDayChipSpacing) {
+                    VStack(spacing: AllDayMetrics.chipSpacing) {
                         ForEach(untimedOn(day)) { todo in
                             chip(for: todo)
                         }
@@ -997,11 +1029,11 @@ private struct RangedCalendarView: View {
                 }
             }
         }
-        .padding(.vertical, Self.allDayRowPadding)
+        .padding(.vertical, AllDayMetrics.rowPadding)
         // A day with nothing in it still has to be a drop target, so the row
         // keeps a floor of one chip's worth of height. The cap above is a
         // maximum, not a size.
-        .frame(minHeight: Self.allDayChipHeight + Self.allDayRowPadding * 2)
+        .frame(minHeight: chipHeight + AllDayMetrics.rowPadding * 2)
     }
 
     private func chip(for todo: Todo) -> some View {
@@ -1044,7 +1076,7 @@ private struct RangedCalendarView: View {
             .clipped()
         }
         .padding(.horizontal, 7)
-        .padding(.vertical, 3)
+        .padding(.vertical, AllDayMetrics.chipPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
             RoundedRectangle(cornerRadius: 5, style: .continuous)
@@ -2344,7 +2376,7 @@ private struct RangedCalendarView: View {
             .lineLimit(1)
             .foregroundStyle(color)
             .padding(.horizontal, 7)
-            .padding(.vertical, 3)
+            .padding(.vertical, AllDayMetrics.chipPadding)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background {
                 RoundedRectangle(cornerRadius: 5, style: .continuous)
