@@ -47,6 +47,28 @@ final class Todo {
     var dueDate: Date?
     var dueHasTime: Bool = false
 
+    /// The *week* this work is planned for, when it is planned by week rather
+    /// than by day. Nil for everything else.
+    ///
+    /// Stored as the start of that week — midnight on its first day, by the
+    /// user's week-start preference — rather than as a `thisWeek`/`nextWeek`
+    /// enum, and that is the whole design. An enum would have to be rewritten
+    /// on every row every Monday: what the user called "next week" becomes this
+    /// week without anybody touching it, and a stored label would go on
+    /// claiming otherwise until some migration pass caught up. An anchor date
+    /// needs no such pass — "this week" is the anchor that equals the current
+    /// week's start and "next week" is the one seven days on, so the lists
+    /// re-sort themselves at midnight on the week boundary by asking the
+    /// calendar rather than by being told.
+    ///
+    /// An anchor in a week that has already ended is the rollover's business;
+    /// see `WeekScheduleRollover`.
+    ///
+    /// Mutually exclusive with `assignedDate` by construction — see
+    /// `scheduleForWeek(_:)` and `clearWeekSchedule()`, which every write goes
+    /// through. A to-do is scheduled for a day or for a week, never both.
+    var weekAnchor: Date?
+
     /// True when this todo is promoted to a project and appears in the sidebar.
     var isProject: Bool = false
 
@@ -173,6 +195,7 @@ final class Todo {
         duration: TimeInterval? = nil,
         dueDate: Date? = nil,
         dueHasTime: Bool = false,
+        weekSchedule: WeekSchedule? = nil,
         isProject: Bool = false,
         space: Space? = nil,
         parent: Todo? = nil
@@ -187,6 +210,14 @@ final class Todo {
         self.duration = duration
         self.dueDate = dueDate
         self.dueHasTime = dueHasTime
+        // Through the setter, so a caller passing both a date and a week gets
+        // the same exclusion every other path enforces rather than a row that
+        // is quietly in two places at once.
+        if let weekSchedule {
+            self.weekAnchor = WeekMath.anchor(for: weekSchedule)
+            self.assignedDate = nil
+            self.assignedHasTime = false
+        }
         self.isProject = isProject
         self.space = space
         self.parent = parent
@@ -234,10 +265,63 @@ extension Todo {
 
 extension Todo {
     /// The spec's definition: a todo is scheduled once it has a date, a due
-    /// date, or a home (project or space).
+    /// date, a week, or a home (project or space).
     var isScheduled: Bool {
-        assignedDate != nil || dueDate != nil || space != nil || parent != nil
+        assignedDate != nil || dueDate != nil || weekAnchor != nil
+            || space != nil || parent != nil
             || isRecurrenceTemplate
+    }
+
+    /// Plan this to-do into a week, clearing any day it was pinned to.
+    ///
+    /// The clearing is the point, and it is why every write goes through here
+    /// rather than assigning `weekAnchor` directly. "Scheduled for Tuesday" and
+    /// "scheduled for this week" are two answers to one question, so a to-do
+    /// holding both is not more scheduled — it is a row that shows up in Today
+    /// under a date the user replaced, and in This Week under a week they may
+    /// have since moved on from. The later choice wins outright.
+    ///
+    /// `duration` survives, for the same reason it survives
+    /// `clearScheduleForTemplate`: it says how long the work takes, which is
+    /// true whichever day it lands on. So does `dueDate` — a deadline is a fact
+    /// about the work rather than a placement, and picking a week to do
+    /// something in says nothing about when it is owed.
+    func scheduleForWeek(
+        _ schedule: WeekSchedule,
+        now: Date = Date(),
+        calendar: Calendar? = nil
+    ) {
+        weekAnchor = WeekMath.anchor(for: schedule, now: now, calendar: calendar)
+        assignedDate = nil
+        assignedHasTime = false
+    }
+
+    /// Drop the week plan, leaving everything else alone.
+    ///
+    /// The counterpart called by every path that assigns a *day*, so that
+    /// scheduling in either direction overrides the other rather than layering.
+    func clearWeekSchedule() {
+        weekAnchor = nil
+    }
+
+    /// Which week list this to-do belongs to right now, if either.
+    ///
+    /// Computed rather than stored — see `weekAnchor` for why. An anchor from a
+    /// week that has ended reads as nil here, so a stale row drops out of both
+    /// lists the moment the week turns, with or without the rollover having run.
+    func weekSchedule(now: Date = Date(), calendar: Calendar? = nil) -> WeekSchedule? {
+        guard let weekAnchor else { return nil }
+        return WeekMath.schedule(forAnchor: weekAnchor, now: now, calendar: calendar)
+    }
+
+    /// A week plan the user set that the week has since moved past.
+    ///
+    /// What the rollover sweeps: still open, still anchored, and anchored to a
+    /// week that has already ended.
+    func hasExpiredWeekSchedule(now: Date = Date(), calendar: Calendar? = nil) -> Bool {
+        guard let weekAnchor, !state.isResolved else { return false }
+        return WeekMath.startOfWeek(containing: weekAnchor, calendar: calendar)
+            < WeekMath.startOfWeek(containing: now, calendar: calendar)
     }
 
     /// Recompute which bucket this todo belongs in after a change to its dates
@@ -249,7 +333,11 @@ extension Todo {
     func refileForCurrentScheduling() {
         if space != nil || parent != nil {
             bucket = .space
-        } else if assignedDate != nil || dueDate != nil {
+        } else if assignedDate != nil || dueDate != nil || weekAnchor != nil {
+            // A week plan files the same way a date does. It is a commitment to
+            // do the work in a named stretch of time, which is the opposite of
+            // the unsorted state the Inbox is for — and leaving it there would
+            // have a to-do appear in both the Inbox and This Week at once.
             bucket = .anytime
         } else if isRecurrenceTemplate {
             // A template with no date is still not unorganized work — it is a
@@ -335,6 +423,14 @@ extension Todo {
         if let dueDate {
             let day = Calendar.current.startOfDay(for: dueDate)
             parts.append("due:\(Int(day.timeIntervalSince1970))")
+        }
+        // The anchor rather than the `.thisWeek`/`.nextWeek` reading of it, so
+        // the fingerprint is a fact about the row and not about when it was
+        // taken. Keying on the reading would re-flag every week-planned to-do
+        // as new every Monday, when nothing about it had moved.
+        if let weekAnchor {
+            let day = Calendar.current.startOfDay(for: weekAnchor)
+            parts.append("week:\(Int(day.timeIntervalSince1970))")
         }
 
         return parts.joined(separator: "|")
@@ -634,6 +730,11 @@ extension Todo {
 
         assignedDate = nil
         assignedHasTime = false
+        // A week is a placement like a date, and a template has no placement of
+        // its own — the same reasoning as `assignedDate` two lines up. Unlike
+        // the date it is not preserved as a seed: "this week" names no
+        // particular day for generation to start from.
+        weekAnchor = nil
         // Deliberately cleared rather than carried onto each occurrence. One
         // fixed deadline copied onto a weekly series makes every instance after
         // the first one overdue from birth; a recurring deadline is a property

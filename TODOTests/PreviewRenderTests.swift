@@ -199,6 +199,7 @@ struct PreviewRenderTests {
             SchedulePickerView(
                 todo: PreviewData.todo(titled: "Review"),
                 onPick: { _, _ in },
+                onPickWeek: { _ in },
                 onAddReminder: {},
                 onDismiss: {},
                 onRepeat: {}
@@ -232,7 +233,7 @@ struct PreviewRenderTests {
 
     @Test func todoListRendersEveryDestination() {
         let destinations: [ListDestination] = [
-            .inbox, .today, .tomorrow, .thisWeek, .anytime, .logbook,
+            .inbox, .today, .tomorrow, .thisWeek, .nextWeek, .anytime, .logbook,
             .project(PreviewData.project.uuid),
             .space(PreviewData.space.uuid),
         ]
@@ -300,6 +301,7 @@ struct PreviewRenderTests {
                 SchedulePickerView(
                     todo: todo,
                     onPick: { _, _ in },
+                    onPickWeek: { _ in },
                     onAddReminder: {},
                     onDismiss: {}
                 )

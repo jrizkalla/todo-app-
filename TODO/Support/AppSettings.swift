@@ -187,6 +187,12 @@ final class AppSettings {
     }
 
     /// Calendar honoring the week-start preference, used by every week view.
+    ///
+    /// Built here from the live property rather than delegating to
+    /// `WeekMath.appCalendar`, which reads the same preference straight out of
+    /// `UserDefaults`: this one has to reflect a toggle the user just flipped,
+    /// before `didSet` has written it through. The two agree by construction —
+    /// same key, same mapping — and `WeekScheduleTests` pins that they do.
     var calendar: Calendar {
         var calendar = Calendar.current
         calendar.firstWeekday = weekStartsOnMonday ? 2 : 1

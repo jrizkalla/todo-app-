@@ -151,3 +151,42 @@ private struct TodoDetailPopoverModifier: ViewModifier {
 }
 
 #endif
+
+extension View {
+    /// The editor for a to-do picked on a calendar that is *itself* a pushed
+    /// page.
+    ///
+    /// A sheet rather than another push, because of what a second
+    /// `navigationDestination(item:)` for `Todo` does to the stack it is
+    /// declared in. The list registers one at its root, the pushed calendar
+    /// would register a second, and SwiftUI resolves the pair by presenting
+    /// from the root — so opening a block *replaced* the calendar instead of
+    /// covering it, and Back returned to the list the calendar was opened from
+    /// rather than to the calendar itself.
+    ///
+    /// macOS is untouched: there the calendar anchors a popover to the block —
+    /// see `todoDetailPopover(for:selection:)` — which involves no navigation
+    /// and so never had the collision.
+    @ViewBuilder
+    func todoDetailSheet(selection: Binding<Todo?>) -> some View {
+        #if os(macOS)
+        self
+        #else
+        self.sheet(item: selection) { todo in
+            NavigationStack {
+                TodoDetailView(todo: todo)
+                    // A sheet has no back chevron, so the way out has to be
+                    // put here. Clearing the binding rather than calling
+                    // `dismiss` because the binding is what presents it, and a
+                    // sheet dismissed without clearing it cannot be reopened
+                    // on the same to-do.
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { selection.wrappedValue = nil }
+                        }
+                    }
+            }
+        }
+        #endif
+    }
+}

@@ -6,10 +6,27 @@ import SwiftUI
 /// a month grid for anything else, and Someday for work with no date at all.
 /// Presented from a row's leading swipe.
 struct SchedulePickerView: View {
-    let todo: Todo
+    /// The to-do being scheduled, when there is exactly one.
+    ///
+    /// `nil` when the panel was opened over a multi-row selection. Everything
+    /// it feeds is a *current value* readout — which shortcut is ticked, which
+    /// month the grid opens on, what the repeat row says — and a batch has no
+    /// single current value to report. The answers the panel produces are the
+    /// same either way, which is why one panel serves both.
+    var todo: Todo?
     /// Applies a new assigned date. `nil` clears it.
     let onPick: (Date?, _ hasTime: Bool) -> Void
-    let onAddReminder: () -> Void
+    /// Plans the to-do into a week instead of onto a day.
+    ///
+    /// Separate from `onPick` rather than folded into it as a nil date, because
+    /// the two say opposite things: `onPick(nil, _)` means "no date at all",
+    /// which is Someday, while this means "a date I have not picked yet, inside
+    /// this week". Collapsing them would make the panel unable to express the
+    /// difference the whole feature is about.
+    let onPickWeek: (WeekSchedule) -> Void
+    /// Opens the full reminder editor. Nil over a selection, where a reminder
+    /// is a per-to-do thing and the editor takes one row.
+    var onAddReminder: (() -> Void)?
     let onDismiss: () -> Void
     /// Opens the recurrence panel. Nil where there is nowhere to open it.
     var onRepeat: (() -> Void)?
@@ -37,9 +54,18 @@ struct SchedulePickerView: View {
             SchedulePickerParts.Header(title: "When?", onDismiss: onDismiss)
 
             if acceptsTypedDate {
-                QuickDateField(onCommit: { date, hasTime in
-                    onPick(date, hasTime)
-                })
+                QuickDateField(
+                    onCommit: { date, hasTime in
+                        onPick(date, hasTime)
+                    },
+                    // So typing "next week" does the same thing as tapping the
+                    // Next Week row below it. The field is the keyboard route
+                    // into this panel, and a phrase the panel offers as a
+                    // button has to be one the field can take.
+                    onCommitWeek: { week in
+                        onPickWeek(week)
+                    }
+                )
                 .padding(.bottom, 10)
             }
 
@@ -47,7 +73,7 @@ struct SchedulePickerView: View {
                 title: "Today",
                 symbol: "star.fill",
                 tint: .yellow,
-                isSelected: isSelected(today) && !todo.assignedHasTime
+                isSelected: isSelected(today) && todo?.assignedHasTime == false
             ) {
                 onPick(today, false)
             }
@@ -56,9 +82,25 @@ struct SchedulePickerView: View {
                 title: "This Evening",
                 symbol: "moon.fill",
                 tint: .indigo,
-                isSelected: isSelected(today) && todo.assignedHasTime
+                isSelected: isSelected(today) && todo?.assignedHasTime == true
             ) {
                 onPick(calendar.date(bySettingHour: eveningHour, minute: 0, second: 0, of: today), true)
+            }
+
+            // Above the grid, with the other shortcuts, because they answer the
+            // same question the grid does — just less precisely. Most work that
+            // is not for today is "sometime this week", and making the user
+            // pick an arbitrary Wednesday to express that is what these are
+            // here to avoid.
+            ForEach(WeekSchedule.allCases, id: \.self) { week in
+                shortcut(
+                    title: week.label,
+                    symbol: week.symbolName,
+                    tint: week == .thisWeek ? .green : .mint,
+                    isSelected: currentWeek == week
+                ) {
+                    onPickWeek(week)
+                }
             }
 
             monthGrid
@@ -67,7 +109,12 @@ struct SchedulePickerView: View {
                 title: "Someday",
                 symbol: "archivebox.fill",
                 tint: .brown,
-                isSelected: todo.assignedDate == nil && todo.isScheduled
+                // A week-planned to-do is not Someday: it has been placed in
+                // time, just not on a day. Without the week test here both rows
+                // would read as selected at once.
+                isSelected: todo.map {
+                    $0.assignedDate == nil && $0.weekAnchor == nil && $0.isScheduled
+                } ?? false
             ) {
                 // Someday is "no date", which the filing rules read as Anytime
                 // when the to-do has a home and Inbox when it does not.
@@ -76,13 +123,15 @@ struct SchedulePickerView: View {
 
             Divider().padding(.vertical, 6)
 
-            Button(action: onAddReminder) {
-                Label("Add Reminder", systemImage: "plus")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .padding(.vertical, 8)
+            if let onAddReminder {
+                Button(action: onAddReminder) {
+                    Label("Add Reminder", systemImage: "plus")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 8)
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
 
             // "When?" and "how often?" are the same decision seen twice, so the
             // way to the repeat panel is here rather than only in the editor —
@@ -91,11 +140,11 @@ struct SchedulePickerView: View {
             if let onRepeat {
                 Button(action: onRepeat) {
                     Label(
-                        todo.effectiveRecurrenceRule.map { "Repeats \($0.summary)" } ?? "Repeat…",
+                        todo?.effectiveRecurrenceRule.map { "Repeats \($0.summary)" } ?? "Repeat…",
                         systemImage: "arrow.trianglehead.2.clockwise.rotate.90"
                     )
                     .font(.callout)
-                    .foregroundStyle(todo.isRecurring ? Color.accentColor : .secondary)
+                    .foregroundStyle(todo?.isRecurring == true ? Color.accentColor : .secondary)
                     .padding(.vertical, 8)
                 }
                 .buttonStyle(.plain)
@@ -106,7 +155,7 @@ struct SchedulePickerView: View {
         .padding(16)
         .frame(maxWidth: 360)
         .onAppear {
-            visibleMonth = todo.assignedDate ?? today
+            visibleMonth = todo?.assignedDate ?? today
         }
     }
 
@@ -148,22 +197,65 @@ struct SchedulePickerView: View {
                     }
                 }
             }
+
+            monthNavigation
         }
         .padding(.vertical, 8)
-        .overlay(alignment: .bottomTrailing) {
-            // Steps to the next month, like the chevron in the screenshot.
-            Button {
-                if let next = calendar.date(byAdding: .month, value: 1, to: visibleMonth) {
-                    withAnimation(Theme.Animation.toggle) { visibleMonth = next }
-                }
-            } label: {
-                Image(systemName: "chevron.right")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Next month")
+    }
+
+    /// Steps the grid a month at a time, with the month it is showing between
+    /// the two chevrons.
+    ///
+    /// The label is what makes the chevrons safe to press: once the grid can
+    /// move in both directions the dates alone no longer say which month is on
+    /// screen, and a bare "14" in an unnamed month is a scheduling mistake
+    /// waiting to happen. The year rides along only when it is not the current
+    /// one, so the common case stays short.
+    private var monthNavigation: some View {
+        HStack {
+            monthStepButton(by: -1, symbol: "chevron.left", label: "Previous month")
+
+            Spacer(minLength: 8)
+
+            Text(visibleMonth.formatted(monthLabelFormat))
+                .font(.caption)
+                .fontWeight(.medium)
+                .foregroundStyle(.secondary)
+                // So stepping between a short month and a long one does not
+                // shuffle the chevrons under the user's finger.
+                .frame(minWidth: 96)
+                .contentTransition(.identity)
+
+            Spacer(minLength: 8)
+
+            monthStepButton(by: 1, symbol: "chevron.right", label: "Next month")
         }
+        .padding(.top, 2)
+    }
+
+    private func monthStepButton(by months: Int, symbol: String, label: String) -> some View {
+        Button {
+            if let stepped = calendar.date(byAdding: .month, value: months, to: visibleMonth) {
+                withAnimation(Theme.Animation.toggle) { visibleMonth = stepped }
+            }
+        } label: {
+            Image(systemName: symbol)
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundStyle(.secondary)
+                // A caption glyph is a few points across; without a padded hit
+                // area this is a miss on a phone more often than not.
+                .frame(width: 32, height: 28)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+
+    /// "September", or "September 2027" once the grid has left this year.
+    private var monthLabelFormat: Date.FormatStyle {
+        let sameYear = calendar.isDate(visibleMonth, equalTo: today, toGranularity: .year)
+        return sameYear ? .dateTime.month(.wide) : .dateTime.month(.wide).year()
     }
 
     @ViewBuilder
@@ -228,8 +320,18 @@ struct SchedulePickerView: View {
     // MARK: Dates
 
     private func isSelected(_ day: Date) -> Bool {
-        guard let assigned = todo.assignedDate else { return false }
+        guard let assigned = todo?.assignedDate else { return false }
         return calendar.isDate(assigned, inSameDayAs: day)
+    }
+
+    /// The week shortcut currently reflecting this to-do, if either does.
+    ///
+    /// Read through the calendar the panel is using rather than the default
+    /// one, so the highlight agrees with the user's week-start preference — a
+    /// Sunday to-do is "this week" or "last week" depending on that setting,
+    /// and the picker must not disagree with the list it schedules into.
+    private var currentWeek: WeekSchedule? {
+        todo?.weekSchedule(calendar: calendar)
     }
 
     /// Weekday initials in the user's week-start order.

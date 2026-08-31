@@ -66,7 +66,26 @@ struct TodoDetailView: View {
                 hasTime: $todo.assignedHasTime,
                 accent: accent,
                 footnote: "The day this to-do is planned for."
-            ) { store.update(todo) { _ in } }
+            ) {
+                store.update(todo) {
+                    // The section writes `assignedDate` straight through its
+                    // binding, so the exclusion is enforced here on the way
+                    // out: giving the to-do a day retires whatever week it was
+                    // planned for. Switching the date row *off* leaves the week
+                    // alone — that is removing an answer, not replacing one.
+                    if $0.assignedDate != nil { $0.clearWeekSchedule() }
+                }
+            }
+
+            WeekScheduleSection(todo: todo, accent: accent) { week in
+                store.update(todo) {
+                    if let week {
+                        $0.scheduleForWeek(week)
+                    } else {
+                        $0.clearWeekSchedule()
+                    }
+                }
+            }
 
             DateTimeSection(
                 title: "Deadline",

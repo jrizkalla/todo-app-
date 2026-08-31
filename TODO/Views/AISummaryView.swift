@@ -67,7 +67,7 @@ struct AISummaryView : View {
         let start = calendar.startOfDay(for: Date())
         guard let end = calendar.date(byAdding: .day, value: 1, to: start) else { return }
 
-        eventStore.loadEvents(from: start, to: end, calendarIdentifiers: settings.visibleCalendars)
+        await eventStore.loadEvents(from: start, to: end, calendarIdentifiers: settings.visibleCalendars)
     }
     
     
@@ -241,7 +241,7 @@ struct AISummaryView : View {
         aiSummaryService.tomorrow = TodoQueries.tomorrow(todos).map { $0.toStruct() }
 
         let saved = savedSummaries.first { Calendar.current.isDateInToday($0.generatedOn) }
-        if let saved, saved.fingerprint.matches(aiSummaryService.fingerprint(now: now)) {
+        if let saved, await saved.fingerprint.matches(aiSummaryService.fingerprint(now: now)) {
             summary = saved.summary
             return
         }
@@ -256,11 +256,19 @@ struct AISummaryView : View {
 
 struct DebugAISummaryView: View {
     var aiSummaryService: AISummaryService
+    /// Built in a `task` rather than in `body`: the fingerprint reads the
+    /// user's calendars, which is a cross-process call that must not sit in a
+    /// view body.
+    @State private var instructions: String?
+
     var body: some View {
         ScrollView {
-            Text(aiSummaryService.fingerprint().instructions.description)
+            Text(instructions ?? "Loading…")
                 .lineLimit(1...)
                 .padding()
+        }
+        .task {
+            instructions = await aiSummaryService.fingerprint().instructions.description
         }
     }
 }

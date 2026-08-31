@@ -326,6 +326,13 @@ struct DatabaseImporter {
         if let dueHasTime = value.value(forAnyKey: Key.Todo.dueHasTime)?.boolValue {
             todo.dueHasTime = dueHasTime
         }
+        // Normalized to the start of its week on the way in. A hand-written or
+        // foreign archive can carry any instant here, and the list predicates
+        // compare anchors for equality — an unnormalized value would match no
+        // week and the row would be invisible in both lists.
+        if let weekAnchor = value.value(forAnyKey: Key.Todo.weekAnchor)?.dateValue {
+            todo.weekAnchor = WeekMath.startOfWeek(containing: weekAnchor)
+        }
         if let duration = value.value(forAnyKey: Key.Todo.duration)?.doubleValue,
            duration > 0 {
             todo.duration = duration
@@ -727,6 +734,7 @@ struct DatabaseImporter {
             static let assignedHasTime = ["assignedHasTime", "hasTime"]
             static let dueDate = ["dueDate", "deadline", "due"]
             static let dueHasTime = ["dueHasTime"]
+            static let weekAnchor = ["weekAnchor", "weekStart", "scheduledWeek"]
             static let duration = ["duration", "length"]
             static let isProject = ["isProject", "project"]
             static let colorHex = ["colorHex", "color"]
@@ -755,7 +763,7 @@ struct DatabaseImporter {
 
             static let all = [uuid, title, notes, notesSummary, state, bucket,
                               assignedDate, assignedHasTime, dueDate, dueHasTime,
-                              duration, isProject, colorHex, sortIndex, isNew,
+                              weekAnchor, duration, isProject, colorHex, sortIndex, isNew,
                               lastViewedPlacement, importedFromReminders,
                               sourceReminderID, createdAt, modifiedAt, resolvedAt,
                               space, parent,

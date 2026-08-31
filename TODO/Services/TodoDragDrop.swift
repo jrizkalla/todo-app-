@@ -65,7 +65,7 @@ enum TodoDropAction {
     /// What the undo entry for a drop onto `destination` is called.
     private static func dropName(for destination: ListDestination) -> String {
         switch destination {
-        case .today, .tomorrow, .thisWeek: "Schedule"
+        case .today, .tomorrow, .thisWeek, .nextWeek: "Schedule"
         case .inbox, .anytime: "Unschedule"
         default: "Move"
         }
@@ -81,10 +81,13 @@ enum TodoDropAction {
         switch destination {
         case .inbox:
             // The Inbox is "unfiled": no home and no date is what puts a to-do
-            // there, so dropping onto it has to clear both.
+            // there, so dropping onto it has to clear both — the week plan
+            // included, since that is a date by another name and would file the
+            // row straight back out into Anytime.
             store.update(todo) {
                 $0.assignedDate = nil
                 $0.assignedHasTime = false
+                $0.clearWeekSchedule()
             }
             store.move(todo, toParent: nil)
             store.move(todo, toSpace: nil)
@@ -95,6 +98,11 @@ enum TodoDropAction {
                 $0.assignedDate = moveToDay(
                     calendar.startOfDay(for: now), keepingTimeOf: $0, calendar: calendar
                 )
+                // A day beats the week it was planned for. Dropping onto a
+                // dated list is the user answering "when" more precisely than
+                // they had, so the vaguer answer goes rather than sitting
+                // alongside it — see `Todo.scheduleForWeek`.
+                $0.clearWeekSchedule()
             }
             return true
 
@@ -105,26 +113,35 @@ enum TodoDropAction {
                     keepingTimeOf: $0,
                     calendar: calendar
                 )
+                $0.clearWeekSchedule()
             }
             return true
 
         case .thisWeek:
-            // Today is inside this week and needs no guessing, which is the
-            // same choice the create button makes for this list.
+            // Now that the list is backed by a real field, a drop onto it means
+            // what it says: plan this for the week, and leave the day open.
+            // It used to date the item to today, which was a guess forced by
+            // there being nowhere else to put the intent — the row then showed
+            // up in Today as well, claiming a day the user had not chosen.
             store.update(todo) {
-                $0.assignedDate = moveToDay(
-                    calendar.startOfDay(for: now), keepingTimeOf: $0, calendar: calendar
-                )
+                $0.scheduleForWeek(.thisWeek, now: now, calendar: calendar)
+            }
+            return true
+
+        case .nextWeek:
+            store.update(todo) {
+                $0.scheduleForWeek(.nextWeek, now: now, calendar: calendar)
             }
             return true
 
         case .anytime:
-            // Anytime means scheduled-but-undated. Clearing the date is enough;
-            // the filing rules put it here once it has a home, and in the Inbox
-            // when it does not.
+            // Anytime means scheduled-but-undated, and a week plan is a date
+            // in every way that matters here — leaving it on would keep the row
+            // in This Week, which is not where it was just dropped.
             store.update(todo) {
                 $0.assignedDate = nil
                 $0.assignedHasTime = false
+                $0.clearWeekSchedule()
             }
             return true
 

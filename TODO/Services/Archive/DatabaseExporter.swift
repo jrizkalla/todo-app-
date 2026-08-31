@@ -135,6 +135,13 @@ struct DatabaseExporter {
             pairs.append(("dueDate", .scalar(YAMLDateFormats.string(from: dueDate))))
             pairs.append(("dueHasTime", .scalar(String(todo.dueHasTime))))
         }
+        // The anchor date, not the "this week"/"next week" reading of it. An
+        // archive is a record of what the rows held, and the reading is only
+        // true relative to the moment it was taken — restoring a backup a
+        // fortnight later would otherwise silently move work forward.
+        if let weekAnchor = todo.weekAnchor {
+            pairs.append(("weekAnchor", .scalar(YAMLDateFormats.string(from: weekAnchor))))
+        }
         if let duration = todo.duration {
             pairs.append(("duration", .scalar(String(duration))))
         }

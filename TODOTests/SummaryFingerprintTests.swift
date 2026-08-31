@@ -197,7 +197,7 @@ struct SummaryFingerprintTests {
 
     /// The point of the whole exercise: the clock moving is not a reason to
     /// re-run the model.
-    @Test func timePassingAloneDoesNotChangeTheFingerprint() {
+    @Test func timePassingAloneDoesNotChangeTheFingerprint() async {
         let service = AISummaryService(userInfo: .init(name: "John"))
         service.weather = forecast()
         service.reminders = .init(scheduled: [todo()], overdue: [])
@@ -207,7 +207,9 @@ struct SummaryFingerprintTests {
         // the clock has moved.
         let aMinuteLater = morning.addingTimeInterval(60)
 
-        #expect(service.fingerprint(now: morning) == service.fingerprint(now: aMinuteLater))
+        let first = await service.fingerprint(now: morning)
+        let second = await service.fingerprint(now: aMinuteLater)
+        #expect(first == second)
     }
 
     /// Instructions are part of the prompt, so editing them — or crossing into

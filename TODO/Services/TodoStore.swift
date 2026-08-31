@@ -29,6 +29,7 @@ struct TodoStore {
         parent: Todo? = nil,
         assignedDate: Date? = nil,
         dueDate: Date? = nil,
+        weekSchedule: WeekSchedule? = nil,
         isProject: Bool = false
     ) -> Todo {
         let todo = Todo(
@@ -36,6 +37,7 @@ struct TodoStore {
             notes: notes,
             assignedDate: assignedDate,
             dueDate: dueDate,
+            weekSchedule: weekSchedule,
             isProject: isProject,
             space: space,
             parent: parent
@@ -191,6 +193,10 @@ struct TodoStore {
             update(todo) {
                 $0.assignedDate = nil
                 $0.assignedHasTime = false
+                // A week plan is a placement too, so taking a to-do off the
+                // calendar has to take it off the week as well — otherwise
+                // "unschedule" leaves it scheduled, just less precisely.
+                $0.clearWeekSchedule()
             }
         }
     }
@@ -205,6 +211,24 @@ struct TodoStore {
             update(todo) {
                 $0.assignedDate = date
                 $0.assignedHasTime = hasTime
+                // Picking a day answers the question a week plan answered
+                // vaguely, so the week goes. Without this a to-do moved from
+                // This Week onto a date would keep showing up in both, and
+                // "Clear" in the picker would appear to do nothing at all.
+                $0.clearWeekSchedule()
+            }
+        }
+    }
+
+    /// Plan a to-do into this week or next, recording the move so it can be
+    /// put back.
+    ///
+    /// The week counterpart of `schedule`, and undoable for the same reason:
+    /// choosing a week takes the row off whatever list the user was looking at.
+    func schedule(_ todo: Todo, forWeek schedule: WeekSchedule, now: Date = Date()) {
+        recordingUndo("Schedule", on: todo) {
+            update(todo) {
+                $0.scheduleForWeek(schedule, now: now)
             }
         }
     }

@@ -54,6 +54,37 @@ struct TodoQueriesTests {
         #expect(TodoQueries.inbox([project]).isEmpty)
     }
 
+    /// "Show completed" in the Inbox means completed *today*.
+    ///
+    /// The Inbox is what the user triages from, so work struck off on an
+    /// earlier day belongs to that day and to the Logbook rather than sitting
+    /// at the top of this morning's list. Checked on both paths, since the
+    /// fetch and the array rules have to agree.
+    @Test func inboxShowsOnlyWorkResolvedToday() throws {
+        let context = try makeContext()
+        let open = Todo(title: "Open")
+        let doneToday = Todo(title: "Done today")
+        let doneYesterday = Todo(title: "Done yesterday")
+        [open, doneToday, doneYesterday].forEach(context.insert)
+
+        doneToday.setState(.completed)
+        doneToday.resolvedAt = day(offset: 0).addingTimeInterval(3600)
+        doneYesterday.setState(.completed)
+        doneYesterday.resolvedAt = day(offset: -1).addingTimeInterval(3600)
+
+        let listed = TodoQueries.inbox(
+            [open, doneToday, doneYesterday], includeResolved: true, calendar: calendar
+        )
+        #expect(listed.map(\.title).sorted() == ["Done today", "Open"])
+
+        let fetched = TodoQueries.todos(
+            for: .inbox, in: context, calendar: calendar, includeResolved: true
+        )
+        #expect(!fetched.contains { $0.title == "Done yesterday" })
+        #expect(fetched.contains { $0.title == "Done today" })
+        #expect(fetched.contains { $0.title == "Open" })
+    }
+
     // MARK: Today
 
     /// Today covers work scheduled or due today.
@@ -702,7 +733,17 @@ struct TodoQueryDescriptorTests {
         context.insert(child)
         todos[7].addSubtask(child)
 
-        return todos + [done, filed, concealed, child]
+        // Week-planned work, with no date of its own — the population the week
+        // lists exist for, and the one the fetch and array paths have to agree
+        // about just as they do about dated rows.
+        let thisWeek = Todo(title: "This Week Plan")
+        let nextWeek = Todo(title: "Next Week Plan")
+        [thisWeek, nextWeek].forEach(context.insert)
+        thisWeek.scheduleForWeek(.thisWeek, calendar: calendar)
+        nextWeek.scheduleForWeek(.nextWeek, calendar: calendar)
+        [thisWeek, nextWeek].forEach { $0.refileForCurrentScheduling() }
+
+        return todos + [done, filed, concealed, child, thisWeek, nextWeek]
     }
 
     /// Every destination's fetch matches the in-memory rules it replaced.
@@ -714,17 +755,18 @@ struct TodoQueryDescriptorTests {
         let all = populate(context)
 
         let destinations: [ListDestination] = [
-            .inbox, .today, .tomorrow, .thisWeek, .anytime, .logbook,
+            .inbox, .today, .tomorrow, .thisWeek, .nextWeek, .anytime, .logbook,
         ]
 
         for destination in destinations {
             let fetched = TodoQueries.todos(for: destination, in: context, calendar: calendar)
             let expected: [Todo]
             switch destination {
-            case .inbox: expected = TodoQueries.inbox(all)
+            case .inbox: expected = TodoQueries.inbox(all, calendar: calendar)
             case .today: expected = TodoQueries.today(all, calendar: calendar)
             case .tomorrow: expected = TodoQueries.tomorrow(all, calendar: calendar)
             case .thisWeek: expected = TodoQueries.thisWeek(all, calendar: calendar)
+            case .nextWeek: expected = TodoQueries.nextWeek(all, calendar: calendar)
             case .anytime: expected = TodoQueries.anytime(all)
             case .logbook: expected = TodoQueries.logbook(all)
             default: continue
@@ -748,6 +790,7 @@ struct TodoQueryDescriptorTests {
         #expect(!TodoQueries.todos(for: .today, in: context, calendar: calendar).isEmpty)
         #expect(!TodoQueries.todos(for: .tomorrow, in: context, calendar: calendar).isEmpty)
         #expect(!TodoQueries.todos(for: .thisWeek, in: context, calendar: calendar).isEmpty)
+        #expect(!TodoQueries.todos(for: .nextWeek, in: context, calendar: calendar).isEmpty)
         #expect(!TodoQueries.todos(for: .logbook, in: context).isEmpty)
         #expect(!TodoQueries.looseProjects(in: context).isEmpty)
         #expect(!TodoQueries.projects(in: context).isEmpty)

@@ -176,6 +176,91 @@ struct DatePhraseParserTests {
         #expect(parts(parser.parseWhole("in 2 weeks"))?.day == 24)
     }
 
+    // MARK: Week phrases
+
+    /// "this week" and "next week" resolve to a *week*, not a day.
+    ///
+    /// The anchor rides along in `date` so older callers still work, but
+    /// `weekSchedule` is the answer that matters — a to-do the user typed
+    /// "next week" for should not land on a particular Sunday.
+    @Test(arguments: [
+        ("this week", WeekSchedule.thisWeek),
+        ("next week", WeekSchedule.nextWeek),
+        ("This Week", WeekSchedule.thisWeek),
+        ("NEXT WEEK", WeekSchedule.nextWeek),
+    ])
+    func detectsWeekPhrases(_ input: String, _ expected: WeekSchedule) {
+        let match = parser.parseWhole(input)
+
+        #expect(match?.weekSchedule == expected)
+        #expect(match?.hasTime == false)
+    }
+
+    /// The anchor a week phrase carries is the start of that week, so a caller
+    /// that ignores `weekSchedule` still lands somewhere sensible.
+    @Test func aWeekPhraseCarriesItsAnchor() throws {
+        let match = try #require(parser.parseWhole("next week"))
+
+        let expected = WeekMath.anchor(
+            for: .nextWeek, now: Self.anchor, calendar: calendar
+        )
+        #expect(match.date == expected)
+    }
+
+    /// "week after next" is understood but belongs to neither list, so the
+    /// field can say so rather than rounding it into Next Week.
+    @Test func weekAfterNextIsRecognizedButUnscheduled() throws {
+        let match = try #require(parser.parseWhole("week after next"))
+
+        #expect(match.weekSchedule == nil)
+        // The anchor two weeks past the one containing the reference date.
+        // That is Sunday 23 August, not the 24th: the reference is Monday 10
+        // August and this calendar starts its weeks on Sunday, so the week
+        // holding it began on the 9th.
+        #expect(
+            match.date == WeekMath.anchor(
+                for: .nextWeek,
+                now: calendar.date(byAdding: .weekOfYear, value: 1, to: Self.anchor)!,
+                calendar: calendar
+            )
+        )
+        #expect(calendar.component(.day, from: match.date) == 23)
+    }
+
+    /// A bare "week" is not a date, and must not be read as one.
+    @Test func bareWeekIsNotADate() {
+        #expect(parser.parseWhole("week") == nil)
+    }
+
+    /// The word "next" alone still belongs to the weekday scanner — "next
+    /// friday" must not be swallowed as a week phrase.
+    @Test func nextWeekdayIsStillAWeekday() {
+        let match = parser.parseWhole("next friday")
+
+        #expect(match?.weekSchedule == nil)
+        #expect(parts(match)?.day == 21)
+    }
+
+    /// And an ordinary date phrase carries no week, so a week-aware caller can
+    /// tell the two apart by the field alone.
+    @Test func ordinaryPhrasesCarryNoWeek() {
+        #expect(parser.parseWhole("tomorrow")?.weekSchedule == nil)
+        #expect(parser.parseWhole("aug 20")?.weekSchedule == nil)
+    }
+
+    /// The phrases the quick-schedule field advertises all parse.
+    ///
+    /// The field is the reason this parser exists, and these four are the
+    /// vocabulary its shortcuts offer as buttons — a phrase the panel shows as
+    /// a row has to be one the field beside it can read, or the two halves of
+    /// the same panel disagree.
+    @Test func theQuickScheduleVocabularyParses() {
+        #expect(parser.parseWhole("today") != nil)
+        #expect(parser.parseWhole("tomorrow") != nil)
+        #expect(parser.parseWhole("this week")?.weekSchedule == .thisWeek)
+        #expect(parser.parseWhole("next week")?.weekSchedule == .nextWeek)
+    }
+
     // MARK: Bare days have no time
 
     @Test func bareDayIsMidnight() {

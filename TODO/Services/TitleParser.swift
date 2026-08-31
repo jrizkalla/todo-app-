@@ -13,6 +13,8 @@ struct ParsedSuggestion: Identifiable, Equatable, Sendable {
         case project(name: String, uuid: UUID)
         /// File into an existing space, matched by name.
         case space(name: String, uuid: UUID)
+        /// A week rather than a day — "this week", "next week".
+        case scheduleWeek(WeekSchedule)
     }
 
     var id: String { "\(kind)-\(matchedRange.location)-\(matchedRange.length)" }
@@ -27,6 +29,8 @@ struct ParsedSuggestion: Identifiable, Equatable, Sendable {
         switch kind {
         case .schedule(let date, let hasTime):
             "Schedule \(Self.describe(date, hasTime: hasTime))"
+        case .scheduleWeek(let week):
+            "Schedule \(week.label)"
         case .deadline(let date, let hasTime):
             "Deadline \(Self.describe(date, hasTime: hasTime))"
         case .duration(let seconds):
@@ -41,6 +45,7 @@ struct ParsedSuggestion: Identifiable, Equatable, Sendable {
     var symbolName: String {
         switch kind {
         case .schedule: "calendar"
+        case .scheduleWeek(let week): week.symbolName
         case .deadline: "target"
         case .duration: "clock"
         case .project: "folder"
@@ -117,8 +122,21 @@ struct TitleParser {
     private func dateSuggestions(in title: String) -> [ParsedSuggestion] {
         let parser = DatePhraseParser(referenceDate: referenceDate, calendar: calendar)
 
-        return parser.matches(in: title).flatMap { match in
-            [
+        return parser.matches(in: title).flatMap { match -> [ParsedSuggestion] in
+            // A week phrase offers scheduling only. "Deadline next week" would
+            // have to pick a day to be a deadline at all, and the day it picked
+            // — the Sunday the week starts on — is one the user did not type
+            // and would read as a week early.
+            if let week = match.weekSchedule {
+                return [
+                    ParsedSuggestion(
+                        kind: .scheduleWeek(week),
+                        matchedText: match.matchedText, matchedRange: match.matchedRange
+                    )
+                ]
+            }
+
+            return [
                 ParsedSuggestion(kind: .schedule(match.date, hasTime: match.hasTime),
                                  matchedText: match.matchedText, matchedRange: match.matchedRange),
                 ParsedSuggestion(kind: .deadline(match.date, hasTime: match.hasTime),

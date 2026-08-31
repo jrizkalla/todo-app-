@@ -16,6 +16,10 @@ struct SettingsView: View {
 
     @State private var calendarStore = CalendarEventStore.shared
     @State private var availableCalendars: [EKCalendar] = []
+    /// Cached alongside `availableCalendars`: reading it hits EventKit, and the
+    /// form's body re-runs often enough that doing so inline showed up as the
+    /// pane hitching. Loaded in the same `task`s that fill the list.
+    @State private var defaultCalendarIdentifier: String?
 
     /// Matches `RootView`'s gate, so the panel's switch is offered exactly where
     /// the panel itself is shown.
@@ -264,6 +268,7 @@ struct SettingsView: View {
                             Task {
                                 if await calendarStore.requestAccess() {
                                     availableCalendars = calendarStore.availableCalendars()
+                                    defaultCalendarIdentifier = calendarStore.defaultCalendarIdentifier
                                 }
                             }
                         }
@@ -273,7 +278,7 @@ struct SettingsView: View {
                                 title: "Calendars",
                                 footer: "Events from the selected calendars appear alongside your to-dos in Today and This Week.",
                                 sources: availableCalendars,
-                                defaultIdentifier: calendarStore.defaultCalendarIdentifier,
+                                defaultIdentifier: defaultCalendarIdentifier,
                                 selection: $settings.visibleCalendars
                             )
                         } label: {
@@ -282,7 +287,7 @@ struct SettingsView: View {
                                 value: SourceSelectionView.summary(
                                     selection: settings.visibleCalendars,
                                     sources: availableCalendars,
-                                    defaultIdentifier: calendarStore.defaultCalendarIdentifier
+                                    defaultIdentifier: defaultCalendarIdentifier
                                 )
                             )
                         }
@@ -316,6 +321,7 @@ struct SettingsView: View {
             }
             if calendarStore.hasAccess {
                 availableCalendars = calendarStore.availableCalendars()
+                defaultCalendarIdentifier = calendarStore.defaultCalendarIdentifier
             }
         }
         // Access may be granted from the calendar view rather than here, so the
@@ -330,6 +336,7 @@ struct SettingsView: View {
             }
             if granted {
                 availableCalendars = calendarStore.availableCalendars()
+                defaultCalendarIdentifier = calendarStore.defaultCalendarIdentifier
             }
         }
     }

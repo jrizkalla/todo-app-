@@ -30,6 +30,7 @@ extension TodoStore {
         let bucket: Bucket
         let assignedDate: Date?
         let assignedHasTime: Bool
+        let weekAnchor: Date?
         let duration: TimeInterval?
         let dueDate: Date?
         let dueHasTime: Bool
@@ -59,6 +60,7 @@ extension TodoStore {
             bucket = todo.bucket
             assignedDate = todo.assignedDate
             assignedHasTime = todo.assignedHasTime
+            weekAnchor = todo.weekAnchor
             duration = todo.duration
             dueDate = todo.dueDate
             dueHasTime = todo.dueHasTime
@@ -88,6 +90,12 @@ extension TodoStore {
             todo.bucket = bucket
             todo.assignedDate = assignedDate
             todo.assignedHasTime = assignedHasTime
+            // Restored raw, like every other column here: the anchor is what
+            // was recorded, and re-reading it as "this week"/"next week" on the
+            // way back would have undo make a fresh decision. Without this,
+            // undoing a week schedule left the week in place and only the
+            // cleared date came back — the row ended up in two lists.
+            todo.weekAnchor = weekAnchor
             todo.duration = duration
             todo.dueDate = dueDate
             todo.dueHasTime = dueHasTime

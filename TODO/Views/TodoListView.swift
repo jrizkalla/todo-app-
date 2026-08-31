@@ -48,7 +48,10 @@ struct TodoListView: View {
     }
 
     var body: some View {
-        DestinationTodoList(
+        #if DEBUG && DEBUG_UI
+        Self._printChanges()
+        #endif
+        return DestinationTodoList(
             destination: destination,
             includeResolved: includeResolved,
             includeOverdue: includeOverdue,
@@ -62,7 +65,10 @@ struct TodoListView: View {
         .id(QueryIdentity(
             destination: destination,
             includeResolved: includeResolved,
-            includeOverdue: includeOverdue
+            includeOverdue: includeOverdue,
+            weekStart: WeekMath.startOfWeek(
+                containing: Date(), calendar: settings.calendar
+            )
         ))
         // A per-list override belongs to the list it was set on; the next one
         // starts from the user's preference again.
@@ -77,6 +83,23 @@ struct TodoListView: View {
         let destination: ListDestination
         let includeResolved: Bool
         let includeOverdue: Bool
+
+        /// The current week, so the query is rebuilt when the week turns over.
+        ///
+        /// The other lists survive without this because their predicates are
+        /// *ranges* — "dated before the end of today" stays broadly right as
+        /// the clock moves, and a stale bound shows slightly wrong rows rather
+        /// than none. The week lists compare `weekAnchor` for **equality**
+        /// against an anchor computed from the `now` passed in at construction,
+        /// and a `@Query`'s descriptor is fixed once built. So a view built
+        /// before the boundary goes on asking for the *previous* week's anchor,
+        /// which no row carries any more, and the list renders empty — the bug
+        /// this field exists to prevent.
+        ///
+        /// Day-granular and derived from the week, not from `Date()` itself: it
+        /// has to change exactly once per week, or every redraw would get a new
+        /// identity and tear the whole list down.
+        let weekStart: Date
     }
 }
 
@@ -189,6 +212,20 @@ private struct DestinationTodoList: View {
     /// keyboard-selected without the caret being in its title, and that
     /// distinction is what lets Cmd+K toggle a row rather than typing into it.
     @State private var cursor = KeyboardCursor()
+
+    /// The rows picked out to act on together, if any.
+    ///
+    /// A third notion of "current row" beside the cursor and the caret, and
+    /// deliberately so: the cursor is *one* row the user is reading, while this
+    /// is a set they have gathered up to act on. Empty almost all the time —
+    /// see `TodoMultiSelection.isActive` for when the bar appears.
+    @State private var multiSelection = TodoMultiSelection()
+    /// Set while the bulk scheduling panel is open.
+    @State private var isSchedulingSelection = false
+    /// Set while the bulk "move to" picker is open.
+    @State private var isMovingSelection = false
+    /// Set while confirming a bulk delete.
+    @State private var isConfirmingBulkDelete = false
     /// The last row order the cursor was reconciled against, so a row vanishing
     /// can be resolved to its nearest surviving neighbour.
     @State private var lastRowOrder: [UUID] = []
@@ -198,6 +235,15 @@ private struct DestinationTodoList: View {
 
     /// Set while this list's calendar is pushed on top of it.
     @State private var calendarRoute: CalendarRoute?
+
+    /// The to-do the pushed calendar is editing.
+    ///
+    /// Separate from `selectedTodo` because the two are presented differently:
+    /// a row picked in this list pushes a page, while a block picked on the
+    /// calendar opens a sheet over it. See `todoDetailSheet(selection:)` for
+    /// why the calendar cannot push — a second navigation destination for
+    /// `Todo` in one stack presents from the root and drops the calendar.
+    @State private var calendarSelectedTodo: Todo?
 
     /// Suggestion chips for whichever row's title has focus.
     @State private var suggestionModel = TitleSuggestionModel()
@@ -229,283 +275,352 @@ private struct DestinationTodoList: View {
         destination == .inbox && !importer.pending.isEmpty && !isSearching
     }
 
+    /// Split into the groups below rather than written as one chain.
+    ///
+    /// The modifiers this view needs are numerous enough that the whole chain
+    /// as a single expression stopped type-checking in reasonable time — the
+    /// compiler gave up on it outright. Each group is now its own function, so
+    /// several small expressions are solved instead of one large one.
+    ///
+    /// Only the grouping is new: the modifiers keep the order they had, since
+    /// each group wraps the one before it exactly as the chain did. Read the
+    /// `.modifiedBy` calls top to bottom and the order is the original one.
     var body: some View {
-        droppableList
-        // The app-wide button asks; the list is what knows how to answer.
-        //
-        // Ignored while searching: the results are a filtered view, and
-        // something created into it would vanish the moment it failed to match
-        // what is still in the field.
-        .onChange(of: createRequest?.wrappedValue) { _, _ in
-            guard !isSearching else { return }
-            // The list stays alive underneath its pushed calendar, so both
-            // would answer the one button and a single tap would create two
-            // to-dos. Whichever is on top is the one the user meant.
-            guard !isShowingCalendar else { return }
-            createTodoInCurrentList()
-        }
-        // Cmd+N created the to-do already, in the Inbox; this list only has to
-        // put the caret in it. Unlike `createRequest` there is nothing to
-        // create here — the shortcut works from tabs that have no list at all,
-        // so `RootView` does the creating and hands the row over.
-        .onChange(of: capturedTodo?.wrappedValue) { _, captured in
-            guard let captured, !isShowingCalendar else { return }
-            withAnimation(Theme.Animation.rowExpand) { cursor.select(captured) }
-            focusedTodoID = captured
-            capturedTodo?.wrappedValue = nil
-        }
-        .claimingFocus(cursor: cursor.selection, paneFocused: isListFocused, isFocused: $isFocused)
-        .navigationTitle(title)
-        #if os(iOS)
-        .navigationBarTitleDisplayMode(.large)
+        #if DEBUG && DEBUG_UI
+        Self._printChanges()
         #endif
-        .toolbar {
-            ToolbarItem(placement: .secondaryAction) {
-                Toggle(isOn: Binding(
-                    get: { includeResolved },
-                    set: { showResolvedOverride = $0 }
-                )) {
-                    Label(
-                        includeResolved ? "Hide Completed" : "Show Completed",
-                        systemImage: includeResolved ? "eye.slash" : "eye"
-                    )
-                }
-                .help(
-                    includeResolved
-                        ? "Hide completed items in this list"
-                        : "Show completed items in this list"
-                )
+        // Resolved *once* per redraw, here at the top, and handed to everything
+        // below that needs it.
+        //
+        // `visibleTodos` runs the destination's whole query chain — a SwiftData
+        // fetch plus the residual in-memory passes — and `visibleRowOrder` runs
+        // that chain *and* walks `nestedSubtasks` for every row it returns.
+        // Each was a computed property, so every reference re-ran the whole
+        // thing: the list content read one, and two separate `onChange`
+        // observers read the other, which put three full query chains and a
+        // `nestedSubtasks` pass per row into every single body evaluation.
+        // During a scroll, where SwiftUI evaluates the body continuously, that
+        // is what made the pane hang.
+        let rows = visibleTodos
+        let order = rowOrder(of: rows)
+        return droppableList(rows)
+            .modifiedBy(creationHandling)
+            .modifiedBy(lifecycle)
+            .modifiedBy { keyboardHandling($0, order: order) }
+            .modifiedBy(presentations)
+            .modifiedBy { multiSelectHandling($0, rows: rows, order: order) }
+    }
+
+    /// Answering the app-wide create button and Cmd+N, and the pushed calendar.
+    private func creationHandling(_ content: some View) -> some View {
+        content
+            // The app-wide button asks; the list is what knows how to answer.
+            //
+            // Ignored while searching: the results are a filtered view, and
+            // something created into it would vanish the moment it failed to match
+            // what is still in the field.
+            .onChange(of: createRequest?.wrappedValue) { _, _ in
+                guard !isSearching else { return }
+                // The list stays alive underneath its pushed calendar, so both
+                // would answer the one button and a single tap would create two
+                // to-dos. Whichever is on top is the one the user meant.
+                guard !isShowingCalendar else { return }
+                createTodoInCurrentList()
             }
-            // Only the lists that reach backwards in time can hide anything,
-            // so the switch is offered only there. On Anytime or a project it
-            // would be a control that visibly does nothing.
-            if showsOverdueToggle {
-                ToolbarItem(placement: .secondaryAction) {
-                    Toggle(isOn: Binding(
-                        get: { includeOverdue },
-                        set: { showOverdueOverride = $0 }
-                    )) {
+            // Cmd+N created the to-do already, in the Inbox; this list only has to
+            // put the caret in it. Unlike `createRequest` there is nothing to
+            // create here — the shortcut works from tabs that have no list at all,
+            // so `RootView` does the creating and hands the row over.
+            .onChange(of: capturedTodo?.wrappedValue) { _, captured in
+                guard let captured, !isShowingCalendar else { return }
+                withAnimation(Theme.Animation.rowExpand) { cursor.select(captured) }
+                focusedTodoID = captured
+                capturedTodo?.wrappedValue = nil
+            }
+            .claimingFocus(cursor: cursor.selection, paneFocused: isListFocused, isFocused: $isFocused)
+            .navigationTitle(title)
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.large)
+            #endif
+            .toolbar {toolbar}
+            // Pushed rather than presented: it is the same list seen another way,
+            // so Back returns to the rows it was opened from.
+            .navigationDestination(item: $calendarRoute) { route in
+                CalendarView(
+                    selectedTodo: $calendarSelectedTodo,
+                    destination: route.destination,
+                    createRequest: createRequest,
+                    onShowList: { calendarRoute = nil }
+                )
+                .todoDetailSheet(selection: $calendarSelectedTodo)
+            }
+            // Leaving the calendar takes its editor with it, so a sheet cannot
+            // outlive the screen that raised it.
+            .onChange(of: calendarRoute) { _, route in
+                if route == nil { calendarSelectedTodo = nil }
+            }
+            // A calendar opened from one list has no meaning in the next.
+            .onChange(of: destination) { _, _ in calendarRoute = nil }
+    }
+
+    /// Arrival and departure: what a list clears when it opens, closes, or is
+    /// swapped for another.
+    private func lifecycle(_ content: some View) -> some View {
+        content
+            // Visiting a list is what "viewing" means, so its dots clear on arrival.
+            .task(id: destination) { markVisibleAsViewed() }
+            // Switching lists drops focus, so the keyboard never follows the user
+            // to a screen they did not open it on. The query goes with it: a search
+            // typed in one list has no meaning in the next.
+            .onChange(of: destination) { _, _ in
+                focusedTodoID = nil
+                searchText = ""
+            }
+            // Any panel raised from this list closes with it.
+            //
+            // The list is rebuilt from scratch whenever the destination or the
+            // resolved preference changes — that is what `QueryIdentity` is for —
+            // and a sheet still on screen when that happens is orphaned: its
+            // presenter is gone, so the close button, the Escape key, and every
+            // action inside it stop doing anything, and the only way out is to
+            // quit the app.
+            //
+            // Reached most easily through the panels themselves, which is why it
+            // matters: pausing a series refiles it from Today into Anytime, and a
+            // user following it there with the panel open would strand it.
+            .onDisappear {
+                repeatingTodo = nil
+                schedulingTodo = nil
+                movingTodo = nil
+            }
+            .onChange(of: focusedTodoID) { previous, current in
+                handleFocusChange(from: previous, to: current)
+                // Typing in a row is also a way of choosing it, so the cursor
+                // follows the caret. Without this, Cmd+K after clicking into a
+                // title would act on whatever the arrows last pointed at.
+                if let current { cursor.select(current) }
+            }
+    }
+
+    /// Where the pane's own focus lives, and the keys it answers.
+    private func keyboardHandling(_ content: some View, order: [UUID]) -> some View {
+        content
+            // The pane has to be focusable for `onKeyPress` to reach it at all; the
+            // key handlers below are attached to this same view so they fire while
+            // the list — rather than one of its title fields — holds the keyboard.
+            .focusable()
+            .focused($isListFocused)
+            // The focus this takes is a plumbing detail — it exists so the arrow
+            // keys have somewhere to land — and is not a thing the user selected.
+            // On macOS the system drew it as a ring around the entire pane, so
+            // tapping one row lit up the whole list along with it.
+            .focusEffectDisabled()
+            // Arrow keys drive the cursor whenever the caret is not in a text
+            // field — in a field the arrows belong to the text, which is why this
+            // defers rather than competing for them.
+            .onKeyPress(.upArrow) { moveCursor(.up) }
+            .onKeyPress(.downArrow) { moveCursor(.down) }
+            // Return opens whatever the cursor is on, matching a double-click.
+            .onKeyPress(.return) {
+                guard isFocused, focusedTodoID == nil, let todo = cursorTodo else { return .ignored }
+                showDetail(for: todo)
+                return .handled
+            }
+            .keyboardCommands(isActive: isKeyboardTarget) { command in
+                perform(command)
+            }
+            // Keeps the cursor on something real, and the selection free of
+            // rows that have left, as the list changes underneath them.
+            //
+            // One observer for both rather than the two this used to be: each
+            // `onChange(of:)` re-evaluated the row order independently, and
+            // that order is the expensive value — a full query chain plus a
+            // `nestedSubtasks` walk. They watch the same thing and are cheap to
+            // run together.
+            .onChange(of: order) { previous, current in
+                cursor.reconcile(with: current, previousOrder: previous)
+                lastRowOrder = current
+                multiSelection.reconcile(with: current)
+            }
+            // A cursor from one list means nothing in the next.
+            .onChange(of: destination) { _, _ in cursor.select(nil) }
+    }
+
+    /// The chips, sheets and dialogs raised from this list.
+    private func presentations(_ content: some View) -> some View {
+        content
+            // Chips for the focused title field sit above the keyboard on iOS and
+            // at the window bottom on macOS, the same as in the detail editor.
+            .suggestionBar(suggestionModel.suggestions) { suggestion in
+                guard let todo = focusedTodo else { return }
+                suggestionModel.apply(suggestion, to: todo, context: context, store: store)
+            }
+            .confirmationDialog(
+                cascadePrompt,
+                isPresented: .init(
+                    get: { pendingCascade != nil },
+                    set: { if !$0 { pendingCascade = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                if let pending = pendingCascade {
+                    Button(pending.confirmLabel) {
+                        store.setStateCascading(pending.todo, to: pending.target)
+                        pendingCascade = nil
+                    }
+                    Button("Keep Subtasks", role: .cancel) {
+                        pendingCascade = nil
+                    }
+                }
+            }
+            .sheet(item: $schedulingTodo) { todo in
+                SchedulePickerView(
+                    todo: todo,
+                    onPick: { date, hasTime in
+                        // Through `schedule` rather than a bare `update`, so the
+                        // move is undoable: this is the action that takes the row
+                        // off the list the user is looking at.
+                        store.schedule(todo, to: date, hasTime: hasTime)
+                        schedulingTodo = nil
+                    },
+                    onPickWeek: { week in
+                        // Same verb, same undo entry: the user is answering "when",
+                        // and how precisely they answered does not change what a
+                        // mistaken tap costs them.
+                        store.schedule(todo, forWeek: week)
+                        schedulingTodo = nil
+                    },
+                    onAddReminder: {
+                        // The full reminder editor lives in the detail view.
+                        schedulingTodo = nil
+                        selectedTodo = todo
+                    },
+                    onDismiss: { schedulingTodo = nil },
+                    onRepeat: {
+                        // Handed over rather than stacked: two sheets deep on a
+                        // phone leaves no room for the panel itself.
+                        schedulingTodo = nil
+                        DispatchQueue.main.async { repeatingTodo = todo }
+                    },
+                    acceptsTypedDate: schedulingFromKeyboard
+                )
+                .presentationDetents([.medium, .large])
+            }
+            .sheet(item: $repeatingTodo) { todo in
+                RecurrencePickerView(
+                    todo: todo,
+                    onPick: { rule in
+                        store.setRecurrence(rule, on: todo)
+                        repeatingTodo = nil
+                    },
+                    onSetStatus: { status in
+                        store.setRecurrenceStatus(status, on: todo)
+                        repeatingTodo = nil
+                    },
+                    onDismiss: { repeatingTodo = nil }
+                )
+                .presentationDetents([.medium, .large])
+            }
+            .sheet(item: $movingTodo) { todo in
+                MoveDestinationView(
+                    todo: todo,
+                    onPick: { destination in
+                        apply(destination, to: todo)
+                        movingTodo = nil
+                    },
+                    onDismiss: { movingTodo = nil }
+                )
+                .presentationDetents([.medium])
+            }
+            .confirmationDialog(
+                deletePrompt,
+                isPresented: .init(
+                    get: { pendingDeletion != nil },
+                    set: { if !$0 { pendingDeletion = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                if let todo = pendingDeletion {
+                    Button("Delete", role: .destructive) {
+                        store.delete(todo)
+                        pendingDeletion = nil
+                    }
+                    Button("Cancel", role: .cancel) { pendingDeletion = nil }
+                }
+            }
+            .multiSelectPanels(
+                isScheduling: $isSchedulingSelection,
+                isMoving: $isMovingSelection,
+                isConfirmingDelete: $isConfirmingBulkDelete,
+                deletePrompt: bulkDeletePrompt,
+                onPickDate: { date, hasTime in
+                    withAnimation(Theme.Animation.listChange) {
+                        store.schedule(selectedTodos, to: date, hasTime: hasTime)
+                    }
+                },
+                onPickWeek: { week in
+                    withAnimation(Theme.Animation.listChange) {
+                        store.schedule(selectedTodos, forWeek: week)
+                    }
+                },
+                onPickDestination: { destination in
+                    withAnimation(Theme.Animation.listChange) {
+                        apply(destination, to: selectedTodos)
+                    }
+                },
+                onConfirmDelete: performBulkDelete
+            )
+    }
+
+    /// Keeping the selection, its bar, and the shell in step.
+    private func multiSelectHandling(_ content: some View, rows: [Todo], order: [UUID]) -> some View {
+        content
+            // A selection assembled in one list means nothing in the next, and the
+            // bar would otherwise sit over rows it was never about.
+            .onChange(of: destination) { _, _ in multiSelection.clear() }
+            // Tell the shell, so the floating create button gets out of the bar's
+            // corner. See `MultiSelectPresence`.
+            .onChange(of: multiSelection.isActive) { _, active in
+                MultiSelectPresence.shared.setActive(active)
+            }
+            // A list left with a selection still up — switching tabs, or the pane
+            // being torn down — must not leave the button hidden behind it.
+            .onDisappear { MultiSelectPresence.shared.setActive(false) }
+            // Escape leaves the mode, the same key that closes every other
+            // transient thing in the app. Only claimed while there is a selection
+            // to drop, so it still reaches whatever else wants it otherwise.
+            .onKeyPress(.escape) {
+                guard multiSelection.isActive else { return .ignored }
+                endMultiSelect()
+                return .handled
+            }
+            #if os(iOS)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    // The way in on a phone, where there are no modifier keys to
+                    // say "and this one too". Toggles, so the same control is also
+                    // the way back out.
+                    Button {
+                        withAnimation(Theme.Animation.quick) {
+                            if multiSelection.isActive {
+                                multiSelection.clear()
+                            } else {
+                                focusedTodoID = nil
+                                multiSelection.beginExplicit()
+                            }
+                        }
+                    } label: {
                         Label(
-                            includeOverdue ? "Hide Overdue" : "Show Overdue",
-                            systemImage: includeOverdue
-                                ? "calendar.badge.minus"
-                                : "calendar.badge.exclamationmark"
+                            multiSelection.isActive ? "Done" : "Select",
+                            systemImage: multiSelection.isActive
+                                ? "checkmark.circle.fill"
+                                : "checklist"
                         )
                     }
-                    .help(
-                        includeOverdue
-                            ? "Hide work dated before today"
-                            : "Show work dated before today"
-                    )
+                    .help("Select several to-dos to act on together")
                 }
             }
-            // A project's own title, dates and place are edited on its detail
-            // page. Reaching it from here matters because the sidebar row and
-            // this list both navigate to the project's *contents*: without
-            // this, the only way to change a project was to find it as a row in
-            // some other list.
-            if let project = currentProject {
-                ToolbarItem(placement: .secondaryAction) {
-                    Button {
-                        showDetail(for: project)
-                    } label: {
-                        Label("Edit Project…", systemImage: "slider.horizontal.3")
-                    }
-                    .help("Edit this project's title, dates, and place")
-                    // The project is not one of the rows below, so no row can
-                    // anchor its popover on macOS. The button that opens it
-                    // does instead; on iOS this is a no-op and the detail page
-                    // is pushed as usual.
-                    .todoDetailPopover(for: project, selection: $selectedTodo)
-                }
-            }
-            // Only spaces and projects get one: the cross-cutting lists are
-            // already covered by the Calendar tab, which shows the same days
-            // unscoped, so a second entry point onto it would just be a
-            // duplicate.
-            if showsCalendarButton {
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        // Focus belongs to the calendar now; a caret left in a
-                        // row's title would keep the keyboard up over the grid.
-                        focusedTodoID = nil
-                        calendarRoute = CalendarRoute(destination: destination)
-                    } label: {
-                        Label("Calendar", systemImage: "calendar")
-                    }
-                    .help("Show \(title) on a calendar")
-                }
-            }
-        }
-        // Pushed rather than presented: it is the same list seen another way,
-        // so Back returns to the rows it was opened from.
-        .navigationDestination(item: $calendarRoute) { route in
-            CalendarView(
-                selectedTodo: $selectedTodo,
-                destination: route.destination,
-                createRequest: createRequest,
-                onShowList: { calendarRoute = nil }
-            )
-            .todoDetailDestination(selection: $selectedTodo)
-        }
-        // A calendar opened from one list has no meaning in the next.
-        .onChange(of: destination) { _, _ in calendarRoute = nil }
-        // Visiting a list is what "viewing" means, so its dots clear on arrival.
-        .task(id: destination) { markVisibleAsViewed() }
-        // Switching lists drops focus, so the keyboard never follows the user
-        // to a screen they did not open it on. The query goes with it: a search
-        // typed in one list has no meaning in the next.
-        .onChange(of: destination) { _, _ in
-            focusedTodoID = nil
-            searchText = ""
-        }
-        // Any panel raised from this list closes with it.
-        //
-        // The list is rebuilt from scratch whenever the destination or the
-        // resolved preference changes — that is what `QueryIdentity` is for —
-        // and a sheet still on screen when that happens is orphaned: its
-        // presenter is gone, so the close button, the Escape key, and every
-        // action inside it stop doing anything, and the only way out is to
-        // quit the app.
-        //
-        // Reached most easily through the panels themselves, which is why it
-        // matters: pausing a series refiles it from Today into Anytime, and a
-        // user following it there with the panel open would strand it.
-        .onDisappear {
-            repeatingTodo = nil
-            schedulingTodo = nil
-            movingTodo = nil
-        }
-        .onChange(of: focusedTodoID) { previous, current in
-            handleFocusChange(from: previous, to: current)
-            // Typing in a row is also a way of choosing it, so the cursor
-            // follows the caret. Without this, Cmd+K after clicking into a
-            // title would act on whatever the arrows last pointed at.
-            if let current { cursor.select(current) }
-        }
-        // The pane has to be focusable for `onKeyPress` to reach it at all; the
-        // key handlers below are attached to this same view so they fire while
-        // the list — rather than one of its title fields — holds the keyboard.
-        .focusable()
-        .focused($isListFocused)
-        // The focus this takes is a plumbing detail — it exists so the arrow
-        // keys have somewhere to land — and is not a thing the user selected.
-        // On macOS the system drew it as a ring around the entire pane, so
-        // tapping one row lit up the whole list along with it.
-        .focusEffectDisabled()
-        // Arrow keys drive the cursor whenever the caret is not in a text
-        // field — in a field the arrows belong to the text, which is why this
-        // defers rather than competing for them.
-        .onKeyPress(.upArrow) { moveCursor(.up) }
-        .onKeyPress(.downArrow) { moveCursor(.down) }
-        // Return opens whatever the cursor is on, matching a double-click.
-        .onKeyPress(.return) {
-            guard isFocused, focusedTodoID == nil, let todo = cursorTodo else { return .ignored }
-            showDetail(for: todo)
-            return .handled
-        }
-        .keyboardCommands(isActive: isKeyboardTarget) { command in
-            perform(command)
-        }
-        // Keeps the cursor on something real as rows come and go.
-        .onChange(of: visibleRowOrder) { previous, current in
-            cursor.reconcile(with: current, previousOrder: previous)
-            lastRowOrder = current
-        }
-        // A cursor from one list means nothing in the next.
-        .onChange(of: destination) { _, _ in cursor.select(nil) }
-        // Chips for the focused title field sit above the keyboard on iOS and
-        // at the window bottom on macOS, the same as in the detail editor.
-        .suggestionBar(suggestionModel.suggestions) { suggestion in
-            guard let todo = focusedTodo else { return }
-            suggestionModel.apply(suggestion, to: todo, context: context, store: store)
-        }
-        .confirmationDialog(
-            cascadePrompt,
-            isPresented: .init(
-                get: { pendingCascade != nil },
-                set: { if !$0 { pendingCascade = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let pending = pendingCascade {
-                Button(pending.confirmLabel) {
-                    store.setStateCascading(pending.todo, to: pending.target)
-                    pendingCascade = nil
-                }
-                Button("Keep Subtasks", role: .cancel) {
-                    pendingCascade = nil
-                }
-            }
-        }
-        .sheet(item: $schedulingTodo) { todo in
-            SchedulePickerView(
-                todo: todo,
-                onPick: { date, hasTime in
-                    // Through `schedule` rather than a bare `update`, so the
-                    // move is undoable: this is the action that takes the row
-                    // off the list the user is looking at.
-                    store.schedule(todo, to: date, hasTime: hasTime)
-                    schedulingTodo = nil
-                },
-                onAddReminder: {
-                    // The full reminder editor lives in the detail view.
-                    schedulingTodo = nil
-                    selectedTodo = todo
-                },
-                onDismiss: { schedulingTodo = nil },
-                onRepeat: {
-                    // Handed over rather than stacked: two sheets deep on a
-                    // phone leaves no room for the panel itself.
-                    schedulingTodo = nil
-                    DispatchQueue.main.async { repeatingTodo = todo }
-                },
-                acceptsTypedDate: schedulingFromKeyboard
-            )
-            .presentationDetents([.medium, .large])
-        }
-        .sheet(item: $repeatingTodo) { todo in
-            RecurrencePickerView(
-                todo: todo,
-                onPick: { rule in
-                    store.setRecurrence(rule, on: todo)
-                    repeatingTodo = nil
-                },
-                onSetStatus: { status in
-                    store.setRecurrenceStatus(status, on: todo)
-                    repeatingTodo = nil
-                },
-                onDismiss: { repeatingTodo = nil }
-            )
-            .presentationDetents([.medium, .large])
-        }
-        .sheet(item: $movingTodo) { todo in
-            MoveDestinationView(
-                todo: todo,
-                onPick: { destination in
-                    apply(destination, to: todo)
-                    movingTodo = nil
-                },
-                onDismiss: { movingTodo = nil }
-            )
-            .presentationDetents([.medium])
-        }
-        .confirmationDialog(
-            deletePrompt,
-            isPresented: .init(
-                get: { pendingDeletion != nil },
-                set: { if !$0 { pendingDeletion = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let todo = pendingDeletion {
-                Button("Delete", role: .destructive) {
-                    store.delete(todo)
-                    pendingDeletion = nil
-                }
-                Button("Cancel", role: .cancel) { pendingDeletion = nil }
-            }
-        }
+            #endif
     }
 
     /// The pane accepts drops too, so a to-do can be dragged from the Inbox
@@ -514,13 +629,19 @@ private struct DestinationTodoList: View {
     /// Attached to the whole pane rather than to the rows: dropping *between*
     /// two rows is the same intent as dropping on the list, and a target that
     /// only covered the rows would leave the empty space below them dead.
-    private var droppableList: some View {
-        searchableList
+    private func droppableList(_ rows: [Todo]) -> some View {
+        searchableList(rows)
             .todoDropTarget(
                 destination,
                 store: store
             )
+            // The bar goes over the whole pane, so it stays put while the list
+            // scrolls underneath it.
+            .multiSelectBar(isPresented: multiSelection.isActive) { multiSelectBar(rows: rows) }
             .onChange(of: isFocused) {
+                #if DEBUG
+                print("ISFOCUSED changed -> \(isFocused)")
+                #endif
                 if !isFocused {
                     cursor.select(nil)
                 }
@@ -534,8 +655,8 @@ private struct DestinationTodoList: View {
     /// field off the stack leaves the revealed search bar unable to take focus.
     /// Bound to the scroll view directly it behaves normally, and the
     /// pull-down gesture has the right scroll view to attach to.
-    private var searchableList: some View {
-        listContent
+    private func searchableList(_ rows: [Todo]) -> some View {
+        listContent(rows)
             // Hidden by default and revealed by pulling the list down, so the
             // field costs nothing until it is wanted.
             .pullDownSearchable(
@@ -545,13 +666,7 @@ private struct DestinationTodoList: View {
             )
     }
 
-    private var listContent: some View {
-        // Resolved once per redraw and passed down.
-        //
-        // `visibleTodos` runs the destination's whole query chain — several
-        // passes over every to-do in the store — and the body referred to it
-        // five separate times, so a list of any size paid that cost five times
-        // for a single frame.
+    private func listContent(_ visibleTodos: [Todo]) -> some View {
         rows(visibleTodos)
     }
 
@@ -618,6 +733,7 @@ private struct DestinationTodoList: View {
                             // through it skipped the first stage of the tap
                             // and opened the detail on a single tap.
                             isSelected: cursor.selection == todo.uuid,
+                            isMultiSelected: multiSelection.contains(todo.uuid),
                             onToggle: { _ in handleToggle(todo) },
                             onSelectState: { handleSetState(todo, to: $0) },
                             onTitleChange: { handleTitleChange($0, for: todo) },
@@ -635,9 +751,12 @@ private struct DestinationTodoList: View {
                         // expanded row alone so a second tap reaches the title
                         // field instead of being swallowed.
                         .contentShape(Rectangle())
-                        .onTapGesture {
-                            handleRowTap(todo)
-                        }
+                        .todoSelectionGesture(
+                            isSelecting: multiSelection.isActive,
+                            onPlainTap: { handleRowTap(todo) },
+                            onToggle: { toggleSelection(of: todo) },
+                            onExtend: { extendSelection(to: todo) }
+                        )
                         // A row in any list can be dragged to any other list,
                         // to a space or project in the sidebar, or onto the
                         // calendar. Suppressed while the row's title has the
@@ -658,6 +777,7 @@ private struct DestinationTodoList: View {
                                 todo: subtask,
                                 showsSpace: false,
                                 isSelected: cursor.selection == subtask.uuid,
+                                isMultiSelected: multiSelection.contains(subtask.uuid),
                                 onToggle: { _ in handleToggle(subtask) },
                                 onSelectState: { handleSetState(subtask, to: $0) },
                                 onTitleChange: { _ in },
@@ -674,9 +794,12 @@ private struct DestinationTodoList: View {
                             )
                             .padding(.leading, 28)
                             .contentShape(Rectangle())
-                            .onTapGesture {
-                                handleRowTap(subtask)
-                            }
+                            .todoSelectionGesture(
+                                isSelecting: multiSelection.isActive,
+                                onPlainTap: { handleRowTap(subtask) },
+                                onToggle: { toggleSelection(of: subtask) },
+                                onExtend: { extendSelection(to: subtask) }
+                            )
                             // Dragging a subtask out is how it leaves its
                             // parent — the drop destinations already detach it,
                             // so this is the gesture for promoting work out of
@@ -759,6 +882,87 @@ private struct DestinationTodoList: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+    
+    @ToolbarContentBuilder
+    private var toolbar: some ToolbarContent {
+        ToolbarItem(placement: .secondaryAction) {
+            Toggle(isOn: Binding(
+                get: { includeResolved },
+                set: { showResolvedOverride = $0 }
+            )) {
+                Label(
+                    includeResolved ? "Hide Completed" : "Show Completed",
+                    systemImage: includeResolved ? "eye.slash" : "eye"
+                )
+            }
+            .help(
+                includeResolved
+                ? "Hide completed items in this list"
+                : "Show completed items in this list"
+            )
+        }
+        // Only the lists that reach backwards in time can hide anything,
+        // so the switch is offered only there. On Anytime or a project it
+        // would be a control that visibly does nothing.
+        if showsOverdueToggle {
+            ToolbarItem(placement: .secondaryAction) {
+                Toggle(isOn: Binding(
+                    get: { includeOverdue },
+                    set: { showOverdueOverride = $0 }
+                )) {
+                    Label(
+                        includeOverdue ? "Hide Overdue" : "Show Overdue",
+                        systemImage: includeOverdue
+                        ? "calendar.badge.minus"
+                        : "calendar.badge.exclamationmark"
+                    )
+                }
+                .help(
+                    includeOverdue
+                    ? "Hide work dated before today"
+                    : "Show work dated before today"
+                )
+            }
+        }
+        // A project's own title, dates and place are edited on its detail
+        // page. Reaching it from here matters because the sidebar row and
+        // this list both navigate to the project's *contents*: without
+        // this, the only way to change a project was to find it as a row in
+        // some other list.
+        if let project = currentProject {
+            ToolbarItem(placement: .secondaryAction) {
+                Button {
+                    showDetail(for: project)
+                } label: {
+                    Label("Edit Project…", systemImage: "slider.horizontal.3")
+                }
+                .help("Edit this project's title, dates, and place")
+                // The project is not one of the rows below, so no row can
+                // anchor its popover on macOS. The button that opens it
+                // does instead; on iOS this is a no-op and the detail page
+                // is pushed as usual.
+                .todoDetailPopover(for: project, selection: $selectedTodo)
+            }
+        }
+        // Only spaces and projects get one: the cross-cutting lists are
+        // already covered by the Calendar tab, which shows the same days
+        // unscoped, so a second entry point onto it would just be a
+        // duplicate.
+        if showsCalendarButton {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    // Focus belongs to the calendar now; a caret left in a
+                    // row's title would keep the keyboard up over the grid.
+                    focusedTodoID = nil
+                    calendarRoute = CalendarRoute(destination: destination)
+                } label: {
+                    Label("Calendar", systemImage: "calendar")
+                }
+                .help("Show \(title) on a calendar")
+            }
+        }
+        
+    }
 
     /// Create a to-do belonging to the list currently on screen, and put the
     /// cursor in its title.
@@ -771,7 +975,8 @@ private struct DestinationTodoList: View {
         let created = store.createTodo(
             space: defaultSpace,
             parent: defaultParent,
-            assignedDate: defaultAssignedDate
+            assignedDate: defaultAssignedDate,
+            weekSchedule: defaultWeekSchedule
         )
         // The cursor moves with the caret. A row is only drawn expanded — and
         // its title field only accepts the keyboard — when the cursor is on it,
@@ -859,9 +1064,163 @@ private struct DestinationTodoList: View {
     /// leaving focus in a collapsed row's title would keep the keyboard up over
     /// a field the user can no longer see.
     private func clearSelection() {
+        // A multi-selection survives scrolling. It is a set the user assembled
+        // deliberately and is about to act on, and losing it on the scroll that
+        // reaches the row they were heading for would make selecting anything
+        // past one screenful impossible.
+        guard !multiSelection.isActive else { return }
         guard cursor.selection != nil || focusedTodoID != nil else { return }
         focusedTodoID = nil
         withAnimation(Theme.Animation.rowExpand) { cursor.select(nil) }
+    }
+
+    // MARK: Multiple selection
+
+    /// Add or remove one row — Cmd-click, or a tap in iOS's Select mode.
+    private func toggleSelection(of todo: Todo) {
+        // Text focus and multi-selection are incompatible: the caret is in one
+        // row, and this is about several.
+        focusedTodoID = nil
+        withAnimation(Theme.Animation.quick) {
+            multiSelection.apply(.toggle, to: todo.uuid, in: visibleRowOrder)
+        }
+        isListFocused = true
+    }
+
+    /// Shift-click: select from the anchor to this row.
+    private func extendSelection(to todo: Todo) {
+        focusedTodoID = nil
+        withAnimation(Theme.Animation.quick) {
+            // A shift-click with nothing selected yet has no anchor of its own,
+            // so the row the user was already reading becomes one. Without
+            // this, the first Shift-click after arrowing down a list selects a
+            // single row instead of the range the user was pointing at.
+            if multiSelection.ids.isEmpty, let cursorID = cursor.selection {
+                multiSelection.apply(.replace, to: cursorID, in: visibleRowOrder)
+            }
+            multiSelection.apply(.extend, to: todo.uuid, in: visibleRowOrder)
+        }
+        isListFocused = true
+    }
+
+    /// Leave multi-select: the Done button, and Escape on a Mac.
+    private func endMultiSelect() {
+        withAnimation(Theme.Animation.quick) { multiSelection.clear() }
+    }
+
+    /// The selected to-dos, in the order they are drawn.
+    ///
+    /// Ordered rather than handed over as a set, so that actions which care
+    /// about order — duplicating, which inserts each copy after its original —
+    /// produce a result that matches what the user was looking at.
+    private var selectedTodos: [Todo] {
+        // The guard first, so nothing selected costs nothing: `visibleTodos` is
+        // a whole query chain, and as an argument it would be evaluated before
+        // the callee could decline to use it.
+        guard multiSelection.count > 0 else { return [] }
+        return selectedTodos(in: visibleTodos)
+    }
+
+    /// The same, over rows the caller has already resolved.
+    private func selectedTodos(in rows: [Todo]) -> [Todo] {
+        guard multiSelection.count > 0 else { return [] }
+        var byID: [UUID: Todo] = [:]
+        for todo in rows {
+            byID[todo.uuid] = todo
+            for subtask in nestedSubtasks(of: todo) {
+                byID[subtask.uuid] = subtask
+            }
+        }
+        return rowOrder(of: rows).compactMap { id in
+            multiSelection.contains(id) ? byID[id] : nil
+        }
+    }
+
+    /// The bar along the bottom, wired to the bulk verbs.
+    private func multiSelectBar(rows: [Todo]) -> MultiSelectBar {
+        let selected = selectedTodos(in: rows)
+        return MultiSelectBar(
+            count: selected.count,
+            allResolved: !selected.isEmpty && selected.allSatisfy { $0.state.isResolved },
+            allProjects: !selected.isEmpty && selected.allSatisfy(\.isProject),
+            spaces: spaces,
+            onToggleAll: {
+                withAnimation(Theme.Animation.listChange) { store.toggleAll(selected) }
+            },
+            onSetState: { state in
+                withAnimation(Theme.Animation.listChange) { store.setState(selected, to: state) }
+            },
+            onSchedule: {
+                focusedTodoID = nil
+                isSchedulingSelection = true
+            },
+            onMove: {
+                focusedTodoID = nil
+                isMovingSelection = true
+            },
+            onMoveToSpace: { space in
+                withAnimation(Theme.Animation.listChange) { store.move(selected, toSpace: space) }
+            },
+            onDuplicate: {
+                let copies = store.duplicate(selected)
+                // The copies are what the user is about to edit, the same rule
+                // the single-row duplicate follows with the cursor.
+                withAnimation(Theme.Animation.listChange) {
+                    multiSelection.selectAll(in: copies.map(\.uuid))
+                }
+            },
+            onSetIsProject: { promoted in
+                withAnimation(Theme.Animation.listChange) {
+                    store.setIsProject(selected, promoted)
+                }
+            },
+            onDelete: { requestBulkDelete() },
+            onSelectAll: {
+                withAnimation(Theme.Animation.quick) {
+                    multiSelection.selectAll(in: visibleRowOrder)
+                }
+            },
+            onDone: endMultiSelect
+        )
+    }
+
+    /// Delete the selection, asking first when it takes more with it.
+    ///
+    /// The same rule as the single-row delete: rows with nothing attached go
+    /// straight away, since retyping one is cheaper than a dialog. A selection
+    /// that would take subtasks down with it is worth a question, because the
+    /// count of what actually goes is not visible from the rows.
+    private func requestBulkDelete() {
+        let selected = selectedTodos
+        guard !selected.isEmpty else { return }
+
+        if selected.allSatisfy({ $0.subtaskList.isEmpty }) {
+            performBulkDelete()
+        } else {
+            isConfirmingBulkDelete = true
+        }
+    }
+
+    private func performBulkDelete() {
+        let selected = selectedTodos
+        focusedTodoID = nil
+        withAnimation(Theme.Animation.listChange) {
+            store.delete(selected)
+            multiSelection.clear()
+        }
+    }
+
+    /// Names what a bulk delete would take, including the subtasks that go
+    /// with it — the part the rows on screen do not show.
+    private var bulkDeletePrompt: String {
+        let selected = selectedTodos
+        let extra = selected.reduce(0) { $0 + $1.descendants.count }
+        let rows = selected.count == 1 ? "1 to-do" : "\(selected.count) to-dos"
+        guard extra > 0 else {
+            return "Delete \(rows)? This cannot be undone."
+        }
+        let noun = extra == 1 ? "subtask" : "subtasks"
+        return "Deleting \(rows) also deletes \(extra) \(noun). This cannot be undone."
     }
 
     /// Every row the arrow keys can land on, parents and their nested subtasks
@@ -871,7 +1230,18 @@ private struct DestinationTodoList: View {
     /// exactly what is on screen — including a subtask nested under its parent,
     /// which is a row the user can see and therefore expects to reach.
     private var visibleRowOrder: [UUID] {
-        visibleTodos.flatMap { [$0.uuid] + nestedSubtasks(of: $0).map(\.uuid) }
+        rowOrder(of: visibleTodos)
+    }
+
+    /// The same, over rows that have already been resolved.
+    ///
+    /// The body computes the row list once and derives the order from *that*
+    /// array rather than re-running the query chain — see the note in `body`.
+    /// The property above stays for the event handlers, which run on a
+    /// keystroke or a click rather than per frame and have no resolved list to
+    /// hand: recomputing there costs one chain on an actual user action.
+    private func rowOrder(of rows: [Todo]) -> [UUID] {
+        rows.flatMap { [$0.uuid] + nestedSubtasks(of: $0).map(\.uuid) }
     }
 
     private var cursorTodo: Todo? {
@@ -987,6 +1357,24 @@ private struct DestinationTodoList: View {
         case .project(let id):
             guard let project = TodoQueries.todo(uuid: id, in: context) else { return }
             _ = store.adopt(todo, asSubtaskOf: project)
+        }
+    }
+
+    /// Apply a picked move destination to a whole selection.
+    ///
+    /// The same three cases as the single-row version, through the bulk verbs
+    /// so the move is one undo entry rather than one per row.
+    private func apply(_ destination: MoveDestinationView.Destination, to todos: [Todo]) {
+        switch destination {
+        case .none:
+            store.move(todos, toParent: nil)
+            store.move(todos, toSpace: nil)
+        case .space(let id):
+            store.move(todos, toParent: nil)
+            store.move(todos, toSpace: spaces.first { $0.uuid == id })
+        case .project(let id):
+            guard let project = TodoQueries.todo(uuid: id, in: context) else { return }
+            store.move(todos, toParent: project)
         }
     }
 
@@ -1362,7 +1750,7 @@ private struct DestinationTodoList: View {
         if isSearching { return true }
 
         return switch destination {
-        case .today, .tomorrow, .thisWeek, .anytime, .logbook: true
+        case .today, .tomorrow, .thisWeek, .nextWeek, .anytime, .logbook: true
         default: false
         }
     }
@@ -1388,19 +1776,34 @@ private struct DestinationTodoList: View {
     /// Creating from Today schedules for today, which is what the list implies.
     private var defaultAssignedDate: Date? {
         switch destination {
-        // Both lists are date-driven, so something created there should land in
-        // them rather than dropping into the Inbox. Today is the natural date
-        // for This Week too — it is inside the week and needs no guessing.
-        case .today, .thisWeek:
+        // The list is date-driven, so something created there should land in it
+        // rather than dropping into the Inbox.
+        case .today:
             Calendar.current.startOfDay(for: Date())
         // Same rule one day on: something added to Tomorrow has to land there
         // rather than in Today, or the row vanishes the moment it is created.
         case .tomorrow:
             Calendar.current.startOfDay(for: Date()).addingTimeInterval(24 * 3600)
         // Anytime means scheduled-but-undated, which the bucket rules give a
-        // to-do once it has a home; a date would move it into Today.
+        // to-do once it has a home; a date would move it into Today. The week
+        // lists take `defaultWeekSchedule` instead — see below.
         default:
             nil
+        }
+    }
+
+    /// The week lists place what is created in them into that week itself.
+    ///
+    /// The same rule `defaultAssignedDate` follows, expressed in the field the
+    /// list actually filters on. This Week used to date new rows to *today*,
+    /// which was the only way to land them in the list before the week fields
+    /// existed — and it put them in Today as well, committing the user to a day
+    /// they had not picked. Now the list can say what it means.
+    private var defaultWeekSchedule: WeekSchedule? {
+        switch destination {
+        case .thisWeek: .thisWeek
+        case .nextWeek: .nextWeek
+        default: nil
         }
     }
 
@@ -1410,6 +1813,7 @@ private struct DestinationTodoList: View {
         case .today: "Nothing Today"
         case .tomorrow: "Nothing Tomorrow"
         case .thisWeek: "Nothing This Week"
+        case .nextWeek: "Nothing Next Week"
         case .logbook: "No History Yet"
         default: "Nothing Here"
         }
@@ -1421,6 +1825,7 @@ private struct DestinationTodoList: View {
         case .today: "Tap + to add something for today."
         case .tomorrow: "Tap + to add something for tomorrow."
         case .thisWeek: "Nothing is scheduled for this week."
+        case .nextWeek: "Plan ahead — to-dos you schedule for next week collect here."
         case .logbook: "Completed and cancelled to-dos collect here."
         default: "Tap + to add a to-do."
         }
@@ -1496,9 +1901,15 @@ private struct FocusClaimModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .onChange(of: cursor) {
+                #if DEBUG
+                print("FOCUSCLAIM cursor -> isFocused=true (was \(isFocused))")
+                #endif
                 if cursor != nil { isFocused = true }
             }
             .onChange(of: paneFocused) {
+                #if DEBUG
+                print("FOCUSCLAIM pane -> isFocused=true (was \(isFocused))")
+                #endif
                 if paneFocused { isFocused = true }
             }
     }
@@ -1513,3 +1924,19 @@ extension View {
         modifier(FocusClaimModifier(cursor: cursor, paneFocused: paneFocused, isFocused: isFocused))
     }
 }
+
+extension View {
+    /// Apply one group of modifiers, written as a function taking a view.
+    ///
+    /// Only so that a long chain split into groups still reads in the order it
+    /// runs: `a.modifiedBy(f).modifiedBy(g)` says what `g(f(a))` says, without
+    /// asking the reader to unwrap it from the inside out. See
+    /// `DestinationTodoList.body` for why that chain is split at all.
+    fileprivate func modifiedBy<Result: View>(
+        _ group: (Self) -> Result
+    ) -> Result {
+        group(self)
+    }
+}
+
+

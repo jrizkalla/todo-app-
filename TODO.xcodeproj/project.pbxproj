@@ -63,6 +63,7 @@
 				Models/Structs.swift,
 				Models/SummaryFingerprintModel.swift,
 				Models/Todo.swift,
+				Models/WeekSchedule.swift,
 				Services/TodoQueries.swift,
 				Support/AppLog.swift,
 				Support/StringExtensions.swift,

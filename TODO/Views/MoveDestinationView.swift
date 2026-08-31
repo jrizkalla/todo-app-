@@ -8,7 +8,16 @@ import SwiftData
 /// user first choose *which kind* of destination they mean would be a step that
 /// exists only because of how the data is modelled.
 struct MoveDestinationView: View {
-    let todo: Todo
+    /// The to-do being refiled, when there is exactly one.
+    ///
+    /// `nil` when the picker was opened over a multi-row selection. Two things
+    /// depend on it, and both have a sensible answer for a batch: the tick
+    /// marking where the to-do lives now — a batch can be spread across several
+    /// places, so nothing is ticked — and excluding the to-do's own subtree
+    /// from the destinations, which only matters when moving a single project
+    /// into itself. `adopt` refuses a cycle regardless, so the omission costs
+    /// nothing beyond an option that turns out to be a no-op.
+    var todo: Todo?
     let onPick: (Destination) -> Void
     let onDismiss: () -> Void
 
@@ -185,7 +194,10 @@ struct MoveDestinationView: View {
             .map { .space($0.uuid) }
 
         results += projects
-            .filter { $0.uuid != todo.uuid && !isDescendant($0, of: todo) }
+            .filter { candidate in
+                guard let todo else { return true }
+                return candidate.uuid != todo.uuid && !isDescendant(candidate, of: todo)
+            }
             .filter { matches($0.title) }
             .map { .project($0.uuid) }
 
@@ -204,6 +216,9 @@ struct MoveDestinationView: View {
 
     /// Where the to-do lives now, so the picker can mark it.
     private var currentDestination: Destination? {
+        // A batch can be spread across several places, so there is no single
+        // "here" to mark.
+        guard let todo else { return nil }
         if let parent = todo.parent { return .project(parent.uuid) }
         if let space = todo.space { return .space(space.uuid) }
         return Destination.none

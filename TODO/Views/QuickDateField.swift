@@ -12,6 +12,14 @@ struct QuickDateField: View {
     /// Called with the parsed date when the user commits.
     let onCommit: (Date, _ hasTime: Bool) -> Void
 
+    /// Called instead of `onCommit` when the phrase named a week rather than a
+    /// day — "this week", "next week".
+    ///
+    /// Separate rather than folded into `onCommit` as a date, because the two
+    /// mean different things to the store: committing the week's anchor as an
+    /// `assignedDate` would pin the to-do to a Sunday nobody typed.
+    var onCommitWeek: ((WeekSchedule) -> Void)?
+
     /// Focus on appear, since the whole point is typing without reaching for
     /// the mouse.
     var focusesOnAppear = true
@@ -30,7 +38,7 @@ struct QuickDateField: View {
                     .foregroundStyle(.secondary)
                     .font(.callout)
 
-                TextField("Type a date — “weds”, “aug 10”, “in 3 days”", text: $text)
+                TextField("Type a date — “weds”, “next week”, “aug 10”", text: $text)
                     .textFieldStyle(.plain)
                     .focused($isFocused)
                     .onSubmit(commit)
@@ -60,7 +68,11 @@ struct QuickDateField: View {
     private var interpretation: some View {
         if let parsed {
             Label(
-                ParsedSuggestion.describe(parsed.date, hasTime: parsed.hasTime),
+                // A week phrase reads back as the week, not as the anchor date
+                // it carries — echoing "Sunday, Aug 30" at someone who typed
+                // "next week" would look like the field had misunderstood.
+                parsed.weekSchedule?.label
+                    ?? ParsedSuggestion.describe(parsed.date, hasTime: parsed.hasTime),
                 systemImage: "return"
             )
             .font(.caption)
@@ -80,7 +92,15 @@ struct QuickDateField: View {
 
     private func commit() {
         guard let parsed else { return }
-        onCommit(parsed.date, parsed.hasTime)
+
+        // A week only commits as a week where the caller can take one. Without
+        // a handler the anchor date is the honest fallback: it is inside the
+        // week the user named, which is better than dropping the input.
+        if let week = parsed.weekSchedule, let onCommitWeek {
+            onCommitWeek(week)
+        } else {
+            onCommit(parsed.date, parsed.hasTime)
+        }
         text = ""
     }
 }

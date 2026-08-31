@@ -203,6 +203,10 @@ struct TodoDetailCompactView: View {
 
         if let date = todo.assignedDate {
             parts.append(ParsedSuggestion.describe(date, hasTime: todo.assignedHasTime))
+        } else if let week = todo.weekSchedule() {
+            // Mutually exclusive with the date — see `Todo.scheduleForWeek` —
+            // so this is a branch rather than a second append.
+            parts.append(week.label)
         }
         return parts.joined(separator: " · ")
     }
@@ -217,7 +221,38 @@ struct TodoDetailCompactView: View {
                 date: $todo.assignedDate,
                 hasTime: $todo.assignedHasTime,
                 labelWidth: labelWidth
-            ) { store.update(todo) { _ in } }
+            ) {
+                // The exclusion, enforced on the way out of a binding that
+                // writes `assignedDate` directly — the same as the full editor
+                // does. Clearing the date leaves the week alone.
+                store.update(todo) {
+                    if $0.assignedDate != nil { $0.clearWeekSchedule() }
+                }
+            }
+
+            Divider()
+
+            row("Week") {
+                Picker("", selection: Binding(
+                    get: { todo.weekSchedule() },
+                    set: { week in
+                        store.update(todo) {
+                            if let week {
+                                $0.scheduleForWeek(week)
+                            } else {
+                                $0.clearWeekSchedule()
+                            }
+                        }
+                    }
+                )) {
+                    Text("None").tag(WeekSchedule?.none)
+                    ForEach(WeekSchedule.allCases, id: \.self) { week in
+                        Text(week.label).tag(Optional(week))
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+            }
 
             Divider()
 

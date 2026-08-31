@@ -105,9 +105,9 @@ final class AISummaryService: ObservableObject {
     ///
     /// Loaded through here rather than inline so the fingerprint and the prompt
     /// are guaranteed to describe the same set of events.
-    private func upcomingEvents(now: Date) -> [CalendarEvent] {
+    private func upcomingEvents(now: Date) async -> [CalendarEvent] {
         let calEventStore = CalendarEventStore()
-        calEventStore.loadEvents(
+        await calEventStore.loadEvents(
             from: now,
             to: Calendar.current.startOfDay(for: now).addingTimeInterval(24 * 60 * 60 - 1),
             calendarIdentifiers: visibleCalendars
@@ -139,8 +139,8 @@ final class AISummaryService: ObservableObject {
     ///
     /// Cheap by comparison with running the model, so the view calls this first
     /// and only generates when it does not match what was saved.
-    func fingerprint(now: Date = Date()) -> SummaryFingerprint {
-        let events = upcomingEvents(now: now)
+    func fingerprint(now: Date = Date()) async -> SummaryFingerprint {
+        let events = await upcomingEvents(now: now)
         return SummaryFingerprint(
             instructions: Self.getInstructions(for: phase(now: now, events: events)),
             user: SummaryFingerprint.user(userInfo),
@@ -159,7 +159,7 @@ final class AISummaryService: ObservableObject {
         }
 
         let now = Date()
-        let events = upcomingEvents(now: now)
+        let events = await upcomingEvents(now: now)
         let instructions = Self.getInstructions(for: phase(now: now, events: events))
 
         let prompt = Prompt {

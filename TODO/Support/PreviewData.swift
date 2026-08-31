@@ -120,6 +120,16 @@ enum PreviewData {
         let passport = Todo(title: "Renew passport", dueDate: day(-3))
         context.insert(passport)
 
+        // Week-planned work with no day of its own, so This Week and Next Week
+        // are populated in previews and in the running app. Without these both
+        // lists render empty and the only thing on screen is the empty state.
+        let taxes = Todo(title: "Sort out the **tax** paperwork", weekSchedule: .thisWeek)
+        context.insert(taxes)
+
+        let trip = Todo(title: "Book the flights for the trip", weekSchedule: .nextWeek)
+        context.insert(trip)
+        trip.move(toSpace: home)
+
         // A live recurring series, so the running app shows a real occurrence
         // with the recurring glyph and the schedule chip rather than needing
         // one to be set up by hand first.

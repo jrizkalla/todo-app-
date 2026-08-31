@@ -65,6 +65,10 @@ struct RootView: View {
     /// when that tab is the one asking, so nothing fires on a mere tab switch.
     @State private var createRequests: [AppTab: Int] = [:]
 
+    /// Whether a list is currently in multi-select, which withdraws the create
+    /// button from the corner the action bar needs.
+    @State private var multiSelect = MultiSelectPresence.shared
+
     private func createCount(for tab: AppTab) -> Binding<Int> {
         Binding(
             get: { createRequests[tab] ?? 0 },
@@ -134,10 +138,13 @@ struct RootView: View {
     #endif
 
     var body: some View {
+        #if DEBUG && DEBUG_UI
+        Self._printChanges()
+        #endif
         // Wide layouts keep the Inbox panel beside *every* tab, so it is one
         // persistent surface rather than something only the Lists tab has.
         // Phones fall through to the bare tab view untouched.
-        Group {
+        return Group {
             if isWideLayout {
                 // The panel is a *sibling* of the tab content, not an overlay
                 // over it: an `HStack` is what makes the content narrow to make
@@ -161,10 +168,7 @@ struct RootView: View {
                     if settings.showSidePanel {
                         SidePanelView(
                             selectedTodo: $selectedTodo,
-                            hasFocus: Binding<Bool>(
-                                get: { self.todoFocusHolder == .sidebar },
-                                set: { self.todoFocusHolder = $0 ? .sidebar : nextFocusHolder(for: .sidebar) }
-                            ),
+                            hasFocus: focusBinding(for: .sidebar),
                             scope: effectivePanelScope,
                             // Only while it is actually showing the Inbox:
                             // scoped to a calendar's list, the panel is not
@@ -282,10 +286,7 @@ struct RootView: View {
                         TodoListView(
                             destination: .inbox,
                             selectedTodo: $selectedTodo,
-                            isFocused: .init(
-                                get: { todoFocusHolder == .mainList },
-                                set: { todoFocusHolder = $0 ? .mainList : nextFocusHolder(for: .mainList) }
-                            ),
+                            isFocused: focusBinding(for: .mainList),
                             createRequest: createCount(for: .inbox),
                             capturedTodo: $capturedTodo
                         )
@@ -333,7 +334,10 @@ struct RootView: View {
         // cards lead somewhere else, so there is nothing there for "new" to
         // mean. Every other tab handles the request itself.
         .overlay(alignment: .bottomTrailing) {
-            if tab != .today {
+            // Also withdrawn while a list is in multi-select: the button sits
+            // in the corner the action bar occupies, and "new to-do" is not an
+            // action on a selection. See `MultiSelectPresence`.
+            if tab != .today && !multiSelect.isActive {
                 CreateButton {
                     requestCreate()
                 }
@@ -344,6 +348,7 @@ struct RootView: View {
             }
         }
         .animation(Theme.Animation.panel, value: tab)
+        .animation(Theme.Animation.panel, value: multiSelect.isActive)
         .task {
             guard !didRunLaunchTasks else { return }
             didRunLaunchTasks = true
@@ -359,6 +364,12 @@ struct RootView: View {
             // so running it on every foreground costs a fetch and cannot
             // produce a duplicate.
             RecurrenceEngine(context: context).generateDueInstances()
+
+            // And a *week* can turn over while it is backgrounded, which is the
+            // only moment week plans need anything done to them. Idempotent for
+            // the same reason: the sweep clears the anchor it acted on, so a
+            // second run finds nothing.
+            WeekScheduleRollover.run(in: context)
 
             if let last = importer.lastScanDate,
                Date().timeIntervalSince(last) < rescanDebounce {
@@ -386,10 +397,7 @@ struct RootView: View {
                 TodoListView(
                     destination: listSelection ?? .today,
                     selectedTodo: $selectedTodo,
-                    isFocused: .init(
-                        get: { todoFocusHolder == .mainList },
-                        set: { todoFocusHolder = $0 ? .mainList : nextFocusHolder(for: .mainList) }
-                    ),
+                    isFocused: focusBinding(for: .mainList),
                     createRequest: createCount(for: .lists)
                 )
                 .frame(maxWidth: .infinity)
@@ -404,6 +412,33 @@ struct RootView: View {
         } else {
             todoFocusHolder
         }
+    }
+
+/// A stable `Binding` for "is `holder` the one holding focus?".
+    ///
+    /// Written against `$todoFocusHolder` rather than as a fresh
+    /// `.init(get:set:)` at the call site. Two reasons, and the second is a bug
+    /// rather than a tidiness point:
+    ///
+    /// A closure-backed `Binding` built in `body` is a *new value* on every
+    /// render, so the view receiving it sees its input change every time this
+    /// one redraws — even when the underlying `todoFocusHolder` has not moved.
+    /// The list answers by re-rendering, which re-runs `init` and rebuilds its
+    /// `@Query`; a focus claim on the way back round writes the holder again,
+    /// and the two feed each other. Selecting a row was enough to start it, and
+    /// it never settled: the main thread sat at 100% with `TodoRow` bodies
+    /// re-evaluating thousands of times a second.
+    ///
+    /// Deriving it from the `@State`'s own projected value keeps the storage
+    /// identity stable across renders, which is what makes "nothing changed"
+    /// observable as nothing changed. The semantics are unchanged: claiming
+    /// focus sets this holder, releasing it hands focus to
+    /// `nextFocusHolder(for:)`.
+    private func focusBinding(for holder: TodoFocusHolder) -> Binding<Bool> {
+        Binding(
+            get: { todoFocusHolder == holder },
+            set: { todoFocusHolder = $0 ? holder : nextFocusHolder(for: holder) }
+        )
     }
 
     /// Launch work: notification permission, rescheduling reminders, and the
@@ -443,6 +478,11 @@ struct RootView: View {
         // an instance due today has to exist by the time Today renders, or the
         // user sees an empty list that fills in a moment later.
         RecurrenceEngine(context: context).generateDueInstances()
+
+        // Then settle up last week's plans, for the same reason and in the same
+        // window: a to-do whose week ran out has to be overdue by the time
+        // Today draws, not a moment after.
+        WeekScheduleRollover.run(in: context)
 
         // Scheduling itself prompts for authorization, so both steps are gated.
         if !skipsPrompts {

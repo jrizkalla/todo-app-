@@ -8,6 +8,7 @@ enum ListDestination: Hashable, Codable {
     case today
     case tomorrow
     case thisWeek
+    case nextWeek
     case anytime
     case logbook
     case space(UUID)
@@ -19,6 +20,7 @@ enum ListDestination: Hashable, Codable {
         case .today: "Today"
         case .tomorrow: "Tomorrow"
         case .thisWeek: "This Week"
+        case .nextWeek: "Next Week"
         case .anytime: "Anytime"
         case .logbook: "Logbook"
         case .space: "Space"
@@ -32,6 +34,7 @@ enum ListDestination: Hashable, Codable {
         case .today: "star"
         case .tomorrow: "sunrise"
         case .thisWeek: "calendar"
+        case .nextWeek: "calendar.badge.clock"
         case .anytime: "square.stack"
         case .logbook: "checkmark.circle"
         case .space: "folder"
@@ -234,12 +237,12 @@ enum TodoQueries {
     /// The resolved half of the visibility rules, as one clause.
     ///
     /// Combines `filter(includeResolved:)` with `filterResolved()`: finished
-    /// work is admitted only when the preference asks for it, and then only on
-    /// the day it was finished. Both are folded into the fetch so an archive of
-    /// completed work is never faulted in to be dropped.
+    /// work is admitted only when the preference asks for it, and then only
+    /// inside the history window. Both are folded into the fetch so an archive
+    /// of completed work is never faulted in to be dropped.
     ///
     /// Factored out as a composed `Predicate` rather than written inline in
-    /// each descriptor for two reasons: four destinations share it verbatim,
+    /// each descriptor for two reasons: three destinations share it verbatim,
     /// and inlining it alongside the other clauses produced an expression the
     /// type-checker refused to check in reasonable time.
     private static func resolvedVisible(
@@ -263,13 +266,14 @@ enum TodoQueries {
 
     /// How far back the open-ended lists show completed work.
     ///
-    /// The Inbox, Anytime, spaces and projects have no date window of their
-    /// own, so "show completed" in them would otherwise mean the entire
-    /// archive. A month is enough to see what was just finished without the
-    /// list turning into the Logbook.
+    /// Anytime, spaces and projects have no date window of their own, so "show
+    /// completed" in them would otherwise mean the entire archive. A month is
+    /// enough to see what was just finished without the list turning into the
+    /// Logbook.
     ///
     /// The date lists do not use this: their own window already bounds what
-    /// they show — see `unresolvedUnless`.
+    /// they show — see `unresolvedUnless`. Neither does the Inbox, which holds
+    /// finished work to today the way Today does — see `inboxDescriptor`.
     static let resolvedHistoryDays = 30
 
     /// Just the preference half, for the date lists.
@@ -325,6 +329,28 @@ enum TodoQueries {
         }
     }
 
+    /// To-dos whose week anchor falls in the half-open span `start..<end`.
+    ///
+    /// A *range* rather than an equality against one computed anchor, and that
+    /// is a correctness fix rather than a style choice. A `@Query`'s descriptor
+    /// is fixed when the view is built, so an equality test freezes the exact
+    /// anchor that was current at construction; once the week turns over, no
+    /// row carries that value any more and the list renders empty while the
+    /// sidebar badge — recomputed on every redraw — still shows a count.
+    ///
+    /// A range bounded by the week itself degrades far more gracefully: a
+    /// descriptor built a moment before midnight on the boundary still selects
+    /// a whole real week rather than an empty set, and the view identity in
+    /// `TodoListView.QueryIdentity` rebuilds it promptly.
+    ///
+    /// Anchors are normalized to the start of a week on the way in
+    /// (`Todo.scheduleForWeek`), so the bounds only ever have to bracket one.
+    private static func anchoredBetween(_ start: Date, _ end: Date) -> Predicate<Todo> {
+        #Predicate<Todo> { todo in
+            todo.weekAnchor.flatMap { $0 >= start && $0 < end } ?? false
+        }
+    }
+
     // MARK: - Descriptors
 
     /// Unresolved, unscheduled, unfiled items.
@@ -332,6 +358,12 @@ enum TodoQueries {
     /// `filterCycles` and `filterResolved` still run on the result — see the
     /// type comment — so this returns the descriptor and the caller pairs it
     /// with `finish(...)`.
+    ///
+    /// Finished work is held to today, the way Today holds it, rather than to
+    /// the month the other open-ended lists use. The Inbox is a staging area
+    /// for what has not been filed yet, so yesterday's completed items are
+    /// finished business: they belong to that day and to the Logbook, not to
+    /// the top of the list the user triages from this morning.
     static func inboxDescriptor(
         includeResolved: Bool = false,
         now: Date = Date(),
@@ -339,9 +371,10 @@ enum TodoQueries {
     ) -> FetchDescriptor<Todo> {
         let inboxRaw = Bucket.inbox.rawValue
         let focus = notHiddenByFocus
-        let visible = resolvedVisible(
-            includeResolved: includeResolved, now: now, calendar: calendar
-        )
+        let startOfToday = calendar.startOfDay(for: now)
+        let endOfToday = startOfToday.addingTimeInterval(24 * 3600)
+        let state = unresolvedUnless(includeResolved)
+        let finished = resolvedWithin(startOfToday, endOfToday)
 
         // Templates are admitted here and narrowed by `standingInTemplates` in
         // `finish(...)`: a series whose occurrence is live is represented by
@@ -352,7 +385,8 @@ enum TodoQueries {
                 focus.evaluate(todo)
                     && todo.bucketRaw == inboxRaw
                     && !todo.isProject
-                    && visible.evaluate(todo)
+                    && state.evaluate(todo)
+                    && finished.evaluate(todo)
             },
         )
         descriptor.relationshipKeyPathsForPrefetching = [\.space, \.parent]
@@ -444,8 +478,14 @@ enum TodoQueries {
 
     /// Items landing in the current week, by the user's week-start preference.
     ///
-    /// Open-ended backwards, exactly as the array version is: anything dated
-    /// before the end of the week counts, however old.
+    /// Two populations, deliberately unioned: work dated onto a day *inside*
+    /// this week, and work planned for the week without a day — the ones the
+    /// user put here with "This Week" rather than by picking a date. The list
+    /// is the answer to "what am I doing this week", and both are answers to
+    /// it.
+    ///
+    /// Open-ended backwards for the dated half, exactly as the array version
+    /// is: anything dated before the end of the week counts, however old.
     static func thisWeekDescriptor(
         calendar: Calendar = .current,
         now: Date = Date(),
@@ -458,18 +498,67 @@ enum TodoQueries {
         let state = unresolvedUnless(includeResolved)
         // Same rule as Today: open-ended backwards unless overdue work is
         // hidden, in which case the window starts where the week does.
-        let window = includeOverdue
+        let dated = includeOverdue
             ? datedBefore(weekEnd)
             : datedBetween(week.start, weekEnd)
+        let thisWeekAnchor = WeekMath.anchor(for: .thisWeek, now: now, calendar: calendar)
+        let anchored = anchoredBetween(
+            thisWeekAnchor,
+            WeekMath.endOfWeek(startingAt: thisWeekAnchor, calendar: calendar)
+        )
         // And the same asymmetry: the backward reach is for overdue work, not
         // for the archive. Completed items are held to the week itself.
+        //
+        // This binds the week-anchored rows too, which is right: an anchored
+        // to-do completed last week has no date of its own to fall outside a
+        // window, so without this the "show completed" preference would keep it
+        // in the list indefinitely.
         let finished = resolvedWithin(week.start, weekEnd)
         let template = notATemplate
 
         var descriptor = FetchDescriptor<Todo>(
             predicate: #Predicate<Todo> { todo in
-                focus.evaluate(todo) && window.evaluate(todo) && state.evaluate(todo)
+                focus.evaluate(todo)
+                    && (dated.evaluate(todo) || anchored.evaluate(todo))
+                    && state.evaluate(todo)
                     && finished.evaluate(todo) && template.evaluate(todo)
+            }
+        )
+        descriptor.prefetchRelated()
+        descriptor.sortBy = dateThenOrderSort
+        return descriptor
+    }
+
+    /// Work planned for the week after this one.
+    ///
+    /// Only the week-anchored rows, and that asymmetry with This Week is
+    /// deliberate. This Week unions in dated work because it is the list the
+    /// user lives in — it has to be the whole picture of the days in front of
+    /// them, overdue work included. Next Week is a staging area for a decision
+    /// already made ("not now, then"), and pulling every to-do that happens to
+    /// carry a date seven days out would bury that handful of deliberate
+    /// choices under a calendar dump the user never put there.
+    ///
+    /// There is no overdue reach for the same reason Tomorrow has none: nothing
+    /// can be late for a week that has not started.
+    static func nextWeekDescriptor(
+        calendar: Calendar = .current,
+        now: Date = Date(),
+        includeResolved: Bool = false
+    ) -> FetchDescriptor<Todo> {
+        let focus = notHiddenByFocus
+        let state = unresolvedUnless(includeResolved)
+        let nextWeekAnchor = WeekMath.anchor(for: .nextWeek, now: now, calendar: calendar)
+        let anchored = anchoredBetween(
+            nextWeekAnchor,
+            WeekMath.endOfWeek(startingAt: nextWeekAnchor, calendar: calendar)
+        )
+        let template = notATemplate
+
+        var descriptor = FetchDescriptor<Todo>(
+            predicate: #Predicate<Todo> { todo in
+                focus.evaluate(todo) && anchored.evaluate(todo) && state.evaluate(todo)
+                    && template.evaluate(todo)
             }
         )
         descriptor.prefetchRelated()
@@ -1057,6 +1146,10 @@ enum TodoQueries {
                 includeResolved: includeResolved,
                 includeOverdue: includeOverdue
             ) ?? matchNothingDescriptor
+        case .nextWeek:
+            return nextWeekDescriptor(
+                calendar: calendar, now: now, includeResolved: includeResolved
+            )
         case .anytime:
             return anytimeDescriptor(includeResolved: includeResolved, now: now, calendar: calendar)
         case .logbook:
@@ -1104,7 +1197,7 @@ enum TodoQueries {
             return standingInTemplates(fetched)
                 .filterCycles()
                 .sorted(by: sortByDateThenOrder)
-        case .today, .tomorrow, .thisWeek:
+        case .today, .tomorrow, .thisWeek, .nextWeek:
             // No template pass: the dated descriptors exclude templates in the
             // fetch, since a schedule has no day to sit on.
             return fetched.filterCycles().sorted(by: sortByDateThenOrder)
@@ -1170,6 +1263,8 @@ enum TodoQueries {
             descriptor = tomorrowDescriptor(calendar: calendar, now: now)
         case .thisWeek:
             descriptor = thisWeekDescriptor(calendar: calendar, now: now)
+        case .nextWeek:
+            descriptor = nextWeekDescriptor(calendar: calendar, now: now)
         case .anytime:
             descriptor = anytimeDescriptor(now: now, calendar: calendar)
         default:
@@ -1287,12 +1382,24 @@ enum TodoQueries {
     }
 
     /// Unresolved, unscheduled, unfiled items.
-    static func inbox(_ todos: [Todo], includeResolved: Bool = false) -> [Todo] {
-        topLevel(todos)
+    static func inbox(
+        _ todos: [Todo],
+        includeResolved: Bool = false,
+        calendar: Calendar = .current,
+        now: Date = Date()
+    ) -> [Todo] {
+        let startOfToday = calendar.startOfDay(for: now)
+        let endOfToday = startOfToday.addingTimeInterval(24 * 3600)
+
+        return topLevel(todos)
             .filter { $0.bucket == .inbox && !$0.isProject }
             .filterTemplates()
             .filter(includeResolved: includeResolved)
-            .filterResolved()
+            // The in-memory twin of `inboxDescriptor`'s `resolvedWithin`:
+            // finished work is held to today rather than to the month the other
+            // open-ended lists show, so yesterday's completed items are out of
+            // the way of today's triage.
+            .filterResolved(within: startOfToday, endOfToday)
             .filterCycles()
             .sorted(by: sortByOrder)
     }
@@ -1374,6 +1481,9 @@ enum TodoQueries {
     }
 
     /// Items landing in the current week, by the user's week-start preference.
+    ///
+    /// The in-memory twin of `thisWeekDescriptor`, unioning the same two
+    /// populations: dated inside the week, or planned for the week outright.
     static func thisWeek(
         _ todos: [Todo],
         calendar: Calendar = .current,
@@ -1386,6 +1496,7 @@ enum TodoQueries {
 
         return topLevel(todos)
             .filter { todo in
+                if todo.weekSchedule(now: now, calendar: calendar) == .thisWeek { return true }
                 if let assigned = todo.assignedDate, assigned >= lowerBound, assigned < week.end { return true }
                 if let due = todo.dueDate, due >= lowerBound, due < week.end { return true }
                 return false
@@ -1394,6 +1505,25 @@ enum TodoQueries {
             .filter(includeResolved: includeResolved)
             // Matching `thisWeekDescriptor`, and for the same reason as Today.
             .filterResolved(within: week.start, week.end)
+            .filterCycles()
+            .sorted(by: sortByDateThenOrder)
+    }
+
+    /// Work planned for the week after this one.
+    ///
+    /// The in-memory twin of `nextWeekDescriptor` — week-anchored rows only.
+    /// See that descriptor for why this list does not union in dated work the
+    /// way This Week does.
+    static func nextWeek(
+        _ todos: [Todo],
+        calendar: Calendar = .current,
+        now: Date = Date(),
+        includeResolved: Bool = false
+    ) -> [Todo] {
+        topLevel(todos)
+            .filter { $0.weekSchedule(now: now, calendar: calendar) == .nextWeek }
+            .filterTemplates()
+            .filter(includeResolved: includeResolved)
             .filterCycles()
             .sorted(by: sortByDateThenOrder)
     }

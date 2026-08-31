@@ -346,7 +346,7 @@ struct SidebarView: View {
     /// Inbox is deliberately absent: it is its own tab, and listing it here too
     /// would give one screen two entry points with no way to tell them apart.
     private var fixedDestinations: [ListDestination] {
-        [.today, .tomorrow, .thisWeek, .anytime, .logbook]
+        [.today, .tomorrow, .thisWeek, .nextWeek, .anytime, .logbook]
     }
 
     /// Spell out what a space deletion takes with it, counting the projects and
@@ -404,6 +404,7 @@ struct SidebarView: View {
         case .today: .yellow
         case .tomorrow: .orange
         case .thisWeek: .green
+        case .nextWeek: .mint
         case .anytime: .teal
         case .logbook: .secondary
         default: .accentColor

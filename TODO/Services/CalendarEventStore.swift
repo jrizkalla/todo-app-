@@ -66,7 +66,19 @@ final class CalendarEventStore {
     ///
     /// - Parameter calendarIdentifiers: Which calendars to read; `nil` means
     ///   the system's default calendar, and empty means none.
-    func loadEvents(from start: Date, to end: Date, calendarIdentifiers: [String]?) {
+    ///
+    /// `async`, and the fetch itself runs off the main actor, because
+    /// `events(matching:)` is a *synchronous* cross-process call into
+    /// `calendaraccessd` that also expands recurring events. Its cost scales
+    /// with the range and with how many calendars the user subscribes to, so
+    /// on the main thread it read as the app randomly freezing — the reload
+    /// fires on every change of the visible range, which is to say on ordinary
+    /// day-to-day navigation.
+    ///
+    /// Only the fetch is moved. `EKEventStore` is not `Sendable`, so the store
+    /// is used inside one `nonisolated` hop that returns already-flattened
+    /// `CalendarEvent` values, and no `EKEvent` ever crosses back.
+    func loadEvents(from start: Date, to end: Date, calendarIdentifiers: [String]?) async {
         guard hasAccess else {
             events = []
             return
@@ -78,8 +90,31 @@ final class CalendarEventStore {
             return
         }
 
-        let predicate = eventStore.predicateForEvents(withStart: start, end: end, calendars: calendars)
-        events = eventStore.events(matching: predicate).map(Self.makeEvent)
+        let identifiers = calendars.map(\.calendarIdentifier)
+        events = await Self.fetchEvents(from: start, to: end, calendarIdentifiers: identifiers)
+    }
+
+    /// The blocking half of `loadEvents`, off the main actor.
+    ///
+    /// Builds its own `EKEventStore`: the type is not `Sendable`, and the
+    /// shared instance belongs to the main actor. Resolving the calendars by
+    /// identifier here keeps every EventKit object local to this call.
+    private nonisolated static func fetchEvents(
+        from start: Date,
+        to end: Date,
+        calendarIdentifiers: [String]
+    ) async -> [CalendarEvent] {
+        await Task.detached(priority: .userInitiated) {
+            let store = EKEventStore()
+            let calendars = store.calendars(for: .event)
+                .filter { calendarIdentifiers.contains($0.calendarIdentifier) }
+            guard !calendars.isEmpty else { return [] }
+
+            let predicate = store.predicateForEvents(
+                withStart: start, end: end, calendars: calendars
+            )
+            return store.events(matching: predicate).map(Self.makeEvent)
+        }.value
     }
 
     /// The system's default calendar, pre-selected when the user has not
@@ -107,7 +142,7 @@ final class CalendarEventStore {
         return all.filter { identifiers.contains($0.calendarIdentifier) }
     }
 
-    private static func makeEvent(_ event: EKEvent) -> CalendarEvent {
+    private nonisolated static func makeEvent(_ event: EKEvent) -> CalendarEvent {
         CalendarEvent(
             // `eventIdentifier` repeats across occurrences of a recurring event,
             // so the start date is folded in to keep ids unique per occurrence.
@@ -123,7 +158,7 @@ final class CalendarEventStore {
     }
 
     /// Convert a calendar's `CGColor` to the `#RRGGBB` form the app uses.
-    static func hexString(from color: CGColor?) -> String {
+    nonisolated static func hexString(from color: CGColor?) -> String {
         guard let components = color?.components, components.count >= 3 else {
             return Theme.Palette.defaultSpaceColor
         }

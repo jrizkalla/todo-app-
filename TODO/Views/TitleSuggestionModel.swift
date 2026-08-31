@@ -57,6 +57,14 @@ final class TitleSuggestionModel {
         case .schedule(let date, let hasTime):
             todo.assignedDate = date
             todo.assignedHasTime = hasTime
+            // A date typed into the title is still a date, so it retires any
+            // week the to-do was planned for — the same exclusion every other
+            // scheduling path enforces.
+            todo.clearWeekSchedule()
+        case .scheduleWeek(let week):
+            // And the exclusion in the other direction, which
+            // `scheduleForWeek` applies for us.
+            todo.scheduleForWeek(week)
         case .deadline(let date, let hasTime):
             todo.dueDate = date
             todo.dueHasTime = hasTime

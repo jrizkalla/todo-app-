@@ -28,6 +28,14 @@ struct TodoRow : View {
     /// Distinct from the detail view being open on it: expanding a row is the
     /// first stage of the two-stage tap, and the editor is the second.
     let isSelected: Bool
+    /// True when this row is one of several picked out to act on together.
+    ///
+    /// Separate from `isSelected`, which expands the row for editing. These are
+    /// different questions — "the row I am reading" against "one of the rows I
+    /// am about to complete" — and a batch of ten expanded rows would fill the
+    /// screen with fields nobody is typing into. A multi-selected row keeps its
+    /// collapsed shape and is only tinted.
+    var isMultiSelected: Bool = false
     var onToggle: (Todo) -> Void
     var onSelectState: (CompletionState) -> Void
     var onTitleChange: (String) -> Void
@@ -61,7 +69,10 @@ struct TodoRow : View {
     private var isTitleFocused: Bool { focusedTodoID == todo.uuid }
 
     var body: some View {
-        VStack(alignment: .leading) {
+        #if DEBUG && DEBUG_UI
+        Self._printChanges()
+        #endif
+        return VStack(alignment: .leading) {
             HStack(alignment: .top) {
                 TodoCheckbox(
                     state: todo.state,
@@ -183,10 +194,20 @@ struct TodoRow : View {
         // field is full-size throughout and simply spends the animation outside
         // the row's bounds, so the text slides into view instead of stretching.
         .clipShape(RoundedRectangle(cornerRadius: Theme.Metrics.cornerRadius))
+        // Over the card rather than under it: the expanded row's card is opaque,
+        // so a tint in the background would be hidden on exactly the row the
+        // user is most likely to be looking at. Non-interactive, so the tint
+        // never eats a tap meant for the title beneath it.
+        .overlay {
+            RoundedRectangle(cornerRadius: Theme.Metrics.cornerRadius)
+                .fill(Color.accentColor.opacity(isMultiSelected ? 0.16 : 0))
+                .allowsHitTesting(false)
+        }
         .overlay(borderOverlay)
         // One animation for every part of the expansion — height, card, border,
         // and chevron — so they arrive together rather than in two waves.
         .animation(Theme.Animation.rowExpand, value: isSelected)
+        .animation(Theme.Animation.quick, value: isMultiSelected)
         .background {
             // Always mounted and faded by opacity rather than swapped for an
             // `EmptyView`: the card has to resize *with* the row, and a
@@ -291,7 +312,7 @@ struct TodoRow : View {
     var borderOverlay: some View {
         RoundedRectangle(cornerRadius: Theme.Metrics.cornerRadius)
             .strokeBorder(borderColor, style: borderStyle)
-            .opacity(isSelected || todo.standsInForItsSeries ? 1 : 0)
+            .opacity(isSelected || isMultiSelected || todo.standsInForItsSeries ? 1 : 0)
     }
 
     /// A template standing in for its series is drawn dashed.
@@ -314,6 +335,10 @@ struct TodoRow : View {
     /// chip and its marker, and matching that keeps one series speaking with
     /// one voice.
     private var borderColor: Color {
+        // The accent wins over the to-do's own colour while it is part of a
+        // selection: what the outline is saying then is "this is one of the
+        // rows you picked", which is the app speaking rather than the to-do.
+        if isMultiSelected { return .accentColor }
         if todo.standsInForItsSeries && !isSelected {
             return todo.isDormantRecurrenceTemplate ? .orange : todo.color.opacity(0.7)
         }
@@ -355,6 +380,16 @@ struct TodoRow : View {
             badges.append(Badge(
                 text: ParsedSuggestion.describe(assigned, hasTime: todo.assignedHasTime),
                 symbol: "calendar",
+                color: .secondary
+            ))
+        } else if let week = todo.weekSchedule() {
+            // `else if` because the two are mutually exclusive by construction
+            // — see `Todo.scheduleForWeek`. Written as a branch rather than as
+            // a second `if` so that a row which somehow held both would show
+            // the more precise answer instead of contradicting itself.
+            badges.append(Badge(
+                text: week.label,
+                symbol: week.symbolName,
                 color: .secondary
             ))
         }

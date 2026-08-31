@@ -177,10 +177,16 @@ extension TodoSearch {
             // Unfiled capture only. A subtask inside a project is filed, so the
             // Inbox's field should not reach it.
             return todos.filter { $0.bucket == .inbox && !$0.isProject }
-        case .today, .tomorrow, .thisWeek:
-            // Dated work, at any date. All three lists are windows onto the
-            // same pool, so all three search it the same way.
-            return todos.filter { $0.assignedDate != nil || $0.dueDate != nil }
+        case .today, .tomorrow, .thisWeek, .nextWeek:
+            // Work that has been placed in time at all — on a day or in a week.
+            // Every one of these lists is a window onto that same pool, so all
+            // four search it the same way. The week half is here for the same
+            // reason the window is dropped: a to-do planned for next week is
+            // findable from This Week, which is the point of searching from a
+            // list rather than browsing it.
+            return todos.filter {
+                $0.assignedDate != nil || $0.dueDate != nil || $0.weekAnchor != nil
+            }
         case .anytime:
             // Scheduled-but-undated, matching the browsing rule.
             return todos.filter { $0.bucket == .anytime && !$0.isProject }
@@ -225,8 +231,10 @@ extension TodoSearch {
             membership = #Predicate<Todo> { _ in true }
         case .inbox:
             membership = #Predicate<Todo> { $0.bucketRaw == inboxRaw && !$0.isProject }
-        case .today, .tomorrow, .thisWeek:
-            membership = #Predicate<Todo> { $0.assignedDate != nil || $0.dueDate != nil }
+        case .today, .tomorrow, .thisWeek, .nextWeek:
+            membership = #Predicate<Todo> {
+                $0.assignedDate != nil || $0.dueDate != nil || $0.weekAnchor != nil
+            }
         case .anytime:
             membership = #Predicate<Todo> { $0.bucketRaw == anytimeRaw && !$0.isProject }
         case .logbook:

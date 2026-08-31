@@ -431,6 +431,13 @@ private struct RangedCalendarView: View {
                     store.schedule(todo, to: date, hasTime: hasTime)
                     schedulingTodo = nil
                 },
+                onPickWeek: { week in
+                    // Same verb, same undo entry: the user is answering "when",
+                    // and how precisely they answered does not change what a
+                    // mistaken tap costs them.
+                    store.schedule(todo, forWeek: week)
+                    schedulingTodo = nil
+                },
                 onAddReminder: {
                     schedulingTodo = nil
                     selectedTodo = todo
@@ -979,6 +986,10 @@ private struct RangedCalendarView: View {
                             store.update(todo) {
                                 $0.assignedDate = calendar.startOfDay(for: day)
                                 $0.assignedHasTime = false
+                                // Dropping onto a day is the user naming one,
+                                // which retires the week they had planned it
+                                // for — see `Todo.scheduleForWeek`.
+                                $0.clearWeekSchedule()
                             }
                         }
                         return true
@@ -1313,6 +1324,9 @@ private struct RangedCalendarView: View {
             store.update(todo) {
                 $0.assignedDate = start
                 $0.assignedHasTime = true
+                // Likewise: a slot on the grid is the most precise answer to
+                // "when" there is, so any week plan gives way to it.
+                $0.clearWeekSchedule()
                 // Only supply a length if it had none, so an existing duration
                 // is preserved across the move.
                 if $0.duration == nil { $0.duration = settings.defaultEventDuration }
@@ -2244,7 +2258,7 @@ private struct RangedCalendarView: View {
               let rangeEnd = calendar.date(byAdding: .day, value: 1, to: last)
         else { return }
 
-        eventStore.loadEvents(
+        await eventStore.loadEvents(
             from: calendar.startOfDay(for: first),
             to: rangeEnd,
             calendarIdentifiers: settings.visibleCalendars

@@ -5,6 +5,15 @@ struct DatePhraseMatch: Equatable {
     let date: Date
     /// Whether the phrase named a time of day, as opposed to a bare day.
     let hasTime: Bool
+    /// Set when the phrase named a *week* rather than a day — "this week",
+    /// "next week".
+    ///
+    /// `date` is still populated for these, with the week's anchor, so every
+    /// caller that predates week scheduling keeps working unchanged and lands
+    /// on a sensible day. Callers that understand weeks check this first and
+    /// schedule the week instead, which is the more faithful reading: someone
+    /// typing "next week" is declining to pick a day.
+    var weekSchedule: WeekSchedule? = nil
     /// The substring that produced the match.
     let matchedText: String
     let matchedRange: NSRange
@@ -385,6 +394,54 @@ struct DatePhraseParser {
             }
 
             return finish(day: day, timeRange: match.range(at: 2), match: match, nsText: nsText)
+        }
+
+        // "this week" / "next week", and the "week after next" people reach for
+        // when they mean neither.
+        //
+        // Deliberately before `counted` below, which would otherwise never see
+        // these — but more importantly deliberately *not* resolved to a day.
+        // The anchor rides along in `date` so older callers still work, and
+        // `weekSchedule` is what a week-aware caller acts on.
+        //
+        // "week after next" resolves to a real anchor that reads as neither
+        // list, so the field can say what it understood and the user can see
+        // that it is further out than Next Week rather than being silently
+        // rounded into it.
+        let weeks = #"\b(this|next|(?:the\s+)?week\s+after\s+next)\s*(?:week)?\b"#
+        results += regexMatches(weeks, in: text).compactMap { match, nsText in
+            let raw = nsText.substring(with: match.range(at: 1)).lowercased()
+            let whole = nsText.substring(with: match.range).lowercased()
+
+            // "this"/"next" only mean a week when the word is actually there —
+            // "next friday" is the weekday scanner's, and matching it here
+            // would have the overlap resolver choose between two readings of
+            // the same words on length alone.
+            let offset: Int
+            if raw.hasSuffix("after next") {
+                offset = 2
+            } else if whole.contains("week") {
+                offset = raw == "next" ? 1 : 0
+            } else {
+                return nil
+            }
+
+            let anchor = calendar.date(
+                byAdding: .weekOfYear,
+                value: offset,
+                to: WeekMath.startOfWeek(containing: start, calendar: calendar)
+            )
+            guard let anchor else { return nil }
+
+            return DatePhraseMatch(
+                date: anchor,
+                hasTime: false,
+                weekSchedule: WeekMath.schedule(
+                    forAnchor: anchor, now: self.referenceDate, calendar: calendar
+                ),
+                matchedText: nsText.substring(with: match.range),
+                matchedRange: match.range
+            )
         }
 
         let counted = #"\bin\s+(\d{1,3})\s+(day|days|week|weeks|month|months)\b"#

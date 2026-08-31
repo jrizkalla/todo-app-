@@ -159,7 +159,12 @@ struct TodoDropActionTests {
         #expect(moved == calendar.startOfDay(for: moved))
     }
 
-    @Test func dropOnThisWeekKeepsAnExistingTimeOfDay() throws {
+    /// Dropping onto This Week plans the week and takes the day away.
+    ///
+    /// This used to date the row to *today*, because a week was not something a
+    /// to-do could hold — so the drop guessed a day, and the item turned up in
+    /// Today as well. Now the drop means what the list says.
+    @Test func dropOnThisWeekPlansTheWeekAndClearsTheDay() throws {
         let context = try makeContext()
         let past = calendar.date(byAdding: .day, value: -3, to: Date())!
         let at1415 = calendar.date(bySettingHour: 14, minute: 15, second: 0, of: past)!
@@ -172,10 +177,10 @@ struct TodoDropActionTests {
             store: TodoStore(context: context)
         )
 
-        let moved = try #require(todo.assignedDate)
-        #expect(calendar.component(.hour, from: moved) == 14)
-        #expect(calendar.component(.minute, from: moved) == 15)
-        #expect(TodoQueries.thisWeek([todo]).contains { $0.uuid == todo.uuid })
+        #expect(todo.assignedDate == nil)
+        #expect(todo.assignedHasTime == false)
+        #expect(todo.weekSchedule(calendar: calendar) == .thisWeek)
+        #expect(TodoQueries.thisWeek([todo], calendar: calendar).contains { $0.uuid == todo.uuid })
     }
 
     @Test func dropOnThisWeekSchedulesIt() throws {
@@ -188,8 +193,62 @@ struct TodoDropActionTests {
             store: TodoStore(context: context)
         )
 
+        #expect(todo.weekSchedule(calendar: calendar) == .thisWeek)
+        #expect(TodoQueries.thisWeek([todo], calendar: calendar).contains { $0.uuid == todo.uuid })
+    }
+
+    @Test func dropOnNextWeekSchedulesIt() throws {
+        let context = try makeContext()
+        let todo = Todo(title: "Task")
+        context.insert(todo)
+
+        TodoDropAction.apply(
+            .nextWeek, to: todo,
+            store: TodoStore(context: context)
+        )
+
+        #expect(todo.assignedDate == nil)
+        #expect(todo.weekSchedule(calendar: calendar) == .nextWeek)
+        #expect(TodoQueries.nextWeek([todo], calendar: calendar).contains { $0.uuid == todo.uuid })
+        // And not in This Week, which is the whole point of the two being
+        // separate lists.
+        #expect(!TodoQueries.thisWeek([todo], calendar: calendar).contains { $0.uuid == todo.uuid })
+    }
+
+    /// Dropping a week-planned to-do onto a dated list replaces the week.
+    ///
+    /// The exclusion in the direction that is easy to miss: every dated drop
+    /// has to clear the anchor, or the row stays in This Week while also
+    /// claiming a day.
+    @Test func dropOnADatedListClearsTheWeekPlan() throws {
+        let context = try makeContext()
+        let todo = Todo(title: "Task", weekSchedule: .nextWeek)
+        context.insert(todo)
+
+        TodoDropAction.apply(
+            .tomorrow, to: todo,
+            store: TodoStore(context: context)
+        )
+
+        #expect(todo.weekAnchor == nil)
         #expect(todo.assignedDate != nil)
-        #expect(TodoQueries.thisWeek([todo]).contains { $0.uuid == todo.uuid })
+        #expect(!TodoQueries.nextWeek([todo], calendar: calendar).contains { $0.uuid == todo.uuid })
+    }
+
+    /// And dropping onto Anytime or the Inbox clears it too — those lists mean
+    /// "not placed in time", which a week plan contradicts.
+    @Test func dropOnAnytimeClearsTheWeekPlan() throws {
+        let context = try makeContext()
+        let todo = Todo(title: "Task", weekSchedule: .thisWeek)
+        context.insert(todo)
+
+        TodoDropAction.apply(
+            .anytime, to: todo,
+            store: TodoStore(context: context)
+        )
+
+        #expect(todo.weekAnchor == nil)
+        #expect(todo.assignedDate == nil)
     }
 
     // MARK: Spaces and projects
