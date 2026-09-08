@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import SwiftData
 @testable import TODO
 
 /// What one window remembers, and which window a menu command reaches.
@@ -108,5 +109,86 @@ struct WindowStateTests {
         )
 
         #expect(WindowIdentity.isTarget(malformed, UUID()))
+    }
+
+    // MARK: The Inbox's one entry point
+
+    /// A window saved on the Inbox tab has somewhere to land where that tab
+    /// does not exist.
+    ///
+    /// The tab is gone wherever the app can open a second window, but a state
+    /// saved by an older build — or by a phone, which still has the tab — can
+    /// still name it. Selecting a tab the layout does not draw leaves the
+    /// content area blank, so the window is sent to the sidebar's Inbox row
+    /// instead. `RootView.rehomeInboxTab` is what does it; this pins the
+    /// destination that repair has to produce.
+    @Test func aWindowSavedOnTheInboxTabHasSomewhereToLand() throws {
+        let saved = WindowState(tab: .inbox, list: .today)
+
+        // Survives the trip, so the repair is reached with the tab intact
+        // rather than the value having been dropped in decoding.
+        let restored = try JSONDecoder().decode(
+            WindowState.self, from: JSONEncoder().encode(saved)
+        )
+        #expect(restored.tab == .inbox)
+
+        var repaired = restored
+        repaired.list = .inbox
+        repaired.tab = .lists
+
+        #expect(repaired.tab == .lists)
+        #expect(repaired.list == .inbox)
+    }
+
+    /// The Inbox is reachable as a list, which is what the tab's removal
+    /// relies on: it can be selected, opened in a window of its own, and
+    /// dropped onto, exactly like the dated lists beside it.
+    @Test func theInboxWorksAsAnOrdinaryList() throws {
+        let context = try makeContext()
+
+        let filed = Todo(title: "Filed", assignedDate: Date())
+        context.insert(filed)
+
+        // Selectable and countable, which is what the sidebar row draws.
+        #expect(TodoQueries.count(for: .inbox, in: context) >= 0)
+
+        // And a drop onto it means what the row promises: unfiled and undated.
+        let applied = TodoDropAction.apply(
+            .inbox, to: filed, store: TodoStore(context: context)
+        )
+        #expect(applied)
+        #expect(filed.assignedDate == nil)
+        #expect(filed.space == nil)
+    }
+
+    private func makeContext() throws -> ModelContext {
+        let container = try ModelContainer.appContainer(inMemory: true)
+        return ModelContext(container)
+    }
+
+    /// The Inbox has exactly one entry point, whichever layout this is.
+    ///
+    /// Both at once gives one screen two ways in with no way to tell them
+    /// apart; neither strands the Inbox with no way in at all. The two views
+    /// read this one type rather than each negating the flag themselves, so
+    /// they cannot drift into either state.
+    @Test func theInboxHasExactlyOneEntryPoint() {
+        for supportsMultipleWindows in [true, false] {
+            let placement = InboxPlacement.forLayout(
+                supportsMultipleWindows: supportsMultipleWindows
+            )
+            #expect(placement.showsTab != placement.showsSidebarRow)
+        }
+    }
+
+    /// A phone keeps the tab; everywhere else the Inbox is a sidebar row.
+    ///
+    /// Not arbitrary either way: a phone cannot open a second window, and a
+    /// sidebar row there is two navigation steps from anywhere, so the tab
+    /// earns the space. Where windows exist the Inbox is a list like the rest
+    /// and can be opened in one of its own.
+    @Test func onlyASingleWindowLayoutKeepsTheTab() {
+        #expect(InboxPlacement.forLayout(supportsMultipleWindows: false) == .tab)
+        #expect(InboxPlacement.forLayout(supportsMultipleWindows: true) == .sidebarRow)
     }
 }

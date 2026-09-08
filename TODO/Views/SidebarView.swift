@@ -386,10 +386,22 @@ struct SidebarView: View {
         #endif
     }
 
-    /// Inbox is deliberately absent: it is its own tab, and listing it here too
-    /// would give one screen two entry points with no way to tell them apart.
+    /// The Inbox leads, but only where it has no tab of its own.
+    ///
+    /// One screen with two entry points gives the user no way to tell which one
+    /// they are on, so exactly one of the tab and this row exists. On a phone —
+    /// the only place the app cannot open a second window — the tab is the one
+    /// that survives, because a sidebar row there is two navigation steps from
+    /// anywhere. Everywhere else this row is, and the Inbox can be pulled into
+    /// a window of its own like any other list. See `RootView.showsInboxTab`.
     private var fixedDestinations: [ListDestination] {
-        [.today, .tomorrow, .thisWeek, .nextWeek, .anytime, .logbook]
+        let dated: [ListDestination] = [
+            .today, .tomorrow, .thisWeek, .nextWeek, .anytime, .logbook,
+        ]
+        let placement = InboxPlacement.forLayout(
+            supportsMultipleWindows: supportsMultipleWindows
+        )
+        return placement.showsSidebarRow ? [.inbox] + dated : dated
     }
 
     /// Spell out what a space deletion takes with it, counting the projects and

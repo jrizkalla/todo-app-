@@ -307,6 +307,11 @@ struct PreviewRenderTests {
 
     /// Each of the shell's tabs, since a window now opens on whichever one its
     /// state names rather than always on Lists.
+    ///
+    /// `.inbox` is included deliberately even though this platform draws no
+    /// Inbox tab: that is the case a window restored from a phone or an older
+    /// build arrives in, and it has to render rather than come up blank — see
+    /// `RootView.rehomeInboxTab`.
     @Test func rootRendersEveryTab() {
         for tab in AppTab.allCases {
             render(RootView(windowState: .constant(WindowState(tab: tab))))

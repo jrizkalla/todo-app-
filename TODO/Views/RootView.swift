@@ -92,6 +92,23 @@ struct RootView: View {
     @State private var didRunLaunchTasks = false
     @State private var importer = RemindersImporter.shared
 
+    /// Whether the Inbox needs a tab of its own.
+    ///
+    /// Only where the app cannot open a second window — a phone. Everywhere
+    /// else the Inbox is a row in the sidebar like every other list, and can be
+    /// pulled into a window of its own when it is wanted beside something; a
+    /// tab as well would be a second way to reach one screen, with no way to
+    /// tell which one you were on. That is the same rule the sidebar has always
+    /// stated, now that it is the sidebar's row rather than the tab that
+    /// survives — see `SidebarView.fixedDestinations`.
+    @Environment(\.supportsMultipleWindows) private var supportsMultipleWindows
+
+    private var showsInboxTab: Bool {
+        InboxPlacement.forLayout(
+            supportsMultipleWindows: supportsMultipleWindows
+        ).showsTab
+    }
+
     @Environment(\.scenePhase) private var scenePhase
 
     /// Shortest gap between foreground rescans, so flicking in and out of the
@@ -103,6 +120,13 @@ struct RootView: View {
         Self._printChanges()
         #endif
         return tabs
+            // A window restored onto the Inbox tab — saved by a build that had
+            // one, or by a phone whose state reached this device — would select
+            // a tab this layout does not draw, leaving the content area blank.
+            // Send it to the sidebar's Inbox row, which is where the Inbox
+            // lives here.
+            .onAppear(perform: rehomeInboxTab)
+            .onChange(of: showsInboxTab) { _, _ in rehomeInboxTab() }
             // Tells the menu bar which window it is acting on, so a command
             // fires in the window the user is in rather than in all of them.
             .focusedSceneValue(\.windowID, windowState.id)
@@ -132,21 +156,42 @@ struct RootView: View {
     /// to-do they have no way to name.
     private func captureIntoInbox() {
         let created = TodoStore(context: context).createTodo()
-        windowState.tab = .inbox
+
+        // Wherever the Inbox is reachable in this window. On a phone that is a
+        // tab; everywhere else it is a row in the sidebar, which means showing
+        // the Lists tab and selecting it. Landing on the list either way is not
+        // incidental — a row created onto a screen the user cannot see is a
+        // to-do they have no way to name.
+        if showsInboxTab {
+            windowState.tab = .inbox
+        } else {
+            windowState.list = .inbox
+            windowState.tab = .lists
+        }
+
         capturedTodo = created.uuid
+    }
+
+    /// Move a window off the Inbox tab when this layout has none.
+    private func rehomeInboxTab() {
+        guard !showsInboxTab, windowState.tab == .inbox else { return }
+        windowState.list = .inbox
+        windowState.tab = .lists
     }
 
     private var tabs: some View {
         TabView(selection: tab) {
-            Tab(AppTab.inbox.title, systemImage: AppTab.inbox.symbol, value: AppTab.inbox) {
-                NavigationStack {
-                    TodoListView(
-                        destination: .inbox,
-                        selectedTodo: $selectedTodo,
-                        createRequest: createCount(for: .inbox),
-                        capturedTodo: $capturedTodo
-                    )
-                    .todoDetailDestination(selection: $selectedTodo)
+            if showsInboxTab {
+                Tab(AppTab.inbox.title, systemImage: AppTab.inbox.symbol, value: AppTab.inbox) {
+                    NavigationStack {
+                        TodoListView(
+                            destination: .inbox,
+                            selectedTodo: $selectedTodo,
+                            createRequest: createCount(for: .inbox),
+                            capturedTodo: $capturedTodo
+                        )
+                        .todoDetailDestination(selection: $selectedTodo)
+                    }
                 }
             }
 
@@ -238,9 +283,8 @@ struct RootView: View {
     /// Lists: the sidebar of spaces and projects, with the selected list beside
     /// or pushed from it.
     ///
-    /// Inbox is deliberately absent from the sidebar here — it has its own tab,
-    /// and listing it twice would leave two ways to reach one screen with no
-    /// way to tell which one the user is on.
+    /// The Inbox is one of those rows wherever there is no Inbox tab — see
+    /// `showsInboxTab` — so this list is what Cmd+N's capture has to reach.
     private var listsTab: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             SidebarView(selection: listSelection, selectedTodo: $selectedTodo)
@@ -252,7 +296,11 @@ struct RootView: View {
                 TodoListView(
                     destination: windowState.list ?? .today,
                     selectedTodo: $selectedTodo,
-                    createRequest: createCount(for: .lists)
+                    createRequest: createCount(for: .lists),
+                    // Only while it is actually showing the Inbox: a captured
+                    // to-do went there, and no other list should take the caret
+                    // for it.
+                    capturedTodo: windowState.list == .inbox ? $capturedTodo : nil
                 )
                 .frame(maxWidth: .infinity)
                 .todoDetailDestination(selection: $selectedTodo)

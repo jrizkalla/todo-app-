@@ -43,6 +43,30 @@ struct WindowState: Codable, Hashable, Identifiable {
     }
 }
 
+/// Where the Inbox lives in the shell.
+///
+/// The tab and the sidebar row are alternatives, never both: two entry points
+/// to one screen leave the user no way to tell which one they are on. Which one
+/// survives turns on whether the app can open a second window — a phone cannot,
+/// and there a sidebar row is two navigation steps from anywhere, so the tab
+/// earns its place. Everywhere else the Inbox is a list like any other, and can
+/// be pulled into a window of its own when it is wanted beside something.
+///
+/// One type rather than a `!` in each view, so the two halves cannot drift
+/// apart into a build with both entry points or neither.
+enum InboxPlacement {
+    case tab, sidebarRow
+
+    /// - Parameter supportsMultipleWindows: SwiftUI's own answer, which is
+    ///   false only where a second scene cannot be opened.
+    static func forLayout(supportsMultipleWindows: Bool) -> InboxPlacement {
+        supportsMultipleWindows ? .sidebarRow : .tab
+    }
+
+    var showsTab: Bool { self == .tab }
+    var showsSidebarRow: Bool { self == .sidebarRow }
+}
+
 /// Which window a menu command was meant for.
 ///
 /// Menu commands are app-wide, but the work they ask for belongs to one window:
