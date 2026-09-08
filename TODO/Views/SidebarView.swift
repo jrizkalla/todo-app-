@@ -313,6 +313,12 @@ struct SidebarView: View {
             } label: {
                 Label("Edit Project…", systemImage: "slider.horizontal.3")
             }
+            
+            Button {
+                store.duplicate(project)
+            } label: {
+                Label("Duplicate Project", systemImage: "plus.square")
+            }
 
             Button(role: .destructive) {
                 pendingProjectDeletion = project

@@ -127,3 +127,68 @@ extension SourceSelectionView {
         return "\(selection.count) selected"
     }
 }
+
+/// Settings row that opens a `SourceSelectionView`.
+///
+/// The two platforms need different presentations. iOS shows Settings inside a
+/// `NavigationStack`, so a push is right there. The Mac's `Settings` scene has
+/// no navigation container — a `NavigationLink` there renders as an inert row,
+/// which is why the calendar and list pickers were unreachable — so the Mac
+/// gets a sheet instead.
+struct SourceSelectionRow: View {
+    let label: String
+    let title: String
+    let footer: String
+    let sources: [EKCalendar]
+    let defaultIdentifier: String?
+    @Binding var selection: [String]?
+
+    @State private var isPresented = false
+
+    private var summary: String {
+        SourceSelectionView.summary(
+            selection: selection,
+            sources: sources,
+            defaultIdentifier: defaultIdentifier
+        )
+    }
+
+    private var picker: some View {
+        SourceSelectionView(
+            title: title,
+            footer: footer,
+            sources: sources,
+            defaultIdentifier: defaultIdentifier,
+            selection: $selection
+        )
+    }
+
+    var body: some View {
+        #if os(macOS)
+        Button {
+            isPresented = true
+        } label: {
+            LabeledContent(label, value: summary)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .sheet(isPresented: $isPresented) {
+            NavigationStack {
+                picker
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { isPresented = false }
+                        }
+                    }
+            }
+            .frame(minWidth: 380, minHeight: 420)
+        }
+        #else
+        NavigationLink {
+            picker
+        } label: {
+            LabeledContent(label, value: summary)
+        }
+        #endif
+    }
+}

@@ -30,6 +30,11 @@ struct SettingsView: View {
     private var isWideLayout: Bool { true }
     #endif
 
+    #if os(macOS)
+    /// Drives the Mac's About-me sheet; iOS pushes instead.
+    @State private var isShowingAboutMe = false
+    #endif
+
     /// The photo being picked for the summary background, if any.
     @State private var pickedBackground: PhotosPickerItem?
     /// Bumped after a save so the swatches redraw with the new photo.
@@ -147,9 +152,30 @@ struct SettingsView: View {
 
         Form {
             Section("About me") {
+                // Same platform split as the source pickers: a push on iOS,
+                // a sheet on the Mac, where the Settings scene has no stack.
+                #if os(macOS)
+                Button("Personalize AI Summary") {
+                    isShowingAboutMe = true
+                }
+                .buttonStyle(.plain)
+                .sheet(isPresented: $isShowingAboutMe) {
+                    NavigationStack {
+                        aboutMeView
+                            .navigationTitle("Personalize AI Summary")
+                            .toolbar {
+                                ToolbarItem(placement: .confirmationAction) {
+                                    Button("Done") { isShowingAboutMe = false }
+                                }
+                            }
+                    }
+                    .frame(minWidth: 420, minHeight: 320)
+                }
+                #else
                 NavigationLink("Personalize AI Summary") {
                     aboutMeView
                 }
+                #endif
             }
             Section("TODOs") {
                 Toggle("Show completed TODOs", isOn: $settings.showResolved)
@@ -220,24 +246,14 @@ struct SettingsView: View {
                             }
                         }
                     } else {
-                        NavigationLink {
-                            SourceSelectionView(
-                                title: "Lists",
-                                footer: "Reminders in the selected lists appear in your Inbox, ready to import.",
-                                sources: availableLists,
-                                defaultIdentifier: importer.defaultListIdentifier,
-                                selection: $settings.importReminderLists
-                            )
-                        } label: {
-                            LabeledContent(
-                                "Lists",
-                                value: SourceSelectionView.summary(
-                                    selection: settings.importReminderLists,
-                                    sources: availableLists,
-                                    defaultIdentifier: importer.defaultListIdentifier
-                                )
-                            )
-                        }
+                        SourceSelectionRow(
+                            label: "Lists",
+                            title: "Lists",
+                            footer: "Reminders in the selected lists appear in your Inbox, ready to import.",
+                            sources: availableLists,
+                            defaultIdentifier: importer.defaultListIdentifier,
+                            selection: $settings.importReminderLists
+                        )
 
                         Button(isImporting ? "Checking…" : "Check Now") {
                             runScan()
@@ -273,24 +289,14 @@ struct SettingsView: View {
                             }
                         }
                     } else {
-                        NavigationLink {
-                            SourceSelectionView(
-                                title: "Calendars",
-                                footer: "Events from the selected calendars appear alongside your to-dos in Today and This Week.",
-                                sources: availableCalendars,
-                                defaultIdentifier: defaultCalendarIdentifier,
-                                selection: $settings.visibleCalendars
-                            )
-                        } label: {
-                            LabeledContent(
-                                "Calendars",
-                                value: SourceSelectionView.summary(
-                                    selection: settings.visibleCalendars,
-                                    sources: availableCalendars,
-                                    defaultIdentifier: defaultCalendarIdentifier
-                                )
-                            )
-                        }
+                        SourceSelectionRow(
+                            label: "Calendars",
+                            title: "Calendars",
+                            footer: "Events from the selected calendars appear alongside your to-dos in Today and This Week.",
+                            sources: availableCalendars,
+                            defaultIdentifier: defaultCalendarIdentifier,
+                            selection: $settings.visibleCalendars
+                        )
                     }
                 }
             } header: {
