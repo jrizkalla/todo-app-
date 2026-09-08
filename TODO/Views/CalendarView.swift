@@ -463,9 +463,6 @@ private struct RangedCalendarView: View {
         }
     }
 
-    // MARK: Side panel
-
-
     // MARK: Keyboard
 
     /// Every to-do the arrow keys can land on, in the order they read on the
@@ -1608,8 +1605,8 @@ private struct RangedCalendarView: View {
                 resizeHandle(edge: .bottom, isVisible: isSelected)
             }
             // On macOS the editor is a popover anchored to the thing being
-            // edited, and something has to present it. The list rows and the
-            // side panel already do; the calendar did not, so setting
+            // edited, and something has to present it. The list rows already
+            // do; the calendar did not, so setting
             // `selectedTodo` from a block had nothing listening and the editor
             // never appeared there at all. On iOS this is a no-op and the
             // pushed page still does the work.

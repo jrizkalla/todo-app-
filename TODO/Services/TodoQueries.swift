@@ -902,7 +902,8 @@ enum TodoQueries {
         return descriptor
     }
 
-    /// The undated remainder of a container — the side panel beside a calendar.
+    /// The undated remainder of a container: what a scoped calendar cannot
+    /// draw, because nothing dates it onto the grid.
     ///
     /// Only the date and state rules are predicates; the containment rule is
     /// the `ancestors` walk, which `unscheduled(_:for:)` applies to the result.
@@ -1169,7 +1170,7 @@ enum TodoQueries {
         FetchDescriptor<Todo>(predicate: #Predicate<Todo> { _ in false })
     }
 
-    /// The residual passes for the side panel's undated remainder.
+    /// The residual passes for a container's undated remainder.
     ///
     /// The counterpart of `finish(_:for:)` for `unscheduledDescriptor`: the
     /// fetch has already applied the date and state rules, so what is left is
@@ -1619,12 +1620,11 @@ enum TodoQueries {
     /// with no date to place it on.
     ///
     /// The exact complement of what the grid lays out, over the same pool
-    /// `calendarScope` defines — so the calendar and the side panel beside it
-    /// add up to the whole container with nothing counted twice and nothing
-    /// missing. Keyed on `assignedDate` alone, because that is the field the
-    /// grid positions blocks by: an item with only a due date has still never
-    /// been given a slot, and belongs in the panel where it can be dragged onto
-    /// one.
+    /// `calendarScope` defines — so the two together add up to the whole
+    /// container, with nothing counted twice and nothing missing. Keyed on
+    /// `assignedDate` alone, because that is the field the grid positions
+    /// blocks by: an item with only a due date has still never been given a
+    /// slot.
     ///
     /// Resolved work is always excluded, matching `scheduled(_:on:)` — the pair
     /// is a picture of time still to be spent, and the Logbook is where

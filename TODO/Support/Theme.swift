@@ -11,24 +11,21 @@ enum Theme {
         static let cornerRadius: CGFloat = 8
         static let sectionSpacing: CGFloat = 22
         static let sidebarWidth: CGFloat = 248
-        static let sidePanelWidth: CGFloat = 300
 
-        /// Corner radius of the floating Inbox panel.
+        /// Corner radius of a floating card — the multi-select action bar.
         ///
-        /// Matches `glassCard`'s default, so the panel and the summary cards
-        /// are cut to the same curve rather than nearly the same one — a card
-        /// that is close but not equal is more obviously wrong than one that is
-        /// plainly different.
+        /// Matches `glassCard`'s default, so it and the summary cards are cut
+        /// to the same curve rather than nearly the same one: a card that is
+        /// close but not equal is more obviously wrong than one that is plainly
+        /// different.
         static let panelCornerRadius: CGFloat = 20
 
-        /// Gap between the floating panel and the window's edges.
+        /// Gap between a floating card and the window's edges.
         ///
-        /// What makes the panel read as hovering *above* the content: with no
-        /// inset it butts against the window frame and goes back to looking
-        /// like a wall, however it is filled. Matched to the margin the summary
-        /// column puts around its own cards, so the two sit on one grid — the
-        /// panel is the same kind of object as the cards beside it, and a card
-        /// inset differently from its neighbours is what reads as misaligned.
+        /// What makes it read as hovering *above* the content: with no inset it
+        /// butts against the window frame and goes back to looking like a wall,
+        /// however it is filled. Matched to the margin the summary column puts
+        /// around its own cards, so the two sit on one grid.
         static let panelInset: CGFloat = 16
 
         /// Corner radius of the checkbox, proportioned to its size so the two

@@ -209,9 +209,9 @@ extension View {
     /// Accept to-dos dropped onto a list destination.
     ///
     /// Wrapped as a modifier because four different surfaces need identical
-    /// behaviour — the sidebar rows, the side panel, the list pane, and the
-    /// calendar's all-day row — and the highlight-while-targeted half is easy
-    /// to leave out when each writes its own.
+    /// behaviour — the sidebar rows, the list pane, and the calendar's all-day
+    /// row — and the highlight-while-targeted half is easy to leave out when
+    /// each writes its own.
     func todoDropTarget(
         _ destination: ListDestination,
         store: TodoStore,

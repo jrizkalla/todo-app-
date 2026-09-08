@@ -565,9 +565,9 @@ struct TodoQueriesTests {
         #expect(TodoQueries.calendarScope([a, b], for: .today).count == 2)
     }
 
-    // MARK: Unscheduled remainder (side panel)
+    // MARK: Unscheduled remainder
 
-    /// The panel beside a space's calendar holds exactly what the grid cannot
+    /// A space's undated remainder holds exactly what its calendar cannot
     /// draw, reaching into the space's projects the same way the grid does.
     @Test func unscheduledForSpaceCollectsUndatedWorkIncludingInsideProjects() throws {
         let context = try makeContext()
@@ -591,7 +591,7 @@ struct TodoQueriesTests {
     }
 
     /// A due date is not a slot: the grid positions blocks by `assignedDate`
-    /// alone, so an item with only a deadline still belongs in the panel.
+    /// alone, so an item with only a deadline still belongs in the remainder.
     @Test func unscheduledKeepsItemsThatHaveOnlyADueDate() throws {
         let context = try makeContext()
         let space = Space(name: "Work")
@@ -606,7 +606,7 @@ struct TodoQueriesTests {
         #expect(result.map(\.title) == ["Due Only"])
     }
 
-    /// The grid and the panel partition the container: nothing counted twice,
+    /// The grid and the remainder partition the container: nothing counted twice,
     /// nothing missing.
     @Test func unscheduledIsTheComplementOfWhatTheGridDraws() throws {
         let context = try makeContext()
@@ -620,10 +620,10 @@ struct TodoQueriesTests {
         let pool = [dated, undated]
         let scoped = TodoQueries.calendarScope(pool, for: .space(space.uuid))
         let onGrid = TodoQueries.scheduled(scoped, on: day(offset: 0), calendar: calendar)
-        let inPanel = TodoQueries.unscheduled(pool, for: .space(space.uuid))
+        let remainder = TodoQueries.unscheduled(pool, for: .space(space.uuid))
 
-        #expect(Set(onGrid.map(\.title)).isDisjoint(with: Set(inPanel.map(\.title))))
-        #expect(Set(onGrid.map(\.title)).union(inPanel.map(\.title)) == ["Dated", "Undated"])
+        #expect(Set(onGrid.map(\.title)).isDisjoint(with: Set(remainder.map(\.title))))
+        #expect(Set(onGrid.map(\.title)).union(remainder.map(\.title)) == ["Dated", "Undated"])
     }
 
     /// Finished work is not waiting for a slot.
