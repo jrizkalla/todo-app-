@@ -428,4 +428,64 @@ struct TodoDropActionTests {
 
         #expect(applied == false)
     }
+
+    // MARK: Across windows
+
+    /// The payload survives being serialized, which is what crossing a window
+    /// boundary does to it.
+    ///
+    /// A drag inside one window can hand the receiver the very same object, so
+    /// an in-process shortcut would pass that case and still fail between two
+    /// windows. This pins the wire format instead: what the drop target gets
+    /// back is a `uuid` decoded from bytes.
+    @Test func transferSurvivesEncoding() throws {
+        let todo = Todo(title: "Task")
+        let encoded = try JSONEncoder().encode(TodoTransfer(uuid: todo.uuid))
+        let decoded = try JSONDecoder().decode(TodoTransfer.self, from: encoded)
+
+        #expect(decoded.uuid == todo.uuid)
+    }
+
+    /// A to-do dragged out of one window is found and moved by another.
+    ///
+    /// The two windows share a container but each has its own `ModelContext`,
+    /// so the receiving side cannot be handed the dragged object — it only has
+    /// the uuid off the pasteboard, and has to fetch its own copy. This is the
+    /// reason `TodoTransfer` carries a uuid rather than the model: a `Todo`
+    /// belongs to the context that fetched it and cannot cross to another.
+    @Test func aTodoDraggedFromAnotherWindowIsMoved() throws {
+        let container = try ModelContainer.appContainer(inMemory: true)
+
+        // The window the drag started in.
+        let source = ModelContext(container)
+        let todo = Todo(title: "Task")
+        source.insert(todo)
+        try source.save()
+
+        // The window it was dropped on, with a context of its own.
+        let destination = ModelContext(container)
+        let transfer = TodoTransfer(uuid: todo.uuid)
+
+        let received = try #require(
+            TodoQueries.todo(uuid: transfer.uuid, in: destination)
+        )
+        // Genuinely the other window's copy, not the object dragged.
+        #expect(received !== todo)
+
+        let applied = TodoDropAction.apply(
+            .today, to: received,
+            store: TodoStore(context: destination)
+        )
+
+        #expect(applied)
+        #expect(received.assignedDate != nil)
+        #expect(calendar.isDateInToday(received.assignedDate!))
+    }
+
+    /// A drop that names a to-do neither window has is refused rather than
+    /// crashing — a stale pasteboard from a window since closed.
+    @Test func aTransferForAMissingTodoResolvesToNothing() throws {
+        let context = try makeContext()
+        #expect(TodoQueries.todo(uuid: UUID(), in: context) == nil)
+    }
 }
