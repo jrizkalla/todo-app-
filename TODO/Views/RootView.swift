@@ -2,7 +2,7 @@ import SwiftUI
 import SwiftData
 
 /// The app's top-level tabs.
-enum AppTab: String, CaseIterable, Identifiable, Hashable {
+enum AppTab: String, CaseIterable, Identifiable, Hashable, Codable {
     case inbox, today, lists, calendar
 
     var id: String { rawValue }
@@ -26,10 +26,6 @@ enum AppTab: String, CaseIterable, Identifiable, Hashable {
     }
 }
 
-enum TodoFocusHolder {
-    case none, sidebar, mainList
-}
-
 /// The app shell: four tabs, each with its own navigation stack.
 ///
 /// Inbox and Today are single screens; Lists keeps the sidebar-and-detail
@@ -40,12 +36,20 @@ struct RootView: View {
     @Environment(\.modelContext) private var context
     @Environment(AppSettings.self) private var settings
 
-    /// The app launches on Today, per the spec.
-    @State private var tab: AppTab = .lists
+    /// This window's opening state, restored by the scene. Every window keeps
+    /// its own copy, which is what lets two of them sit on different lists.
+    @Binding var windowState: WindowState
 
-    /// Per-tab navigation state. Kept here so a tap on a summary card can move
-    /// the user to another tab *and* set what that tab is showing.
-    @State private var listSelection: ListDestination? = .today
+    /// Which tab is showing, projected onto the window's restorable state.
+    private var tab: Binding<AppTab> {
+        Binding(get: { windowState.tab }, set: { windowState.tab = $0 })
+    }
+
+    /// The list the Lists tab is showing, likewise restored per window.
+    private var listSelection: Binding<ListDestination?> {
+        Binding(get: { windowState.list }, set: { windowState.list = $0 })
+    }
+
     @State private var selectedTodo: Todo?
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
 
@@ -71,58 +75,22 @@ struct RootView: View {
 
     private func createCount(for tab: AppTab) -> Binding<Int> {
         Binding(
-            get: { createRequests[tab] ?? 0 },
-            set: { createRequests[tab] = $0 }
+            get: { createRequests[windowState.tab] ?? 0 },
+            set: { createRequests[windowState.tab] = $0 }
         )
     }
 
-    /// The side panel's own create counter.
-    ///
-    /// Separate from the per-tab ones for the same reason those are separate
-    /// from each other: the panel is a second list on screen beside the tab's,
-    /// and a counter shared with the tab would have both of them create a row
-    /// from one tap.
-    @State private var panelCreateRequests = 0
-
-    private var panelCreateCount: Binding<Int> { $panelCreateRequests }
-
-    /// Where a tap on + should create.
-    ///
-    /// On a wide layout two lists are visible at once — the tab's and the
-    /// panel's — and "the list I'm in" is whichever one the user last worked
-    /// in. `todoFocusHolder` already tracks exactly that for the keyboard, so
-    /// it is what decides here rather than a second notion of the same thing.
-    /// The + used to bump the tab's counter unconditionally, which is why a
-    /// to-do added while working in the panel landed in the Inbox instead.
-    private func requestCreate() {
-        let panelIsActive = isWideLayout
-            && settings.showSidePanel
-            && todoFocusHolder == .sidebar
-
-        if panelIsActive {
-            panelCreateRequests += 1
-        } else {
-            createRequests[tab, default: 0] += 1
-        }
-    }
-    
-    @State private var todoFocusHolder: TodoFocusHolder = .none
-
-    /// A to-do just captured with Cmd+N, waiting for whichever surface shows the
-    /// Inbox to put the caret in its title.
+    /// A to-do just captured with Cmd+N, waiting for the Inbox list to put the
+    /// caret in its title.
     ///
     /// Passed down rather than acted on here because `RootView` draws no rows:
-    /// only the list or the panel has the row — and therefore the text field —
-    /// that focus has to land in. Cleared by whoever claims it, so a second
-    /// Cmd+N is not answered by the surface that handled the first.
+    /// only the list has the row — and therefore the text field — that focus
+    /// has to land in. Cleared by whoever claims it, so a second Cmd+N is not
+    /// answered by the surface that handled the first.
     @State private var capturedTodo: UUID?
 
     @State private var didRunLaunchTasks = false
     @State private var importer = RemindersImporter.shared
-
-    /// What the side panel is showing. Normally the Inbox; a scoped calendar
-    /// pushed anywhere in the app points it at its own list instead.
-    @State private var panelScope = SidePanelScopeModel.shared
 
     @Environment(\.scenePhase) private var scenePhase
 
@@ -130,88 +98,29 @@ struct RootView: View {
     /// app does not re-query EventKit repeatedly.
     private let rescanDebounce: TimeInterval = 30
 
-    #if os(iOS)
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    private var isWideLayout: Bool { horizontalSizeClass == .regular }
-    #else
-    private var isWideLayout: Bool { true }
-    #endif
-
     var body: some View {
         #if DEBUG && DEBUG_UI
         Self._printChanges()
         #endif
-        // Wide layouts keep the Inbox panel beside *every* tab, so it is one
-        // persistent surface rather than something only the Lists tab has.
-        // Phones fall through to the bare tab view untouched.
-        return Group {
-            if isWideLayout {
-                // The panel is a *sibling* of the tab content, not an overlay
-                // over it: an `HStack` is what makes the content narrow to make
-                // room, so nothing ends up underneath the card. A trailing
-                // `safeAreaPadding` on the `TabView` was the previous attempt
-                // and does not reach far enough — the inset does not cross into
-                // the `NavigationSplitView` the Lists tab builds, so that tab's
-                // list ran its full width and the panel covered the right of
-                // it.
-                //
-                // The panel deliberately stops below the toolbar. On macOS the
-                // search field is a window toolbar item spanning the whole
-                // window — it is not confined to the tab column and pays no
-                // attention to content safe areas — so anything drawn up into
-                // that strip collides with it. Running the card to the window's
-                // very top is what put the field on top of it.
-                HStack(spacing: 0) {
-                    tabs
-                        .frame(maxWidth: .infinity)
-
-                    if settings.showSidePanel {
-                        SidePanelView(
-                            selectedTodo: $selectedTodo,
-                            hasFocus: focusBinding(for: .sidebar),
-                            scope: effectivePanelScope,
-                            // Only while it is actually showing the Inbox:
-                            // scoped to a calendar's list, the panel is not
-                            // where a captured to-do went.
-                            capturedTodo: effectivePanelScope == .inbox ? $capturedTodo : nil,
-                            onHide: { settings.showSidePanel = false },
-                            createRequest: panelCreateCount
-                        )
-                        .frame(width: panelColumn)
-                        .transition(.move(edge: .trailing).combined(with: .opacity))
-                    }
-                }
-                .animation(Theme.Animation.panel, value: settings.showSidePanel)
-                // Bringing the panel back once hidden: the toggle in
-                // Settings still works, but a control on the shell itself
-                // means the user does not have to leave the screen to undo
-                // a collapse.
-                .overlay(alignment: .topTrailing) {
-                    if !settings.showSidePanel {
-                        showPanelButton
-                    }
-                }
-            } else {
-                tabs
+        return tabs
+            // Tells the menu bar which window it is acting on, so a command
+            // fires in the window the user is in rather than in all of them.
+            .focusedSceneValue(\.windowID, windowState.id)
+            // The undo offer floats above whatever tab is open: the action that
+            // raised it has usually just taken a row off the screen the user was
+            // looking at, so it cannot belong to the list that lost it.
+            .undoToast()
+            // Cmd+N, from anywhere in the app.
+            //
+            // Filtered to the window the user is actually in. The notification
+            // reaches every open window, and without this each one would create
+            // a to-do of its own from a single keystroke.
+            .onReceive(
+                NotificationCenter.default.publisher(for: .createInInboxRequested)
+            ) { note in
+                guard WindowIdentity.isTarget(note, self.windowState.id) else { return }
+                captureIntoInbox()
             }
-        }
-        // The undo offer floats above whatever tab is open: the action that
-        // raised it has usually just taken a row off the screen the user was
-        // looking at, so it cannot belong to the list that lost it.
-        .undoToast()
-        // Showing the panel retires the Inbox tab, so anyone standing on it
-        // when that happens has to be moved somewhere that still exists —
-        // otherwise the selection points at a tab the bar no longer draws and
-        // the content area comes up blank.
-        .onChange(of: showsInboxTab) { _, showsTab in
-            if !showsTab && tab == .inbox { tab = .today }
-        }
-        // Cmd+N, from anywhere in the app.
-        .onReceive(
-            NotificationCenter.default.publisher(for: .createInInboxRequested)
-        ) { _ in
-            captureIntoInbox()
-        }
     }
 
     /// Answer Cmd+N: put a new to-do in the Inbox and show it, ready to type.
@@ -223,75 +132,21 @@ struct RootView: View {
     /// to-do they have no way to name.
     private func captureIntoInbox() {
         let created = TodoStore(context: context).createTodo()
-
-        // Wherever the Inbox is currently reachable. On a phone it is a tab of
-        // its own; on a wide layout it is the side panel, which is on screen
-        // beside every tab and needs no navigation at all.
-        if showsInboxTab {
-            tab = .inbox
-        } else if !settings.showSidePanel {
-            // The panel is the Inbox on this layout, so the row would be
-            // created into something hidden. Showing it is a smaller surprise
-            // than a to-do that silently goes nowhere.
-            settings.showSidePanel = true
-        }
-
+        windowState.tab = .inbox
         capturedTodo = created.uuid
     }
 
-    /// Reveals the panel again after it has been collapsed.
-    private var showPanelButton: some View {
-        Button {
-            settings.showSidePanel = true
-        } label: {
-            Image(systemName: "sidebar.right")
-                .font(.body.weight(.medium))
-                .padding(8)
-                .background(.thinMaterial, in: Circle())
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(.secondary)
-        .padding(.trailing, 12)
-        .padding(.top, 8)
-        .accessibilityLabel("Show Inbox Panel")
-        .help("Show the Inbox panel")
-        .transition(.opacity)
-    }
-
-    /// Whether the Inbox deserves a tab of its own.
-    private var showsInboxTab: Bool { !isWideLayout }
-
-    /// What the panel actually shows, once the open tab is taken into account.
-    ///
-    /// A scoped calendar only holds the panel while the user is *looking* at
-    /// it. The Lists tab keeps its pushed screens mounted across a tab switch,
-    /// so the claim outlives the visit — without this, walking from a space's
-    /// calendar over to Today left that space's undated work sitting beside the
-    /// summary, where it means nothing and the Inbox is what belongs. Coming
-    /// back to Lists finds the calendar still pushed and the scope with it.
-    private var effectivePanelScope: SidePanelScope {
-        tab == .lists ? panelScope.scope : .inbox
-    }
-
-    /// Width the panel occupies, card plus the inset it carries itself.
-    private var panelColumn: CGFloat {
-        Theme.Metrics.sidePanelWidth + Theme.Metrics.panelInset
-    }
-
     private var tabs: some View {
-        TabView(selection: $tab) {
-            if showsInboxTab {
-                Tab(AppTab.inbox.title, systemImage: AppTab.inbox.symbol, value: AppTab.inbox) {
-                    NavigationStack {
-                        TodoListView(
-                            destination: .inbox,
-                            selectedTodo: $selectedTodo,
-                            isFocused: focusBinding(for: .mainList),
-                            createRequest: createCount(for: .inbox),
-                            capturedTodo: $capturedTodo
-                        )
-                        .todoDetailDestination(selection: $selectedTodo)
-                    }
+        TabView(selection: tab) {
+            Tab(AppTab.inbox.title, systemImage: AppTab.inbox.symbol, value: AppTab.inbox) {
+                NavigationStack {
+                    TodoListView(
+                        destination: .inbox,
+                        selectedTodo: $selectedTodo,
+                        createRequest: createCount(for: .inbox),
+                        capturedTodo: $capturedTodo
+                    )
+                    .todoDetailDestination(selection: $selectedTodo)
                 }
             }
 
@@ -301,11 +156,11 @@ struct RootView: View {
                         onOpenSchedule: {
                             calendarAnchor = Date()
                             calendarScale = .day
-                            tab = .calendar
+                            windowState.tab = .calendar
                         },
                         onOpenAnyTime: {
-                            listSelection = .today
-                            tab = .lists
+                            windowState.list = .today
+                            windowState.tab = .lists
                         }
                     )
                 }
@@ -337,9 +192,9 @@ struct RootView: View {
             // Also withdrawn while a list is in multi-select: the button sits
             // in the corner the action bar occupies, and "new to-do" is not an
             // action on a selection. See `MultiSelectPresence`.
-            if tab != .today && !multiSelect.isActive {
+            if windowState.tab != .today && !multiSelect.isActive {
                 CreateButton {
-                    requestCreate()
+                    createRequests[windowState.tab, default: 0] += 1
                 }
                 .padding(.bottom, Theme.Metrics.createButtonTabBarClearance)
                 // Scales out of the corner it sits in rather than blinking, so
@@ -347,7 +202,7 @@ struct RootView: View {
                 .transition(.scale(scale: 0.5, anchor: .bottomTrailing).combined(with: .opacity))
             }
         }
-        .animation(Theme.Animation.panel, value: tab)
+        .animation(Theme.Animation.panel, value: windowState.tab)
         .animation(Theme.Animation.panel, value: multiSelect.isActive)
         .task {
             guard !didRunLaunchTasks else { return }
@@ -388,57 +243,21 @@ struct RootView: View {
     /// way to tell which one the user is on.
     private var listsTab: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            SidebarView(selection: $listSelection, selectedTodo: $selectedTodo)
+            SidebarView(selection: listSelection, selectedTodo: $selectedTodo)
                 .navigationSplitViewColumnWidth(
                     min: 200, ideal: Theme.Metrics.sidebarWidth, max: 320
                 )
         } detail: {
             NavigationStack {
                 TodoListView(
-                    destination: listSelection ?? .today,
+                    destination: windowState.list ?? .today,
                     selectedTodo: $selectedTodo,
-                    isFocused: focusBinding(for: .mainList),
                     createRequest: createCount(for: .lists)
                 )
                 .frame(maxWidth: .infinity)
                 .todoDetailDestination(selection: $selectedTodo)
             }
         }
-    }
-    
-    private func nextFocusHolder(for holder: TodoFocusHolder) -> TodoFocusHolder {
-        if todoFocusHolder == holder {
-            .none
-        } else {
-            todoFocusHolder
-        }
-    }
-
-/// A stable `Binding` for "is `holder` the one holding focus?".
-    ///
-    /// Written against `$todoFocusHolder` rather than as a fresh
-    /// `.init(get:set:)` at the call site. Two reasons, and the second is a bug
-    /// rather than a tidiness point:
-    ///
-    /// A closure-backed `Binding` built in `body` is a *new value* on every
-    /// render, so the view receiving it sees its input change every time this
-    /// one redraws — even when the underlying `todoFocusHolder` has not moved.
-    /// The list answers by re-rendering, which re-runs `init` and rebuilds its
-    /// `@Query`; a focus claim on the way back round writes the holder again,
-    /// and the two feed each other. Selecting a row was enough to start it, and
-    /// it never settled: the main thread sat at 100% with `TodoRow` bodies
-    /// re-evaluating thousands of times a second.
-    ///
-    /// Deriving it from the `@State`'s own projected value keeps the storage
-    /// identity stable across renders, which is what makes "nothing changed"
-    /// observable as nothing changed. The semantics are unchanged: claiming
-    /// focus sets this holder, releasing it hands focus to
-    /// `nextFocusHolder(for:)`.
-    private func focusBinding(for holder: TodoFocusHolder) -> Binding<Bool> {
-        Binding(
-            get: { todoFocusHolder == holder },
-            set: { todoFocusHolder = $0 ? holder : nextFocusHolder(for: holder) }
-        )
     }
 
     /// Launch work: notification permission, rescheduling reminders, and the
@@ -462,13 +281,12 @@ struct RootView: View {
         }
         // `-startInCalendar` opens straight into the calendar, for UI checks.
         if ProcessInfo.processInfo.arguments.contains("-startInCalendar") {
-            tab = .calendar
+            windowState.tab = .calendar
         }
-        // Likewise for Lists, which is the tab the side panel sits beside the
-        // real sidebar on — the arrangement worth looking at when the panel's
-        // chrome changes.
+        // Likewise for Lists, the tab with the sidebar beside the list — the
+        // arrangement worth looking at when the shell's chrome changes.
         if ProcessInfo.processInfo.arguments.contains("-startInLists") {
-            tab = .lists
+            windowState.tab = .lists
         }
         #endif
 
@@ -532,17 +350,9 @@ struct CreateButton: View {
                     width: Theme.Metrics.createButtonSize,
                     height: Theme.Metrics.createButtonSize
                 )
-//                .background {
-//                    Circle().fill(Color.accentColor.opacity(0.5))
-//                        .shadow(color: .black.opacity(0.22), radius: 9, y: 4)
-//                        .glassEffect()
-//                }
         }
         .buttonBorderShape(.circle)
         .buttonStyle(.glassProminent)
-        // The same press response the summary cards use — one feel for every
-        // custom control in the app.
-//        .buttonStyle(PressableCardStyle(pressedScale: 0.92))
         .padding(.trailing, Theme.Metrics.createButtonInset)
         .padding(.bottom, Theme.Metrics.createButtonInset)
         .accessibilityLabel("New To-Do")
@@ -573,7 +383,7 @@ extension View {
 #if DEBUG
 #Preview("Root") {
     // The whole shell: four tabs, with Today's summary showing first.
-    RootView()
+    RootView(windowState: .constant(WindowState()))
         .previewEnvironment()
 }
 #endif

@@ -58,7 +58,6 @@ final class AppSettings {
         self.importReminderLists = resolved.stringArray(forKey: Key.importReminderLists)
         self.remindersImportEnabled = resolved.object(forKey: Key.remindersImportEnabled) as? Bool ?? false
         self.vimBindingsEnabled = resolved.bool(forKey: Key.vimBindingsEnabled)
-        self.showSidePanel = resolved.object(forKey: Key.showSidePanel) as? Bool ?? true
         self.weekStartsOnMonday = resolved.bool(forKey: Key.weekStartsOnMonday)
         self.showResolved = resolved.object(forKey: Key.showResolved) as? Bool ?? true
         // Defaults to true: overdue work is the most important thing a to-do
@@ -82,7 +81,6 @@ final class AppSettings {
         static let importReminderLists = "importReminderLists"
         static let remindersImportEnabled = "remindersImportEnabled"
         static let vimBindingsEnabled = "vimBindingsEnabled"
-        static let showSidePanel = "showSidePanel"
         static let weekStartsOnMonday = "weekStartsOnMonday"
         static let showCalendarEvents = "showCalendarEvents"
         static let visibleCalendars = "visibleCalendars"
@@ -175,11 +173,6 @@ final class AppSettings {
     /// Vim keybindings in text fields. macOS only.
     var vimBindingsEnabled: Bool {
         didSet { write(vimBindingsEnabled, forKey: Key.vimBindingsEnabled, was: oldValue) }
-    }
-
-    /// Right-hand Inbox/overdue panel on wide layouts.
-    var showSidePanel: Bool {
-        didSet { write(showSidePanel, forKey: Key.showSidePanel, was: oldValue) }
     }
 
     var weekStartsOnMonday: Bool {

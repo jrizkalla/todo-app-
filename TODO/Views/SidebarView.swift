@@ -12,6 +12,10 @@ struct SidebarView: View {
     @Binding var selectedTodo: Todo?
 
     @Environment(\.modelContext) private var context
+    /// Opens a second window onto a space or project. Every window carries its
+    /// own `WindowState`, so the new one is independent of this one — and a
+    /// to-do can be dragged between the two.
+    @Environment(\.openWindow) private var openWindow
     /// The spaces to draw, filtered and ordered by SQLite.
     ///
     /// The Focus rule and the sort are both predicates now, and the query
@@ -32,6 +36,10 @@ struct SidebarView: View {
     @State private var pendingDeletion: Space?
     /// Same, for a project — which takes its subtasks with it.
     @State private var pendingProjectDeletion: Todo?
+
+    /// False on a phone, where the system refuses a second scene — the command
+    /// is withdrawn rather than offered and then ignored.
+    @Environment(\.supportsMultipleWindows) private var supportsMultipleWindows
 
     private var store: TodoStore { TodoStore(context: context) }
 
@@ -172,6 +180,9 @@ struct SidebarView: View {
                     destination,
                     store: store
                 )
+                .contextMenu {
+                    openInNewWindowButton(destination)
+                }
             }
         }
 
@@ -226,6 +237,8 @@ struct SidebarView: View {
                     } label: {
                         Label("Edit Space…", systemImage: "paintpalette")
                     }
+
+                    openInNewWindowButton(.space(space.uuid))
 
                     Button(role: .destructive) {
                         pendingDeletion = space
@@ -320,6 +333,8 @@ struct SidebarView: View {
                 Label("Duplicate Project", systemImage: "plus.square")
             }
 
+            openInNewWindowButton(.project(project.uuid))
+
             Button(role: .destructive) {
                 pendingProjectDeletion = project
             } label: {
@@ -347,6 +362,28 @@ struct SidebarView: View {
         // macOS presents the editor as a popover anchored to the row it is
         // about; on iOS this is a no-op and the detail page is pushed instead.
         .todoDetailPopover(for: project, selection: $selectedTodo)
+    }
+
+    /// Opens `destination` in a window of its own.
+    ///
+    /// Windows are keyed on `WindowState`, so this both creates the window and
+    /// says what it should be showing. Each gets a fresh id, which is what lets
+    /// two windows sit on the same list rather than the second request merely
+    /// bringing the first forward — see `WindowState.id`.
+    ///
+    /// macOS and iPadOS only: a phone shows one scene at a time, and the
+    /// command would open a window the user cannot get back from.
+    @ViewBuilder
+    private func openInNewWindowButton(_ destination: ListDestination) -> some View {
+        #if os(macOS) || os(iOS)
+        if supportsMultipleWindows {
+            Button {
+                openWindow(value: WindowState.showing(destination))
+            } label: {
+                Label("Open in New Window", systemImage: "macwindow.on.rectangle")
+            }
+        }
+        #endif
     }
 
     /// Inbox is deliberately absent: it is its own tab, and listing it here too

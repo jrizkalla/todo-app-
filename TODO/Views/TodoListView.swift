@@ -25,9 +25,12 @@ struct TodoListView: View {
     @Environment(AppSettings.self) private var settings
 
     @Binding var selectedTodo: Todo?
-    @Binding var isFocused: Bool
     var createRequest: Binding<Int>?
     var capturedTodo: Binding<UUID?>?
+
+    /// The window this list belongs to, so a menu command aimed at another
+    /// window is not answered here as well.
+    var windowID: UUID?
 
     /// This list's own answer to "show completed", when the user has given one.
     ///
@@ -58,9 +61,9 @@ struct TodoListView: View {
             showResolvedOverride: $showResolvedOverride,
             showOverdueOverride: $showOverdueOverride,
             selectedTodo: $selectedTodo,
-            isFocused: $isFocused,
             createRequest: createRequest,
-            capturedTodo: capturedTodo
+            capturedTodo: capturedTodo,
+            windowID: windowID
         )
         .id(QueryIdentity(
             destination: destination,
@@ -140,7 +143,9 @@ private struct DestinationTodoList: View {
     private var spaces: [Space]
 
     @Binding var selectedTodo: Todo?
-    @Binding var isFocused: Bool
+
+    /// The window this list is in; see `TodoListView.windowID`.
+    var windowID: UUID?
 
     /// Incremented by the app-wide create button. The list answers by adding a
     /// row here and focusing its title — see `createTodoInCurrentList`.
@@ -167,9 +172,9 @@ private struct DestinationTodoList: View {
         showResolvedOverride: Binding<Bool?> = .constant(nil),
         showOverdueOverride: Binding<Bool?> = .constant(nil),
         selectedTodo: Binding<Todo?>,
-        isFocused: Binding<Bool>,
         createRequest: Binding<Int>? = nil,
-        capturedTodo: Binding<UUID?>? = nil
+        capturedTodo: Binding<UUID?>? = nil,
+        windowID: UUID? = nil
     ) {
         self.destination = destination
         self.includeResolved = includeResolved
@@ -177,9 +182,9 @@ private struct DestinationTodoList: View {
         self._showResolvedOverride = showResolvedOverride
         self._showOverdueOverride = showOverdueOverride
         self._selectedTodo = selectedTodo
-        self._isFocused = isFocused
         self.createRequest = createRequest
         self.capturedTodo = capturedTodo
+        self.windowID = windowID
 
         _destinationTodos = Query(
             TodoQueries.descriptor(
@@ -337,7 +342,6 @@ private struct DestinationTodoList: View {
                 focusedTodoID = captured
                 capturedTodo?.wrappedValue = nil
             }
-            .claimingFocus(cursor: cursor.selection, paneFocused: isListFocused, isFocused: $isFocused)
             .navigationTitle(title)
             #if os(iOS)
             .navigationBarTitleDisplayMode(.large)
@@ -422,11 +426,11 @@ private struct DestinationTodoList: View {
             .onKeyPress(.downArrow) { moveCursor(.down) }
             // Return opens whatever the cursor is on, matching a double-click.
             .onKeyPress(.return) {
-                guard isFocused, focusedTodoID == nil, let todo = cursorTodo else { return .ignored }
+                guard focusedTodoID == nil, let todo = cursorTodo else { return .ignored }
                 showDetail(for: todo)
                 return .handled
             }
-            .keyboardCommands(isActive: isKeyboardTarget) { command in
+            .keyboardCommands(isActive: isKeyboardTarget, windowID: windowID) { command in
                 perform(command)
             }
             // Keeps the cursor on something real, and the selection free of
@@ -638,14 +642,6 @@ private struct DestinationTodoList: View {
             // The bar goes over the whole pane, so it stays put while the list
             // scrolls underneath it.
             .multiSelectBar(isPresented: multiSelection.isActive) { multiSelectBar(rows: rows) }
-            .onChange(of: isFocused) {
-                #if DEBUG
-                print("ISFOCUSED changed -> \(isFocused)")
-                #endif
-                if !isFocused {
-                    cursor.select(nil)
-                }
-            }
     }
 
     /// The list, plus its search field.
@@ -1268,20 +1264,12 @@ private struct DestinationTodoList: View {
         // `selectedTodo` with this list, so the list stands down while it is on
         // top rather than both acting on one keystroke.
         guard !isShowingCalendar else { return false }
-        // On a wide screen the side panel is a second list on the same screen,
-        // and `selectedTodo` is shared with it — so "something is selected" is
-        // not enough to claim the keyboard. The shell arbitrates between the
-        // two, and a list that does not hold focus answers nothing.
-        guard isFocused else { return false }
         return cursor.selection != nil || focusedTodoID != nil || selectedTodo != nil
     }
 
     /// Move the keyboard cursor, unless a text field wants the arrow key.
-    ///
-    /// Ignored outright when the other list on screen holds focus: both panes
-    /// are `.focusable()`, so without this an arrow key moved two cursors.
     private func moveCursor(_ direction: KeyboardCursor.Direction) -> KeyPress.Result {
-        guard focusedTodoID == nil, isFocused else { return .ignored }
+        guard focusedTodoID == nil else { return .ignored }
 
         var next = cursor
         guard next.move(direction, in: visibleRowOrder) else { return .ignored }
@@ -1840,7 +1828,7 @@ private struct TodoListPreviewHost: View {
 
     var body: some View {
         NavigationStack {
-            TodoListView(destination: destination, selectedTodo: $selected, isFocused: .constant(true))
+            TodoListView(destination: destination, selectedTodo: $selected)
         }
     }
 }
@@ -1879,51 +1867,6 @@ private struct TodoListPreviewHost: View {
 }
 #endif
 
-
-/// Claims the shell's keyboard focus for whichever list the user touched.
-///
-/// Two lists are on screen at once on a wide layout, and only one of them may
-/// answer the arrow keys and shortcuts. Both signals mean "the user is working
-/// here": a cursor set by the arrows, and the pane itself taking AppKit focus
-/// from a click or a Tab.
-///
-/// Deliberately one-way. Focus is only ever *taken*, never given up on an
-/// empty cursor — the other list claiming it is what moves it, so the keyboard
-/// never ends up belonging to neither pane.
-///
-/// A `ViewModifier` rather than two more `onChange`s in the list's body: that
-/// chain is long enough that adding to it tips the type-checker over.
-private struct FocusClaimModifier: ViewModifier {
-    let cursor: UUID?
-    let paneFocused: Bool
-    @Binding var isFocused: Bool
-
-    func body(content: Content) -> some View {
-        content
-            .onChange(of: cursor) {
-                #if DEBUG
-                print("FOCUSCLAIM cursor -> isFocused=true (was \(isFocused))")
-                #endif
-                if cursor != nil { isFocused = true }
-            }
-            .onChange(of: paneFocused) {
-                #if DEBUG
-                print("FOCUSCLAIM pane -> isFocused=true (was \(isFocused))")
-                #endif
-                if paneFocused { isFocused = true }
-            }
-    }
-}
-
-extension View {
-    fileprivate func claimingFocus(
-        cursor: UUID?,
-        paneFocused: Bool,
-        isFocused: Binding<Bool>
-    ) -> some View {
-        modifier(FocusClaimModifier(cursor: cursor, paneFocused: paneFocused, isFocused: isFocused))
-    }
-}
 
 extension View {
     /// Apply one group of modifiers, written as a function taking a view.

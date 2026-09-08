@@ -16,6 +16,17 @@ struct AppCommands: Commands {
     /// rather than this app's — undo would then quietly act on an empty store.
     let container: ModelContainer
 
+    /// The window the menu is currently acting on.
+    ///
+    /// There is one menu bar and any number of windows, so a command posted to
+    /// everyone is answered by everyone: before this, Cmd+N in one window
+    /// created an untitled to-do in every open window at once. Each `RootView`
+    /// publishes its own id while it is frontmost, and the notification carries
+    /// that id so only the window the user is in acts.
+    @FocusedValue(\.windowID) private var focusedWindowID
+
+    @Environment(\.openWindow) private var openWindow
+
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
             // Deliberately *not* `.create`, which is the + button's request and
@@ -26,9 +37,16 @@ struct AppCommands: Commands {
             // undecided work lives. Routing it through the open screen instead
             // put a to-do into whatever list happened to be showing.
             Button("New To-Do") {
-                NotificationCenter.default.post(name: .createInInboxRequested, object: nil)
+                post(.createInInboxRequested)
             }
             .keyboardShortcut("n", modifiers: .command)
+
+            // Cmd+Shift+N rather than the usual Cmd+N, which is already the
+            // capture shortcut above and is the one worth keeping cheap.
+            Button("New Window") {
+                openWindow(value: WindowState())
+            }
+            .keyboardShortcut("n", modifiers: [.command, .shift])
         }
 
         CommandMenu("To-Do") {
@@ -61,7 +79,7 @@ struct AppCommands: Commands {
 
         CommandGroup(after: .toolbar) {
             Button("Toggle Calendar View") {
-                NotificationCenter.default.post(name: .toggleCalendarRequested, object: nil)
+                post(.toggleCalendarRequested)
             }
             .keyboardShortcut("k", modifiers: [.command, .shift])
         }
@@ -69,9 +87,22 @@ struct AppCommands: Commands {
 
     private func command(_ command: KeyboardCommand, key: KeyEquivalent) -> some View {
         Button(command.title) {
-            NotificationCenter.default.post(name: command.notificationName, object: nil)
+            post(command.notificationName)
         }
         .keyboardShortcut(key, modifiers: .command)
+    }
+
+    /// Send a command to the window the user is in.
+    ///
+    /// The id rides in `userInfo`; a window with no id to compare against — no
+    /// window focused at all — leaves it out, and every window answers, which
+    /// is the single-window behaviour this app had before.
+    private func post(_ name: Notification.Name) {
+        NotificationCenter.default.post(
+            name: name,
+            object: nil,
+            userInfo: focusedWindowID.map { [WindowIdentity.userInfoKey: $0] }
+        )
     }
 }
 
@@ -117,16 +148,25 @@ extension View {
     /// once: every tab's view stays alive after its first visit, so the list in
     /// a background tab is still listening. Only the surface that currently has
     /// something selected should act.
+    /// - Parameter windowID: the window this surface belongs to, so a command
+    ///   meant for another window is ignored. `nil` answers every command, for
+    ///   surfaces outside a window scene — previews and tests.
     func keyboardCommands(
         isActive: Bool,
+        windowID: UUID? = nil,
         perform: @escaping (KeyboardCommand) -> Void
     ) -> some View {
-        modifier(KeyboardCommandsModifier(isActive: isActive, perform: perform))
+        modifier(
+            KeyboardCommandsModifier(
+                isActive: isActive, windowID: windowID, perform: perform
+            )
+        )
     }
 }
 
 private struct KeyboardCommandsModifier: ViewModifier {
     let isActive: Bool
+    let windowID: UUID?
     let perform: (KeyboardCommand) -> Void
 
     func body(content: Content) -> some View {
@@ -137,8 +177,12 @@ private struct KeyboardCommandsModifier: ViewModifier {
             AnyView(
                 view.onReceive(
                     NotificationCenter.default.publisher(for: command.notificationName)
-                ) { _ in
+                ) { note in
                     guard isActive else { return }
+                    // A list in another window is just as alive as this one and
+                    // may well hold a selection of its own, so `isActive` alone
+                    // is no longer enough to claim a keystroke.
+                    if let windowID, !WindowIdentity.isTarget(note, windowID) { return }
                     perform(command)
                 }
             )

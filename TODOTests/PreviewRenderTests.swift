@@ -88,8 +88,7 @@ struct PreviewRenderTests {
             render(
                 TodoListView(
                     destination: .today,
-                    selectedTodo: .constant(nil),
-                    isFocused: .constant(false)
+                    selectedTodo: .constant(nil)
                 )
             )
         }
@@ -270,17 +269,6 @@ struct PreviewRenderTests {
         }
     }
 
-    @Test func sidePanelRenders() {
-        render(SidePanelRenderHost())
-    }
-
-    /// Scoped to a space and to a project, which draw a different header, a
-    /// different empty message, and — for a space — rows without the badge.
-    @Test func sidePanelRendersEveryScope() {
-        render(SidePanelRenderHost(scope: .list(.space(PreviewData.space.uuid))))
-        render(SidePanelRenderHost(scope: .list(.project(PreviewData.project.uuid))))
-    }
-
     /// The quick-scheduling panel, in the states its month grid distinguishes:
     /// an undated to-do, one dated to today (where the today ring and the
     /// selection fill land on the same cell), and one dated elsewhere.
@@ -317,8 +305,12 @@ struct PreviewRenderTests {
         render(NavigationStack { SettingsView() })
     }
 
-    @Test func rootRenders() {
-        render(RootView())
+    /// Each of the shell's tabs, since a window now opens on whichever one its
+    /// state names rather than always on Lists.
+    @Test func rootRendersEveryTab() {
+        for tab in AppTab.allCases {
+            render(RootView(windowState: .constant(WindowState(tab: tab))))
+        }
     }
 
     // MARK: Components
@@ -377,7 +369,7 @@ private struct TodoListRenderHost: View {
 
     var body: some View {
         NavigationStack {
-            TodoListView(destination: destination, selectedTodo: $selected, isFocused: .constant(true))
+            TodoListView(destination: destination, selectedTodo: $selected)
         }
     }
 }
@@ -419,16 +411,6 @@ private struct CalendarRenderHost: View {
                 onShowList: destination == .today ? nil : {}
             )
         }
-    }
-}
-
-@MainActor
-private struct SidePanelRenderHost: View {
-    var scope: SidePanelScope = .inbox
-    @State private var selected: Todo?
-
-    var body: some View {
-        SidePanelView(selectedTodo: $selected, hasFocus: .constant(false), scope: scope)
     }
 }
 

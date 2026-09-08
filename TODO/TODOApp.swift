@@ -20,9 +20,19 @@ struct TODOApp: App {
     @State private var settings = AppSettings.shared
 
     var body: some Scene {
-        WindowGroup {
-            RootView()
+        // Keyed on `WindowState`, which is what makes windows independent and
+        // addressable at once: SwiftUI hands each open window its own binding,
+        // so two of them sit on two different lists, and opening one *with* a
+        // value puts it straight onto that list. The value is `Codable`, so the
+        // system restores the arrangement on the next launch.
+        // `defaultValue` is what makes the binding non-optional: a window
+        // opened from the Dock or restored without a value still starts
+        // somewhere, so `RootView` never has to answer for a missing one.
+        WindowGroup(for: WindowState.self) { $state in
+            RootView(windowState: $state)
                 .environment(settings)
+        } defaultValue: {
+            WindowState()
         }
         .modelContainer(modelContainer)
         .commands { AppCommands(container: modelContainer) }

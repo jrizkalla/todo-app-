@@ -21,15 +21,6 @@ struct SettingsView: View {
     /// pane hitching. Loaded in the same `task`s that fill the list.
     @State private var defaultCalendarIdentifier: String?
 
-    /// Matches `RootView`'s gate, so the panel's switch is offered exactly where
-    /// the panel itself is shown.
-    #if os(iOS)
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    private var isWideLayout: Bool { horizontalSizeClass == .regular }
-    #else
-    private var isWideLayout: Bool { true }
-    #endif
-
     #if os(macOS)
     /// Drives the Mac's About-me sheet; iOS pushes instead.
     @State private var isShowingAboutMe = false
@@ -183,12 +174,6 @@ struct SettingsView: View {
                 // The default for Today and This Week. Each list can still
                 // override it from its own toolbar for the session.
                 Toggle("Show overdue TODOs in Today", isOn: $settings.showOverdue)
-
-                // Only offered where the panel can actually appear — a phone
-                // never shows it, so the switch would do nothing there.
-                if isWideLayout {
-                    Toggle("Show Inbox & overdue panel", isOn: $settings.showSidePanel)
-                }
             }
 
             backgroundSection

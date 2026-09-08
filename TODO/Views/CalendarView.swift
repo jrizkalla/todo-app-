@@ -171,11 +171,6 @@ private struct RangedCalendarView: View {
 
     @State private var eventStore = CalendarEventStore.shared
 
-    /// The side panel, which a scoped calendar points at its own list.
-    @State private var panelScope = SidePanelScopeModel.shared
-    /// This calendar's claim on the panel, held while it is on screen.
-    @State private var sidePanelClaim: UUID?
-
     /// The to-do being dragged to a new time, and how far it has moved.
     @State private var draggingTodoID: UUID?
     @State private var dragTranslation: CGFloat = 0
@@ -385,20 +380,6 @@ private struct RangedCalendarView: View {
             // the user grabbed a block and got nothing at all.
             cursor.select(dragged)
         }
-        // A scoped calendar takes over the side panel for as long as it is on
-        // screen, so the grid's dated work and the panel's undated work make up
-        // the whole container between them. The Calendar *tab* claims nothing:
-        // it is unscoped, and the Inbox is what belongs beside it.
-        //
-        // Tied to `destination` as well as to appearing, because the Lists tab
-        // reuses one pushed calendar as the sidebar selection moves under it.
-        .onAppear { claimSidePanel() }
-        .onChange(of: destination) { _, _ in claimSidePanel() }
-        .onDisappear {
-            guard let token = sidePanelClaim else { return }
-            sidePanelClaim = nil
-            panelScope.release(token)
-        }
         // The app-wide button asks; the calendar answers by blocking out the
         // next quarter hour on the day being shown.
         .onChange(of: createRequest?.wrappedValue) { _, _ in createAtNextSlot() }
@@ -484,20 +465,6 @@ private struct RangedCalendarView: View {
 
     // MARK: Side panel
 
-    /// Point the side panel at this calendar's list, if it has one.
-    ///
-    /// Only spaces and projects claim it. The cross-cutting destinations are
-    /// what the Calendar tab already shows unscoped, and their "unscheduled
-    /// remainder" would be every undated to-do in the app — which is not a
-    /// useful list, and is not what the Inbox sitting there already means.
-    private func claimSidePanel() {
-        switch destination {
-        case .space, .project:
-            sidePanelClaim = panelScope.claim(destination)
-        default:
-            break
-        }
-    }
 
     // MARK: Keyboard
 
