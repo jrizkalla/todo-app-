@@ -134,26 +134,28 @@ struct RootView: View {
             // raised it has usually just taken a row off the screen the user was
             // looking at, so it cannot belong to the list that lost it.
             .undoToast()
-            // Cmd+N, from anywhere in the app.
-            //
-            // Filtered to the window the user is actually in. The notification
-            // reaches every open window, and without this each one would create
-            // a to-do of its own from a single keystroke.
+            // Cmd+N on the Today tab, which draws no list of its own to answer
+            // it. Every other tab has a surface that creates into itself — see
+            // `AppCommands` — and answers the command directly.
             .onReceive(
-                NotificationCenter.default.publisher(for: .createInInboxRequested)
+                NotificationCenter.default.publisher(for: KeyboardCommand.create.notificationName)
             ) { note in
                 guard WindowIdentity.isTarget(note, self.windowState.id) else { return }
+                guard windowState.tab == .today else { return }
                 captureIntoInbox()
             }
     }
 
-    /// Answer Cmd+N: put a new to-do in the Inbox and show it, ready to type.
+    /// Answer Cmd+N on Today: put a new to-do in the Inbox and show it, ready
+    /// to type.
     ///
-    /// The creating is done here rather than delegated to a list, so the
-    /// shortcut works on the Today tab too — a screen with no list of its own,
-    /// where the + button is deliberately absent. Showing the Inbox afterwards
-    /// is not incidental: a row created onto a screen the user cannot see is a
-    /// to-do they have no way to name.
+    /// Only for Today, the one tab with no list to create into — it is a
+    /// read-only glance, which is why the + button is absent there too. The
+    /// Inbox is the right destination precisely because Today has no opinion of
+    /// its own to express: a to-do captured from a screen that is not a list
+    /// has not been filed anywhere yet. Showing the Inbox afterwards is not
+    /// incidental: a row created onto a screen the user cannot see is a to-do
+    /// they have no way to name.
     private func captureIntoInbox() {
         let created = TodoStore(context: context).createTodo()
 
@@ -188,7 +190,9 @@ struct RootView: View {
                             destination: .inbox,
                             selectedTodo: $selectedTodo,
                             createRequest: createCount(for: .inbox),
-                            capturedTodo: $capturedTodo
+                            capturedTodo: $capturedTodo,
+                            windowID: windowState.id,
+                            isShowing: windowState.tab == .inbox
                         )
                         .todoDetailDestination(selection: $selectedTodo)
                     }
@@ -222,7 +226,9 @@ struct RootView: View {
                         destination: .today,
                         anchorDate: $calendarAnchor,
                         scaleBinding: $calendarScale,
-                        createRequest: createCount(for: .calendar)
+                        createRequest: createCount(for: .calendar),
+                        windowID: windowState.id,
+                        isShowing: windowState.tab == .calendar
                     )
                     .todoDetailDestination(selection: $selectedTodo)
                 }
@@ -300,7 +306,9 @@ struct RootView: View {
                     // Only while it is actually showing the Inbox: a captured
                     // to-do went there, and no other list should take the caret
                     // for it.
-                    capturedTodo: windowState.list == .inbox ? $capturedTodo : nil
+                    capturedTodo: windowState.list == .inbox ? $capturedTodo : nil,
+                    windowID: windowState.id,
+                    isShowing: windowState.tab == .lists
                 )
                 .frame(maxWidth: .infinity)
                 .todoDetailDestination(selection: $selectedTodo)

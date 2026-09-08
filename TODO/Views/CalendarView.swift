@@ -31,6 +31,15 @@ struct CalendarView: View {
     var createRequest: Binding<Int>?
     var onShowList: (() -> Void)?
 
+    /// The window this calendar is in, so a menu command aimed at another
+    /// window is not answered here too. See `TodoListView.windowID`.
+    var windowID: UUID?
+
+    /// Whether this calendar is the screen the user is on; see
+    /// `TodoListView.isShowing`. The calendar tab's view outlives a switch away
+    /// from it, so Cmd+N would otherwise be answered by a grid nobody can see.
+    var isShowing: Bool = true
+
     @Environment(AppSettings.self) private var settings
 
     /// Fallbacks for the callers that own neither value. Held here rather than
@@ -86,7 +95,9 @@ struct CalendarView: View {
             pageIndex: $pageIndex,
             pageOrigin: $pageOrigin,
             createRequest: createRequest,
-            onShowList: onShowList
+            onShowList: onShowList,
+            windowID: windowID,
+            isShowing: isShowing
         )
         .id(QueryIdentity(start: range.start, end: range.end))
     }
@@ -134,7 +145,9 @@ private struct RangedCalendarView: View {
         pageIndex: Binding<Int>,
         pageOrigin: Binding<Date>,
         createRequest: Binding<Int>? = nil,
-        onShowList: (() -> Void)? = nil
+        onShowList: (() -> Void)? = nil,
+        windowID: UUID? = nil,
+        isShowing: Bool = true
     ) {
         self._selectedTodo = selectedTodo
         self.destination = destination
@@ -144,6 +157,8 @@ private struct RangedCalendarView: View {
         self._pageOrigin = pageOrigin
         self.createRequest = createRequest
         self.onShowList = onShowList
+        self.windowID = windowID
+        self.isShowing = isShowing
 
         _datedTodos = Query(
             TodoQueries.scheduledDescriptor(from: rangeStart, to: rangeEnd)
@@ -161,6 +176,12 @@ private struct RangedCalendarView: View {
     /// Incremented by the app-wide create button; the calendar answers by
     /// creating a block at the next quarter hour. See `createAtNextSlot`.
     var createRequest: Binding<Int>?
+
+    /// See `CalendarView.windowID`.
+    var windowID: UUID?
+
+    /// See `CalendarView.isShowing`.
+    var isShowing: Bool = true
 
     /// Called to go back to the list this calendar was opened from.
     ///
@@ -398,7 +419,11 @@ private struct RangedCalendarView: View {
             selectedTodo = todo
             return .handled
         }
-        .keyboardCommands(isActive: cursor.selection != nil || selectedTodo != nil) { command in
+        .keyboardCommands(
+            isActive: isShowing && (cursor.selection != nil || selectedTodo != nil),
+            isShowing: isShowing,
+            windowID: windowID
+        ) { command in
             perform(command)
         }
         // Moving to another day drops a cursor that pointed at a block no

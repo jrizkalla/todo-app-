@@ -32,6 +32,14 @@ struct TodoListView: View {
     /// window is not answered here as well.
     var windowID: UUID?
 
+    /// Whether this list is the one the user is looking at.
+    ///
+    /// Every tab's view stays alive once visited, so "exists" and "is on
+    /// screen" are different questions, and the commands that act on the open
+    /// screen — Cmd+N, Cmd+F — have to ask the second one. Defaults to `true`
+    /// for the callers that only ever build a list when it is showing.
+    var isShowing: Bool = true
+
     /// This list's own answer to "show completed", when the user has given one.
     ///
     /// `nil` means the Settings preference stands. Held per *destination* —
@@ -63,7 +71,8 @@ struct TodoListView: View {
             selectedTodo: $selectedTodo,
             createRequest: createRequest,
             capturedTodo: capturedTodo,
-            windowID: windowID
+            windowID: windowID,
+            isShowing: isShowing
         )
         .id(QueryIdentity(
             destination: destination,
@@ -147,6 +156,9 @@ private struct DestinationTodoList: View {
     /// The window this list is in; see `TodoListView.windowID`.
     var windowID: UUID?
 
+    /// Whether this list is on screen; see `TodoListView.isShowing`.
+    var isShowing: Bool = true
+
     /// Incremented by the app-wide create button. The list answers by adding a
     /// row here and focusing its title — see `createTodoInCurrentList`.
     ///
@@ -174,7 +186,8 @@ private struct DestinationTodoList: View {
         selectedTodo: Binding<Todo?>,
         createRequest: Binding<Int>? = nil,
         capturedTodo: Binding<UUID?>? = nil,
-        windowID: UUID? = nil
+        windowID: UUID? = nil,
+        isShowing: Bool = true
     ) {
         self.destination = destination
         self.includeResolved = includeResolved
@@ -185,6 +198,7 @@ private struct DestinationTodoList: View {
         self.createRequest = createRequest
         self.capturedTodo = capturedTodo
         self.windowID = windowID
+        self.isShowing = isShowing
 
         _destinationTodos = Query(
             TodoQueries.descriptor(
@@ -354,7 +368,13 @@ private struct DestinationTodoList: View {
                     selectedTodo: $calendarSelectedTodo,
                     destination: route.destination,
                     createRequest: createRequest,
-                    onShowList: { calendarRoute = nil }
+                    onShowList: { calendarRoute = nil },
+                    windowID: windowID,
+                    // The list underneath this one stands down while it is
+                    // pushed — see `isShowingList` — so the calendar takes over
+                    // the screen's commands, but only while the tab holding
+                    // both is itself the one on screen.
+                    isShowing: isShowing
                 )
                 .todoDetailSheet(selection: $calendarSelectedTodo)
             }
@@ -430,7 +450,11 @@ private struct DestinationTodoList: View {
                 showDetail(for: todo)
                 return .handled
             }
-            .keyboardCommands(isActive: isKeyboardTarget, windowID: windowID) { command in
+            .keyboardCommands(
+                isActive: isKeyboardTarget,
+                isShowing: isShowingList,
+                windowID: windowID
+            ) { command in
                 perform(command)
             }
             // Keeps the cursor on something real, and the selection free of
@@ -1263,8 +1287,21 @@ private struct DestinationTodoList: View {
         // The pushed calendar answers the same commands and shares
         // `selectedTodo` with this list, so the list stands down while it is on
         // top rather than both acting on one keystroke.
-        guard !isShowingCalendar else { return false }
+        guard isShowingList else { return false }
         return cursor.selection != nil || focusedTodoID != nil || selectedTodo != nil
+    }
+
+    /// Whether this list is the surface the user is on.
+    ///
+    /// What the commands that act on the screen rather than on a row are gated
+    /// on — Cmd+N, Cmd+F — which is why it does not ask for a selection: those
+    /// are pressed most often on a list just opened, before anything is
+    /// selected. The two conditions are the same ones `isKeyboardTarget` needs
+    /// before it can even ask about the cursor: this list's tab has to be the
+    /// one showing, and its pushed calendar — which answers the same commands
+    /// — must not be on top of it.
+    private var isShowingList: Bool {
+        isShowing && !isShowingCalendar
     }
 
     /// Move the keyboard cursor, unless a text field wants the arrow key.

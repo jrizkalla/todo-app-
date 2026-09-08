@@ -29,15 +29,20 @@ struct AppCommands: Commands {
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
-            // Deliberately *not* `.create`, which is the + button's request and
-            // means "new thing here" — a block on the calendar, a row in
-            // whichever list is open. Cmd+N is the capture shortcut: it is
-            // pressed to get something out of the user's head before they have
-            // decided where it belongs, and the Inbox is where the app says
-            // undecided work lives. Routing it through the open screen instead
-            // put a to-do into whatever list happened to be showing.
-            Button("New To-Do") {
-                post(.createInInboxRequested)
+            // The same request the + button makes: "new thing here", answered
+            // by whichever screen is open — a row in the list being looked at,
+            // a block on the calendar. Cmd+N used to capture into the Inbox
+            // wherever it was pressed, which meant a to-do typed while reading
+            // a project did not belong to that project, and the user had to
+            // move it themselves. A shortcut that ignores the screen it was
+            // pressed on is doing the filing the user already did by opening
+            // the list.
+            //
+            // The Inbox is still where undecided work lands: it is what the
+            // lists without an opinion of their own create into, and it is one
+            // keystroke away as a sidebar row.
+            Button(KeyboardCommand.create.title) {
+                post(KeyboardCommand.create.notificationName)
             }
             .keyboardShortcut("n", modifiers: .command)
 
@@ -134,11 +139,6 @@ private struct UndoMenuItems: View {
 
 extension Notification.Name {
     static let toggleCalendarRequested = Notification.Name("toggleCalendarRequested")
-    /// Cmd+N: capture something into the Inbox, wherever the user is.
-    ///
-    /// Answered by `RootView` rather than by a list, because the point of the
-    /// shortcut is that it does *not* depend on which screen is open.
-    static let createInInboxRequested = Notification.Name("createInInboxRequested")
 }
 
 extension View {
@@ -148,17 +148,27 @@ extension View {
     /// once: every tab's view stays alive after its first visit, so the list in
     /// a background tab is still listening. Only the surface that currently has
     /// something selected should act.
+    /// - Parameter isShowing: whether this surface is the one on screen, which
+    ///   is what the commands that act on the *view* rather than on a selected
+    ///   row are gated on instead — see `KeyboardCommand.actsOnView`. A list
+    ///   just opened has nothing selected yet, and Cmd+N there means "new row
+    ///   in this list", so gating it on a selection would send the keystroke
+    ///   nowhere. Defaults to `isActive`, for surfaces where the two coincide.
     /// - Parameter windowID: the window this surface belongs to, so a command
     ///   meant for another window is ignored. `nil` answers every command, for
     ///   surfaces outside a window scene — previews and tests.
     func keyboardCommands(
         isActive: Bool,
+        isShowing: Bool? = nil,
         windowID: UUID? = nil,
         perform: @escaping (KeyboardCommand) -> Void
     ) -> some View {
         modifier(
             KeyboardCommandsModifier(
-                isActive: isActive, windowID: windowID, perform: perform
+                isActive: isActive,
+                isShowing: isShowing ?? isActive,
+                windowID: windowID,
+                perform: perform
             )
         )
     }
@@ -166,6 +176,7 @@ extension View {
 
 private struct KeyboardCommandsModifier: ViewModifier {
     let isActive: Bool
+    let isShowing: Bool
     let windowID: UUID?
     let perform: (KeyboardCommand) -> Void
 
@@ -178,7 +189,7 @@ private struct KeyboardCommandsModifier: ViewModifier {
                 view.onReceive(
                     NotificationCenter.default.publisher(for: command.notificationName)
                 ) { note in
-                    guard isActive else { return }
+                    guard command.actsOnView ? isShowing : isActive else { return }
                     // A list in another window is just as alive as this one and
                     // may well hold a selection of its own, so `isActive` alone
                     // is no longer enough to claim a keystroke.

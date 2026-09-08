@@ -78,7 +78,7 @@ struct WindowStateTests {
         let other = UUID()
 
         let notification = Notification(
-            name: .createInInboxRequested,
+            name: KeyboardCommand.create.notificationName,
             object: nil,
             userInfo: [WindowIdentity.userInfoKey: target]
         )
@@ -93,7 +93,7 @@ struct WindowStateTests {
     /// is the safer fallback: a shortcut that acts twice is a nuisance, one
     /// that silently does nothing looks broken.
     @Test func anUnaddressedCommandReachesEveryWindow() {
-        let unaddressed = Notification(name: .createInInboxRequested)
+        let unaddressed = Notification(name: KeyboardCommand.create.notificationName)
 
         #expect(WindowIdentity.isTarget(unaddressed, UUID()))
         #expect(WindowIdentity.isTarget(unaddressed, UUID()))
@@ -103,12 +103,83 @@ struct WindowStateTests {
     /// unaddressed rather than matching nothing at all.
     @Test func aMalformedAddressReachesEveryWindow() {
         let malformed = Notification(
-            name: .createInInboxRequested,
+            name: KeyboardCommand.create.notificationName,
             object: nil,
             userInfo: [WindowIdentity.userInfoKey: "not-a-uuid"]
         )
 
         #expect(WindowIdentity.isTarget(malformed, UUID()))
+    }
+
+    // MARK: What a command needs before it can fire
+
+    /// Cmd+N and Cmd+F act on the open screen, not on a selected row.
+    ///
+    /// This is what lets Cmd+N create into the list being looked at: the
+    /// shortcut is pressed most often on a list just opened, where nothing is
+    /// selected yet, and a selection-gated command would reach nobody at
+    /// exactly that moment.
+    @Test func creatingAndSearchingActOnTheOpenScreen() {
+        #expect(KeyboardCommand.create.actsOnView)
+        #expect(KeyboardCommand.search.actsOnView)
+    }
+
+    /// Everything else needs a to-do to act on, so it goes to whichever
+    /// surface holds the selection rather than to whatever is on screen.
+    @Test func theRestActOnTheSelectedTodo() {
+        let selectionCommands: [KeyboardCommand] = [
+            .schedule, .toggleDone, .showDetail, .move, .duplicate, .delete
+        ]
+
+        for command in selectionCommands {
+            #expect(command.actsOnView == false, "\(command) should need a selection")
+        }
+    }
+
+    /// Every command is one or the other, so adding a case forces the choice
+    /// rather than defaulting into the selection-gated half unnoticed.
+    @Test func everyCommandDeclaresWhatItActsOn() {
+        let classified = KeyboardCommand.allCases.filter { $0.actsOnView }.count
+            + KeyboardCommand.allCases.filter { !$0.actsOnView }.count
+
+        #expect(classified == KeyboardCommand.allCases.count)
+    }
+
+    /// A to-do created while a project is open belongs to that project.
+    ///
+    /// The point of routing Cmd+N through the open screen: the user has
+    /// already said where the work goes by opening the list, and a shortcut
+    /// that dropped it in the Inbox made them file it a second time. Asserted
+    /// against the project's own list, because belonging to it and *appearing*
+    /// in it are what the user actually sees.
+    @Test func creatingInsideAProjectFilesItThere() throws {
+        let container = try ModelContainer.appContainer(inMemory: true)
+        let context = ModelContext(container)
+        let store = TodoStore(context: context)
+
+        let space = store.createSpace(name: "Vibe coding")
+        let project = store.createTodo(title: "Bugs", space: space, isProject: true)
+
+        // What the list passes for a project destination: the project as the
+        // parent, and its space carried along — see `TodoListView`.
+        let created = store.createTodo(
+            title: "Crash on launch", space: space, parent: project
+        )
+
+        #expect(created.parent == project)
+        #expect(created.space == space)
+
+        let inProject = try context.fetch(
+            TodoQueries.descriptor(for: .project(project.uuid), calendar: .current,
+                                   includeResolved: false)
+        )
+        #expect(inProject.contains { $0.uuid == created.uuid })
+
+        // And it is *not* loose in the Inbox, which is where it used to land.
+        let inbox = try context.fetch(
+            TodoQueries.descriptor(for: .inbox, calendar: .current, includeResolved: false)
+        )
+        #expect(inbox.contains { $0.uuid == created.uuid } == false)
     }
 
     // MARK: The Inbox's one entry point

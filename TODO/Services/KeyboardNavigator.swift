@@ -105,6 +105,22 @@ enum KeyboardCommand: String, CaseIterable {
         Notification.Name("keyboardCommand.\(rawValue)")
     }
 
+    /// Whether the command acts on the open screen rather than on a selected
+    /// to-do.
+    ///
+    /// Everything else here needs something to act *on*, so it is delivered
+    /// only to the surface holding the selection. These two need only a screen
+    /// to act *in*: Cmd+N means "new to-do in this list" and Cmd+F means
+    /// "search this list", and both are pressed most often on a list just
+    /// opened, where nothing is selected yet. Gating them on a selection sent
+    /// them nowhere at exactly that moment.
+    var actsOnView: Bool {
+        switch self {
+        case .create, .search: true
+        case .schedule, .toggleDone, .showDetail, .move, .duplicate, .delete: false
+        }
+    }
+
     /// Menu title, so the shortcut is discoverable rather than folklore.
     var title: String {
         switch self {
