@@ -1198,10 +1198,14 @@ enum TodoQueries {
             return standingInTemplates(fetched)
                 .filterCycles()
                 .sorted(by: sortByDateThenOrder)
-        case .today, .tomorrow, .thisWeek, .nextWeek:
+        case .today, .tomorrow:
             // No template pass: the dated descriptors exclude templates in the
             // fetch, since a schedule has no day to sit on.
             return fetched.filterCycles().sorted(by: sortByDateThenOrder)
+        case .thisWeek, .nextWeek:
+            // Same fetch rules as the day lists, opposite order — see
+            // `sortByUndatedThenDate`.
+            return fetched.filterCycles().sorted(by: sortByUndatedThenDate)
         case .logbook:
             // SQL orders NULLs first under `.reverse`; the array version ranks a
             // nil `resolvedAt` as `.distantPast`, i.e. last.
@@ -1507,7 +1511,8 @@ enum TodoQueries {
             // Matching `thisWeekDescriptor`, and for the same reason as Today.
             .filterResolved(within: week.start, week.end)
             .filterCycles()
-            .sorted(by: sortByDateThenOrder)
+            // Undated first, as `finish` orders the fetched twin.
+            .sorted(by: sortByUndatedThenDate)
     }
 
     /// Work planned for the week after this one.
@@ -1526,7 +1531,8 @@ enum TodoQueries {
             .filterTemplates()
             .filter(includeResolved: includeResolved)
             .filterCycles()
-            .sorted(by: sortByDateThenOrder)
+            // Undated first, as `finish` orders the fetched twin.
+            .sorted(by: sortByUndatedThenDate)
     }
 
     /// Scheduled work with no specific home.
@@ -1731,6 +1737,35 @@ enum TodoQueries {
             SortDescriptor(\Todo.sortIndex),
             SortDescriptor(\Todo.createdAt),
         ]
+    }
+
+    /// The week lists' order: undated work first, then work dated by day.
+    ///
+    /// The inverse of `sortByDateThenOrder`, and deliberately so. A day list
+    /// answers "what is next", where a time is the whole point and undated
+    /// work is a remainder. A week list answers "what am I doing this week",
+    /// and the undated rows are the ones the user put there on purpose — with
+    /// "This Week" rather than by picking a day — so they are the week's real
+    /// agenda. Sorting them under the dated rows buried the deliberate choices
+    /// beneath everything that merely happened to carry a date, which on This
+    /// Week includes every overdue item reaching back indefinitely.
+    ///
+    /// "Dated" means `assignedDate` alone, not the `assignedDate ?? dueDate`
+    /// its sibling keys on: a due date is a deadline, not a day to act, so a
+    /// to-do carrying only one has not been placed in the week either and
+    /// belongs with the undated group. Within each group the usual rules hold
+    /// — by day, then the order the user arranged.
+    private static func sortByUndatedThenDate(_ a: Todo, _ b: Todo) -> Bool {
+        if a.state.isResolved != b.state.isResolved { return !a.state.isResolved }
+
+        switch (a.assignedDate, b.assignedDate) {
+        case let (x?, y?):
+            if x != y { return x < y }
+            return sortByOrder(a, b)
+        case (nil, _?): return true
+        case (_?, nil): return false
+        case (nil, nil): return sortByOrder(a, b)
+        }
     }
 
     private static func sortByOrder(_ a: Todo, _ b: Todo) -> Bool {

@@ -121,6 +121,116 @@ struct DuplicationAndOrderingTests {
         #expect(TodoQueries.widgetRank(for: todo, now: now) == .unscheduled)
     }
 
+    // MARK: Week list ordering
+
+    private func weekStore() throws -> (TodoStore, Calendar, Date, Date) {
+        let store = try makeStore()
+        let cal = Calendar.current
+        let now = Date()
+        let midWeek = cal.dateInterval(of: .weekOfYear, for: now)!
+            .start.addingTimeInterval(3 * 86400)
+        return (store, cal, now, midWeek)
+    }
+
+    /// This Week leads with the work the user put there on purpose.
+    ///
+    /// The undated rows are the ones planned for the week itself rather than
+    /// for a day in it; sorting them under the dated ones buried the deliberate
+    /// choices beneath everything that merely carried a date — on This Week,
+    /// that includes overdue work reaching back indefinitely.
+    @Test func thisWeekLeadsWithUndatedWork() throws {
+        let (store, cal, now, midWeek) = try weekStore()
+
+        _ = store.createTodo(title: "Dated", assignedDate: midWeek)
+        _ = store.createTodo(title: "Overdue", assignedDate: now.addingTimeInterval(-10 * 86400))
+        _ = store.createTodo(title: "Planned", weekSchedule: .thisWeek)
+
+        let rows = try store.context.fetch(
+            TodoQueries.descriptor(for: .thisWeek, calendar: cal, includeResolved: false)
+        )
+        let ordered = TodoQueries.finish(rows, for: .thisWeek)
+
+        #expect(ordered.first?.title == "Planned")
+        #expect(ordered.map(\.title) == ["Planned", "Overdue", "Dated"])
+    }
+
+    /// A due date is a deadline, not a day to act on, so a to-do carrying only
+    /// one has not been placed in the week and leads with the undated rows.
+    @Test func aDueDateAloneDoesNotCountAsDated() throws {
+        let (store, cal, _, midWeek) = try weekStore()
+
+        _ = store.createTodo(title: "Dated", assignedDate: midWeek)
+        let dueOnly = store.createTodo(title: "Due only", weekSchedule: .thisWeek)
+        dueOnly.dueDate = midWeek
+
+        let rows = try store.context.fetch(
+            TodoQueries.descriptor(for: .thisWeek, calendar: cal, includeResolved: false)
+        )
+        let ordered = TodoQueries.finish(rows, for: .thisWeek)
+
+        #expect(ordered.map(\.title) == ["Due only", "Dated"])
+    }
+
+    /// Next Week follows the same rule, and a row that acquires a day keeps it
+    /// behind the ones still planned for the week at large.
+    ///
+    /// Next Week holds only week-anchored rows, so its dated population arrives
+    /// the one way it can: a to-do given a day *after* being planned for the
+    /// week. Setting the date is what clears the anchor — the two are mutually
+    /// exclusive by design — so this reaches the list through its date.
+    @Test func nextWeekLeadsWithUndatedWork() throws {
+        let (store, cal, now, _) = try weekStore()
+
+        let planned = store.createTodo(title: "Planned", weekSchedule: .nextWeek)
+        let dated = store.createTodo(title: "Dated", weekSchedule: .nextWeek)
+        let anchor = dated.weekAnchor!
+        dated.assignedDate = cal.startOfDay(for: anchor).addingTimeInterval(2 * 86400)
+
+        #expect(planned.assignedDate == nil)
+
+        let ordered = TodoQueries.nextWeek(
+            [planned, dated], calendar: cal, now: now, includeResolved: false
+        )
+
+        #expect(ordered.map(\.title) == ["Planned", "Dated"])
+    }
+
+    /// Dated rows still run in day order behind the undated ones.
+    @Test func datedWeekWorkKeepsDayOrder() throws {
+        let (store, cal, now, _) = try weekStore()
+        let week = cal.dateInterval(of: .weekOfYear, for: now)!
+
+        _ = store.createTodo(title: "Friday", assignedDate: week.start.addingTimeInterval(5 * 86400))
+        _ = store.createTodo(title: "Tuesday", assignedDate: week.start.addingTimeInterval(2 * 86400))
+        _ = store.createTodo(title: "Planned", weekSchedule: .thisWeek)
+
+        let rows = try store.context.fetch(
+            TodoQueries.descriptor(for: .thisWeek, calendar: cal, includeResolved: false)
+        )
+        let ordered = TodoQueries.finish(rows, for: .thisWeek)
+
+        #expect(ordered.map(\.title) == ["Planned", "Tuesday", "Friday"])
+    }
+
+    /// The day lists are untouched: there, a time is the point and undated work
+    /// is the remainder.
+    @Test func todayStillLeadsWithDatedWork() throws {
+        let store = try makeStore()
+        let cal = Calendar.current
+        let now = Date()
+
+        let dated = store.createTodo(title: "Dated", assignedDate: now)
+        dated.assignedHasTime = true
+        _ = store.createTodo(title: "Undated", assignedDate: cal.startOfDay(for: now))
+
+        let rows = try store.context.fetch(
+            TodoQueries.descriptor(for: .today, calendar: cal, includeResolved: false)
+        )
+        let ordered = TodoQueries.finish(rows, for: .today)
+
+        #expect(ordered.first?.title == "Undated")
+    }
+
     // MARK: Sidebar
 
     /// A finished project is not somewhere to file work, so it leaves the
