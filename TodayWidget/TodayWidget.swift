@@ -101,6 +101,7 @@ struct TodayTimelineProvider: TimelineProvider {
 
     /// The next moment some to-do changes band, if any is still to come today.
     ///
+    ///
     /// Only the boundaries actually crossed by today's items count, so a day
     /// with nothing timed schedules no extra wake-ups at all.
     @MainActor
@@ -111,12 +112,11 @@ struct TodayTimelineProvider: TimelineProvider {
         return today
             .compactMap { todo -> [Date]? in
                 guard todo.assignedHasTime, let start = todo.assignedDate else { return nil }
-                // Entering "soon", entering "now", and falling into "past".
-                return [
-                    start.addingTimeInterval(-TodoQueries.widgetSoonWindow),
-                    start,
-                    start.addingTimeInterval(todo.duration ?? TodoQueries.widgetNowWindow)
-                ]
+                // The one boundary left that reorders the list: falling out of
+                // the day's run of upcoming work and into "past". Crossing into
+                // "soon" or "now" no longer moves a row — see `WidgetRank` —
+                // so waking the widget for either would redraw the same list.
+                return [start.addingTimeInterval(todo.duration ?? TodoQueries.widgetNowWindow)]
             }
             .flatMap { $0 }
             .filter { $0 > now }
@@ -129,9 +129,8 @@ struct TodayTimelineProvider: TimelineProvider {
     /// same rule the app's Today destination uses, so the widget and the list it
     /// stands in for can never disagree about what counts as today.
     ///
-    /// The *order* is the widget's own: what is happening now first, then what
-    /// is coming up, with already-passed slots last. See
-    /// `TodoQueries.widgetOrdered`.
+    /// The *order* is the widget's own: timed work by the clock, then untimed
+    /// work, with already-passed slots last. See `TodoQueries.widgetOrdered`.
     @MainActor
     private func loadEntry(now: Date = Date()) -> TodayEntry {
         let container = ModelContainer.appContainerWithFallback()

@@ -1774,24 +1774,23 @@ enum TodoQueries {
         return a.createdAt < b.createdAt
     }
 
-    /// Dated items first, in date order; undated items keep manual order.
     /// Where a to-do sits in the widget's running order.
     ///
-    /// The widget shows a handful of rows on a home screen, so the ones worth
-    /// the space are the ones that need acting on *now*. Ranked rather than
-    /// sorted by date, because "soon" and "later" are the same clock reading a
-    /// few hours apart and only the bands matter.
+    /// Timed work first in time order, then untimed work — the widget shows a
+    /// handful of rows on a home screen, and a time is the strongest claim on
+    /// one of them.
     ///
-    /// Past-scheduled work ranks last despite being the most overdue: it has
-    /// already slipped, so it is a record rather than a prompt, and letting it
-    /// head the list would push the day's actual next thing off the widget.
+    /// The bands are only what time ordering cannot express. `now` and `soon`
+    /// were once separate from `later`, but all three sort by the clock, so
+    /// splitting them changed nothing about the result and only added two
+    /// boundaries to reason about. What remains is the one distinction a time
+    /// sort gets wrong: past-scheduled work ranks last despite being the most
+    /// overdue, because it has already slipped and is a record rather than a
+    /// prompt — letting it head the list would push the day's actual next thing
+    /// off a surface with four rows.
     enum WidgetRank: Int, Comparable {
-        /// Timed, and its slot is open now.
-        case now
-        /// Timed, and starting within the hour.
-        case soon
-        /// Timed, later today.
-        case later
+        /// Timed, and its slot has not passed yet.
+        case upcoming
         /// Today's work with no time attached.
         case unscheduled
         /// Timed, and its slot has already passed.
@@ -1800,11 +1799,9 @@ enum TodoQueries {
         static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
     }
 
-    /// How wide the "now" window is: a to-do is current from its start until
-    /// its duration runs out, or for this long if it has none.
+    /// How long a to-do with no duration of its own holds its slot before the
+    /// widget treats it as passed.
     static let widgetNowWindow: TimeInterval = 15 * 60
-    /// How far ahead "soon" reaches.
-    static let widgetSoonWindow: TimeInterval = 60 * 60
 
     /// Classify one to-do for the widget's ordering.
     static func widgetRank(for todo: Todo, now: Date = Date()) -> WidgetRank {
@@ -1813,20 +1810,19 @@ enum TodoQueries {
         // in the day to act, so it is not a schedule.
         guard todo.assignedHasTime, let start = todo.assignedDate else { return .unscheduled }
 
+        // Still current while its slot is open, so an item does not drop to the
+        // bottom the instant it begins. An item with no duration of its own
+        // holds the widget for `widgetNowWindow`.
         let end = start.addingTimeInterval(todo.duration ?? widgetNowWindow)
-
-        if now >= start {
-            return now < end ? .now : .past
-        }
-        return start.timeIntervalSince(now) <= widgetSoonWindow ? .soon : .later
+        return now < end ? .upcoming : .past
     }
 
     /// Today's work in the order the home screen widget shows it.
     ///
-    /// Scheduled now, then soon, then later today, then untimed work, and
-    /// finally what was scheduled earlier and has passed. Within a band the
-    /// usual date-then-manual-order rule applies, so equally urgent items keep
-    /// the order the user arranged them in.
+    /// Timed work by the clock, then untimed work, and finally slots that have
+    /// already passed. Within a band the usual date-then-manual-order rule
+    /// applies, so untimed items keep the order the user arranged them in and
+    /// timed ones fall into time order.
     static func widgetOrdered(_ todos: [Todo], now: Date = Date()) -> [Todo] {
         todos
             .map { (todo: $0, rank: widgetRank(for: $0, now: now)) }

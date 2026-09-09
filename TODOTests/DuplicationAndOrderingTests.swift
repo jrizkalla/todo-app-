@@ -81,8 +81,8 @@ struct DuplicationAndOrderingTests {
         return todo
     }
 
-    /// The requested order: now, soon, later, unscheduled, then past.
-    @Test func widgetOrdersByUrgencyBand() throws {
+    /// Timed work by the clock, then untimed work, then passed slots.
+    @Test func widgetOrdersByTimeThenUntimed() throws {
         let store = try makeStore()
         let now = Date()
 
@@ -99,6 +99,36 @@ struct DuplicationAndOrderingTests {
         #expect(ordered.map(\.title) == ["Now", "Soon", "Later", "Unscheduled", "Past"])
     }
 
+    /// Timed items sort by their actual time, not by which hour band they fall
+    /// in — the ordering the bands used to approximate.
+    @Test func widgetSortsTimedWorkByTheClock() throws {
+        let store = try makeStore()
+        let now = Date()
+
+        let inFive = timed(store, "In five hours", at: now.addingTimeInterval(5 * 3600))
+        let inTwenty = timed(store, "In twenty minutes", at: now.addingTimeInterval(20 * 60))
+        let inTwo = timed(store, "In two hours", at: now.addingTimeInterval(2 * 3600))
+
+        let ordered = TodoQueries.widgetOrdered([inFive, inTwenty, inTwo], now: now)
+
+        #expect(ordered.map(\.title) == [
+            "In twenty minutes", "In two hours", "In five hours"
+        ])
+    }
+
+    /// Untimed work sits behind every upcoming slot, however far off.
+    @Test func untimedWorkFollowsTimedWork() throws {
+        let store = try makeStore()
+        let now = Date()
+
+        let untimed = store.createTodo(title: "Untimed", assignedDate: now)
+        let lateInTheDay = timed(store, "Late", at: now.addingTimeInterval(8 * 3600))
+
+        let ordered = TodoQueries.widgetOrdered([untimed, lateInTheDay], now: now)
+
+        #expect(ordered.map(\.title) == ["Late", "Untimed"])
+    }
+
     /// An item with no duration stops being "now" once its default slot runs
     /// out, rather than staying current for the rest of the day.
     @Test func untimedDurationFallsBackToTheNowWindow() throws {
@@ -108,7 +138,7 @@ struct DuplicationAndOrderingTests {
         let justStarted = timed(store, "Just started", at: now.addingTimeInterval(-60))
         let longDone = timed(store, "Long done", at: now.addingTimeInterval(-3600))
 
-        #expect(TodoQueries.widgetRank(for: justStarted, now: now) == .now)
+        #expect(TodoQueries.widgetRank(for: justStarted, now: now) == .upcoming)
         #expect(TodoQueries.widgetRank(for: longDone, now: now) == .past)
     }
 
