@@ -66,6 +66,7 @@
 				Models/WeekSchedule.swift,
 				Services/TodoQueries.swift,
 				Support/AppLog.swift,
+				Support/AppURL.swift,
 				Support/StringExtensions.swift,
 				Support/Theme.swift,
 				Views/TodoCheckbox.swift,
@@ -484,10 +485,10 @@
 				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "TODO imports your reminders into its Inbox so you can organize them alongside your other tasks.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
-				"INFOPLIST_KEY_UIApplicationSupportsMultipleScenes[sdk=iphoneos*]" = YES;
-				"INFOPLIST_KEY_UIApplicationSupportsMultipleScenes[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSupportsMultipleScenes[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSupportsMultipleScenes[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphoneos*]" = UIStatusBarStyleDefault;
@@ -536,10 +537,10 @@
 				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "TODO imports your reminders into its Inbox so you can organize them alongside your other tasks.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
-				"INFOPLIST_KEY_UIApplicationSupportsMultipleScenes[sdk=iphoneos*]" = YES;
-				"INFOPLIST_KEY_UIApplicationSupportsMultipleScenes[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSupportsMultipleScenes[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSupportsMultipleScenes[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphoneos*]" = UIStatusBarStyleDefault;

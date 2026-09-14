@@ -1833,6 +1833,39 @@ enum TodoQueries {
             .map(\.todo)
     }
 
+    /// The one to-do to name when there is room for exactly one.
+    ///
+    /// The medium progress widget and the lock screen's inline line both answer
+    /// "what's next?", and both have space for a single title — so both ask
+    /// this rather than each taking the head of its own list, which is how two
+    /// surfaces on the same screen end up naming different tasks.
+    ///
+    /// It is `widgetOrdered`'s head by construction, which is what makes the
+    /// answer the *next scheduled* item when the day still holds one and the
+    /// *first unscheduled* item when it does not: those are the first two bands
+    /// of that ranking, in that order. Work whose slot has already passed comes
+    /// last there, so it is named only when nothing else remains — a to-do that
+    /// has slipped is still the thing to do next when it is the only thing left.
+    ///
+    /// Resolved work is dropped rather than assumed absent: the progress widget
+    /// fetches with `includeResolved: true` to count what is done, and must not
+    /// then offer a finished item as the next thing to do.
+    static func widgetNextUp(_ todos: [Todo], now: Date = Date()) -> Todo? {
+        widgetOrdered(todos.filter { !$0.state.isResolved }, now: now).first
+    }
+
+    /// How much of today is finished.
+    ///
+    /// Counted over the same rows the Today list draws, so the denominator is
+    /// the day the user can actually see rather than every to-do the store
+    /// holds. Cancelled work counts as done: it is resolved and off the list,
+    /// and leaving it in the denominator would leave a day the user has
+    /// finished with stuck short of full.
+    static func widgetProgress(_ todos: [Todo]) -> (done: Int, total: Int) {
+        let counted = todos.filter { !$0.isProject }
+        return (counted.filter(\.state.isResolved).count, counted.count)
+    }
+
     private static func sortByDateThenOrder(_ a: Todo, _ b: Todo) -> Bool {
         if a.state.isResolved != b.state.isResolved { return !a.state.isResolved } // if a is not resolved, it is less than b
         let aDate = a.assignedDate ?? a.dueDate

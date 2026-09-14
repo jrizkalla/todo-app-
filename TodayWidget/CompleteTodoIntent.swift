@@ -38,9 +38,12 @@ struct CompleteTodoIntent: AppIntent {
             try? context.save()
         }
 
-        // The list this widget shows just changed, so redraw it rather than
-        // waiting for the next scheduled reload.
-        WidgetCenter.shared.reloadTimelines(ofKind: TodayWidget.kind)
+        // Every surface that reads today's list just went stale, not only the
+        // one holding the box that was ticked: the progress ring's fraction
+        // moved, and the item may have been the one the lock screen was naming.
+        // Reloading all of them is what stops two widgets on one screen
+        // disagreeing about the same day.
+        WidgetCenter.shared.reloadAllTimelines()
 
         return .result()
     }

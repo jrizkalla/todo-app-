@@ -144,6 +144,11 @@ struct RootView: View {
                 guard windowState.tab == .today else { return }
                 captureIntoInbox()
             }
+            // The Control Center button, which arrives as a URL — see `AppURL`.
+            .onOpenURL { url in
+                guard AppURL.action(for: url) == .newTodo else { return }
+                captureIntoInbox()
+            }
     }
 
     /// Answer Cmd+N on Today: put a new to-do in the Inbox and show it, ready

@@ -8,6 +8,22 @@
 		<string>location</string>
 	</array>
 	<!--
+	  How the Control Center button reaches the app. The scheme is declared in
+	  one place in code — see `AppURL` — and this entry is what registers it
+	  with the system; the two have to say the same thing.
+	-->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.johnrizkalla.app.TODO</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>todoapp</string>
+			</array>
+		</dict>
+	</array>
+	<!--
 	  The drag payload used to move a to-do between lists and onto the
 	  calendar. Declared as its own type, conforming to `public.data`, so a
 	  drag from the Inbox is offered only to the app's own drop targets — a
