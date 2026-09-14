@@ -63,6 +63,13 @@ struct SidebarView: View {
             }
         }
         .navigationTitle("Lists")
+        // The editor has to be presentable from *this* column. `RootView`
+        // attaches its `navigationDestination` to the detail column's stack,
+        // which is a different stack from the one the sidebar is in — so a
+        // to-do named from here (Edit Project…, or a search result) set the
+        // binding and then nothing opened. On macOS this is a no-op: there the
+        // editor is a popover anchored to the project row itself.
+        .todoDetailDestination(selection: $selectedTodo)
         .toolbar {
             Button {
                 isShowingSettings = true
