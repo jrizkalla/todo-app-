@@ -37,6 +37,19 @@ struct SidebarView: View {
     /// Same, for a project — which takes its subtasks with it.
     @State private var pendingProjectDeletion: Todo?
 
+    /// The project whose editor this column is showing, on macOS.
+    ///
+    /// Deliberately *not* `selectedTodo`. That binding is shared with the list,
+    /// which anchors a popover of its own to the same to-do whenever the list
+    /// it is showing is that project — and two popovers bound to one value
+    /// present neither, so Edit Project… did nothing precisely when the user
+    /// was already inside the project they right-clicked. Sidebar-local state
+    /// gives this column a presentation the list cannot collide with.
+    ///
+    /// iOS is unaffected and keeps using the shared binding: there the editor
+    /// is a pushed page, and one stack can only show one of them anyway.
+    @State private var editingProject: Todo?
+
     /// False on a phone, where the system refuses a second scene — the command
     /// is withdrawn rather than offered and then ignored.
     @Environment(\.supportsMultipleWindows) private var supportsMultipleWindows
@@ -329,7 +342,13 @@ struct SidebarView: View {
         // project's *list*, and nothing anywhere opened the project itself.
         .contextMenu {
             Button {
+                // macOS opens this column's own popover; iOS pushes the shared
+                // detail page — see `editingProject`.
+                #if os(macOS)
+                editingProject = project
+                #else
                 selectedTodo = project
+                #endif
             } label: {
                 Label("Edit Project…", systemImage: "slider.horizontal.3")
             }
@@ -368,7 +387,7 @@ struct SidebarView: View {
         }
         // macOS presents the editor as a popover anchored to the row it is
         // about; on iOS this is a no-op and the detail page is pushed instead.
-        .todoDetailPopover(for: project, selection: $selectedTodo)
+        .todoDetailPopover(for: project, selection: $editingProject)
     }
 
     /// Opens `destination` in a window of its own.
