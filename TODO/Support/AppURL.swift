@@ -40,3 +40,44 @@ enum AppURL {
         case newTodo
     }
 }
+
+/// A to-do created outside the app, waiting for the app to show it.
+///
+/// The Control Center button writes its row in the extension and then asks the
+/// system to foreground the app — two halves in two processes, so the id has to
+/// travel between them. It goes through the app group's `UserDefaults`, the
+/// same container the store itself lives in, because that is the one place both
+/// sides can already reach.
+///
+/// Deliberately not `AppSettings`: this is a one-shot message rather than a
+/// preference. It is *consumed* — read and cleared in one step — so a capture
+/// is answered exactly once, and re-opening the app later does not create a
+/// second empty row for a button pressed yesterday.
+enum PendingCapture {
+    static let key = "pendingCaptureTodoID"
+
+    /// The app group's shared defaults, which both processes can reach.
+    private static var shared: UserDefaults? {
+        UserDefaults(suiteName: AppSchema.appGroupIdentifier)
+    }
+
+    /// Record the row the app should open on.
+    static func set(_ id: UUID, in defaults: UserDefaults? = shared) {
+        defaults?.set(id.uuidString, forKey: key)
+    }
+
+    /// Take the waiting row's id, if there is one, and clear it.
+    ///
+    /// Read-and-clear in one call rather than a getter beside a separate
+    /// `clear()`: every caller wants both, and splitting them is how a capture
+    /// gets answered twice by two windows.
+    ///
+    /// A value that will not parse is cleared too. It can never name a row, so
+    /// leaving it would mean asking about it on every launch forever.
+    static func take(from defaults: UserDefaults? = shared) -> UUID? {
+        guard let defaults, let raw = defaults.string(forKey: key) else { return nil }
+
+        defaults.removeObject(forKey: key)
+        return UUID(uuidString: raw)
+    }
+}

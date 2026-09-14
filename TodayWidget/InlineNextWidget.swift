@@ -1,14 +1,17 @@
 import SwiftUI
 import WidgetKit
 
-/// The one-line slot above the lock screen clock: the date, then what's next.
+/// The one-line slot above the lock screen clock: what's next.
 ///
 /// `accessoryInline` is the narrowest surface the system offers — a single
 /// line, no wrapping, tinted by the system rather than the app, and sharing its
-/// width with a leading glyph. So the content is chosen by what survives
-/// truncation: the date first, because it is short, fixed-width and always
-/// true, then the next task, which is the part worth reading and the part that
-/// can afford to be cut.
+/// width with a leading glyph.
+///
+/// It carries only the task. The slot sits in the row the Lock Screen already
+/// uses for the date, and the system keeps drawing the date there alongside
+/// whatever the widget returns — so a line that opened with the date of its own
+/// showed it twice. What the widget adds to that row is the *task*; the date is
+/// the system's to draw, and drawing it again is not this widget's job.
 ///
 /// The task it names is `TodoQueries.widgetNextUp`, the same one the progress
 /// widget's medium body shows — the two are visible at the same moment on the
@@ -21,8 +24,8 @@ struct InlineNextWidget: Widget {
             InlineNextWidgetView(entry: entry)
                 .containerBackground(.clear, for: .widget)
         }
-        .configurationDisplayName("Date & Next")
-        .description("The date and the next thing on your list.")
+        .configurationDisplayName("Up Next")
+        .description("The next thing on your list, above the clock.")
         .supportedFamilies([.accessoryInline])
     }
 }
@@ -38,40 +41,18 @@ struct InlineNextWidgetView: View {
         Label(line, systemImage: "star.fill")
     }
 
-    /// "Mon 14 · Standup", degrading to just the date when there is nothing to
-    /// name.
-    ///
-    /// The separator is a middle dot with hair spaces around it rather than a
-    /// hyphen or a comma: the two halves are unrelated facts sitting side by
-    /// side, not a range and not a list.
-    private var line: String {
-        let date = Self.dateText(for: entry.date)
-        guard let title = subtitle else { return date }
-        return "\(date) · \(title)"
-    }
-
-    /// What follows the date.
+    /// The next task, or a short word standing in for it.
     ///
     /// A finished day says so — it is the one piece of news worth the width
-    /// when there is no task to name. An empty day says nothing at all and
-    /// leaves the line as a plain date, which is the honest thing for a lock
-    /// screen to show on a day with no plans.
-    private var subtitle: String? {
-        if entry.isUnavailable { return nil }
+    /// when there is no task to name. A day with nothing on it says "Nothing
+    /// scheduled" rather than going blank: the slot is already shown at this
+    /// point, so an empty string leaves the glyph stranded beside nothing,
+    /// which reads as a broken widget rather than a free afternoon.
+    var line: String {
+        if entry.isUnavailable { return "Open TODO" }
         if let next = entry.next { return next.title }
         if entry.isComplete { return "All done" }
-        return nil
-    }
-
-    /// "Mon 14" — weekday and day of month.
-    ///
-    /// Written as a format rather than a fixed string so it follows the
-    /// device's locale and calendar: the abbreviation, and whether the number
-    /// leads or trails, are not the app's to decide.
-    static func dateText(for date: Date) -> String {
-        date.formatted(
-            .dateTime.weekday(.abbreviated).day()
-        )
+        return "Nothing scheduled"
     }
 }
 

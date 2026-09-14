@@ -163,12 +163,34 @@ struct RootView: View {
     /// they have no way to name.
     private func captureIntoInbox() {
         let created = TodoStore(context: context).createTodo()
+        showInbox(focusing: created.uuid)
+    }
 
-        // Wherever the Inbox is reachable in this window. On a phone that is a
-        // tab; everywhere else it is a row in the sidebar, which means showing
-        // the Lists tab and selecting it. Landing on the list either way is not
-        // incidental — a row created onto a screen the user cannot see is a
-        // to-do they have no way to name.
+    /// Adopt a row the Control Center button created while the app was closed
+    /// or in the background.
+    ///
+    /// The row already exists — the extension wrote it, because a control's
+    /// intent cannot ask the app to do the writing. What is left is the half
+    /// that needs a screen: putting the Inbox in front of the user with the
+    /// caret in the new row's title, which is the same landing `captureIntoInbox`
+    /// arranges for Cmd+N.
+    ///
+    /// Taking the id clears it, so two open windows cannot both answer one
+    /// press, and re-opening the app tomorrow does not re-focus a row the user
+    /// has since filled in.
+    private func claimPendingCapture() {
+        guard let id = PendingCapture.take() else { return }
+        showInbox(focusing: id)
+    }
+
+    /// Show the Inbox in this window, with `id` ready to be named.
+    ///
+    /// Wherever the Inbox is reachable in this window. On a phone that is a
+    /// tab; everywhere else it is a row in the sidebar, which means showing the
+    /// Lists tab and selecting it. Landing on the list either way is not
+    /// incidental — a row created onto a screen the user cannot see is a to-do
+    /// they have no way to name.
+    private func showInbox(focusing id: UUID) {
         if showsInboxTab {
             windowState.tab = .inbox
         } else {
@@ -176,7 +198,7 @@ struct RootView: View {
             windowState.tab = .lists
         }
 
-        capturedTodo = created.uuid
+        capturedTodo = id
     }
 
     /// Move a window off the Inbox tab when this layout has none.
@@ -263,12 +285,21 @@ struct RootView: View {
         .task {
             guard !didRunLaunchTasks else { return }
             didRunLaunchTasks = true
+            // Before the rest: the button that captured it foregrounded the app
+            // precisely so the user could name the row, so showing it is the
+            // first thing owed to them rather than something to do after the
+            // reminder scan.
+            claimPendingCapture()
             await runLaunchTasks()
         }
         // Returning to the app re-scans, so reminders added elsewhere while it
         // was backgrounded show up without a relaunch.
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active, didRunLaunchTasks else { return }
+
+            // The Control Center button usually finds the app already running,
+            // so this — not the launch task above — is the path that answers it.
+            claimPendingCapture()
 
             // A day can turn over while the app is backgrounded, which is
             // exactly when a daily series falls due. Generation is idempotent,
