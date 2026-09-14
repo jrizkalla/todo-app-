@@ -488,12 +488,26 @@ extension Todo {
     /// Returns `false` without mutating anything when the change is blocked by
     /// unresolved subtasks — the caller is expected to ask the user whether to
     /// cascade, then call `setState(_:cascadeToSubtasks: true)`.
+    ///
+    /// `subtaskState` is what the leftovers become, which is not always what
+    /// the parent becomes: finishing a project usually means the work that
+    /// never happened was *abandoned*, not done. Defaults to `newState` so the
+    /// common "complete all" cascade reads unchanged.
     @discardableResult
-    func setState(_ newState: CompletionState, cascadeToSubtasks: Bool = false) -> Bool {
+    func setState(
+        _ newState: CompletionState,
+        cascadeToSubtasks: Bool = false,
+        subtaskState: CompletionState? = nil
+    ) -> Bool {
         if newState.isResolved && !blockingSubtasks.isEmpty {
             guard cascadeToSubtasks else { return false }
+            let childState = subtaskState ?? newState
             for subtask in blockingSubtasks {
-                subtask.setState(newState, cascadeToSubtasks: true)
+                subtask.setState(
+                    childState,
+                    cascadeToSubtasks: true,
+                    subtaskState: childState
+                )
             }
         }
 

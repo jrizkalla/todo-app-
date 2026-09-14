@@ -292,12 +292,24 @@ struct TodoStore {
     /// Recorded across the subtasks as well as the parent: the cascade is the
     /// part the user could not undo by hand, since it resolved rows they never
     /// touched directly.
-    func setStateCascading(_ todo: Todo, to newState: CompletionState) {
+    ///
+    /// `subtaskState` lets the leftovers land somewhere other than the parent's
+    /// own state — completing a project while marking the work that never got
+    /// done as cancelled. Omitted, the subtasks follow the parent.
+    func setStateCascading(
+        _ todo: Todo,
+        to newState: CompletionState,
+        subtaskState: CompletionState? = nil
+    ) {
         let affected = [todo] + todo.descendants
 
         let wasResolved = todo.state.isResolved
         recordingUndo(undoName(for: newState), on: affected) {
-            todo.setState(newState, cascadeToSubtasks: true)
+            todo.setState(
+                newState,
+                cascadeToSubtasks: true,
+                subtaskState: subtaskState
+            )
             save()
         }
         advanceRecurrence(for: todo, wasResolved: wasResolved, isResolved: newState.isResolved)
@@ -730,14 +742,31 @@ struct PendingCascade: Identifiable {
     let blockedCount: Int
 
     /// The confirmation dialog's title.
+    ///
+    /// Asks what should *happen* to the leftovers rather than proposing one
+    /// answer, because there are two: the unfinished work was either quietly
+    /// done or quietly abandoned, and only the user knows which.
     var prompt: String {
         let noun = blockedCount == 1 ? "subtask" : "subtasks"
-        let verb = target == .completed ? "completed" : "cancelled"
-        return "This to-do has \(blockedCount) unfinished \(noun). Also mark them \(verb)?"
+        return "This to-do has \(blockedCount) unfinished \(noun). What should happen to \(blockedCount == 1 ? "it" : "them")?"
     }
 
     /// Label for the button that resolves the subtasks along with the parent.
     var confirmLabel: String {
         target == .completed ? "Complete All" : "Cancel All"
+    }
+
+    /// Label for the button that resolves the leftovers the *other* way.
+    ///
+    /// Only meaningful when the parent is being completed: cancelling a to-do
+    /// whose subtasks are then marked complete describes nothing real, so the
+    /// button is withdrawn there rather than offered as a no-op — see
+    /// `alternateSubtaskState`.
+    var alternateLabel: String { "Cancel Remaining" }
+
+    /// What the alternate button puts the leftovers into, or `nil` where the
+    /// choice does not arise.
+    var alternateSubtaskState: CompletionState? {
+        target == .completed ? .cancelled : nil
     }
 }

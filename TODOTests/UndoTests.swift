@@ -79,6 +79,28 @@ struct UndoTests {
         #expect(b.state == .open)
     }
 
+    /// Finishing a project usually means the leftovers were abandoned, not
+    /// done — so the cascade can land the subtasks somewhere other than the
+    /// parent, and undo still has to take the whole subtree back.
+    @Test func aCascadeCanCancelTheLeftoversOfACompletedProject() throws {
+        let store = try makeStore()
+        let project = store.createTodo(title: "Launch", isProject: true)
+        let done = store.addSubtask(to: project, title: "Shipped")
+        let abandoned = store.addSubtask(to: project, title: "Never happened")
+
+        #expect(store.setState(done, to: .completed) == .applied)
+
+        store.setStateCascading(project, to: .completed, subtaskState: .cancelled)
+        #expect(project.state == .completed)
+        // Already resolved before the cascade, so it keeps the state it had.
+        #expect(done.state == .completed)
+        #expect(abandoned.state == .cancelled)
+
+        stack.undo(in: store.context)
+        #expect(project.state == .open)
+        #expect(abandoned.state == .open)
+    }
+
     // MARK: Deleting
 
     @Test func undoRestoresADeletedTodo() throws {

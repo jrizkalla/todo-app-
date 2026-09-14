@@ -496,6 +496,16 @@ private struct DestinationTodoList: View {
                         store.setStateCascading(pending.todo, to: pending.target)
                         pendingCascade = nil
                     }
+                    if let alternate = pending.alternateSubtaskState {
+                        Button(pending.alternateLabel) {
+                            store.setStateCascading(
+                                pending.todo,
+                                to: pending.target,
+                                subtaskState: alternate
+                            )
+                            pendingCascade = nil
+                        }
+                    }
                     Button("Keep Subtasks", role: .cancel) {
                         pendingCascade = nil
                     }
