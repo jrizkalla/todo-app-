@@ -34,10 +34,31 @@ final class SavedAISummary {
     /// migration.
     var fingerprint: SummaryFingerprint = SummaryFingerprint()
 
-    init(summary: AISummary, fingerprint: SummaryFingerprint = SummaryFingerprint()) {
+    /// Which model wrote this, as a `SummaryModel` raw value.
+    ///
+    /// Stored so the next generation of the day can tell whether the cloud pass
+    /// has already happened: the first summary is worth the good model, and the
+    /// refinements after it are not.
+    ///
+    /// A bare `String`, and the `SummaryModel` bridge lives in the app target,
+    /// because the widget extension compiles this file and must not be made to
+    /// import `FoundationModels` to do it — the same reason `SummaryFingerprint`
+    /// is split across two files.
+    ///
+    /// Defaulted to `"local"` so a summary saved before this existed is read as
+    /// not yet having had its cloud pass — which at worst spends one cloud
+    /// call, rather than withholding it for the rest of the day.
+    var generatedByRaw: String = "local"
+
+    init(
+        summary: AISummary,
+        fingerprint: SummaryFingerprint = SummaryFingerprint(),
+        generatedByRaw: String = "local"
+    ) {
         uuid = UUID()
         generatedOn = Date()
         self.summary = summary
         self.fingerprint = fingerprint
+        self.generatedByRaw = generatedByRaw
     }
 }

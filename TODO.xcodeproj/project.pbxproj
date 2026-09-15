@@ -53,6 +53,7 @@
 		AA0000000000000000000024 /* Exceptions for "TODO" folder in "TodayWidgetExtension" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				Models/AppMemory.swift,
 				Models/Enums.swift,
 				"Models/ModelContainer+App.swift",
 				Models/Recurrence.swift,

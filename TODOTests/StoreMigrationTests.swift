@@ -211,17 +211,21 @@ struct StoreMigrationTests {
         )
     }
 
-    /// Every entity in the store's current schema must also exist in V1 under
-    /// the same name.
+    /// Every entity V1 describes must still exist, under the same name.
     ///
     /// Renaming the frozen copy is the mistake that produced "Cannot use staged
     /// migration with an unknown model version" on the real store: CoreData
     /// derives the entity name from the Swift class name, so a renamed copy
     /// describes a different entity and matches nothing on disk.
+    ///
+    /// A subset rather than equality, because the live schema legitimately
+    /// grows: `AppMemory` arrived in V5 and has no V1 counterpart to match. The
+    /// direction that matters is this one — an entity V1 names but the live
+    /// schema does not is a rename, which is the failure being guarded.
     @Test func theFrozenV1EntityNamesMatchTheLiveOnes() throws {
         let v1 = Set(Schema(SchemaV1.models).entities.map(\.name))
         let live = Set(Schema(AppSchema.models).entities.map(\.name))
-        #expect(v1 == live)
+        #expect(v1.isSubset(of: live), "V1 names missing from the live schema: \(v1.subtracting(live))")
     }
 
     /// The V2 -> V3 stage must actually be reachable.

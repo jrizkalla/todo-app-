@@ -305,24 +305,35 @@ enum SchemaV3: VersionedSchema {
     }
 }
 
-/// The current shape: `Todo` gains `weekAnchor`.
+/// `Todo` gains `weekAnchor`.
 enum SchemaV4: VersionedSchema {
     static var versionIdentifier: Schema.Version { Schema.Version(4, 0, 0) }
 
-    /// The live models, deliberately — the newest version has to *be* the
-    /// current schema, or the store will not open. See the note in `SchemaV2`
-    /// about why freezing a copy here would be actively harmful.
+    /// Frozen at the V4 shape: the *newest* version has to be the live models,
+    /// and that is now V5. Listing the live types here would make V4 and V5
+    /// identical, which leaves the migration with nothing to do and the store
+    /// unable to tell the two versions apart. See the note in `SchemaV2`.
     static var models: [any PersistentModel.Type] {
         [Todo.self, Space.self, Reminder.self, SavedAISummary.self]
     }
 }
 
+/// The current shape: the assistant's `AppMemory` joins the store.
+enum SchemaV5: VersionedSchema {
+    static var versionIdentifier: Schema.Version { Schema.Version(5, 0, 0) }
+
+    /// The live models, deliberately — see `SchemaV4`.
+    static var models: [any PersistentModel.Type] {
+        [Todo.self, Space.self, Reminder.self, SavedAISummary.self, AppMemory.self]
+    }
+}
+
 enum AppMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [SchemaV1.self, SchemaV2.self, SchemaV3.self, SchemaV4.self]
+        [SchemaV1.self, SchemaV2.self, SchemaV3.self, SchemaV4.self, SchemaV5.self]
     }
 
-    static var stages: [MigrationStage] { [v1ToV2, v2ToV3, v3ToV4] }
+    static var stages: [MigrationStage] { [v1ToV2, v2ToV3, v3ToV4, v4ToV5] }
 
     /// Adding the prompt fingerprint to `SavedAISummary`.
     ///
@@ -379,5 +390,19 @@ enum AppMigrationPlan: SchemaMigrationPlan {
     static let v3ToV4 = MigrationStage.lightweight(
         fromVersion: SchemaV3.self,
         toVersion: SchemaV4.self
+    )
+
+    /// Adding `AppMemory`, and `generatedByRaw` to `SavedAISummary`.
+    ///
+    /// Lightweight on both counts. The new entity is a *table*, with no rows to
+    /// backfill — a store that predates the assistant's memory has nothing
+    /// remembered, and the first fact it learns creates the row. The new column
+    /// carries a default, which is what V1→V2 lacked and why that one had to be
+    /// custom: CoreData can write `local` into every existing row unaided, and
+    /// reading an older summary as not-yet-cloud-generated is the right
+    /// reading — it costs one cloud call rather than withholding one all day.
+    static let v4ToV5 = MigrationStage.lightweight(
+        fromVersion: SchemaV4.self,
+        toVersion: SchemaV5.self
     )
 }

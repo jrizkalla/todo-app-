@@ -22,6 +22,7 @@ enum AppSchema {
         Space.self,
         Reminder.self,
         SavedAISummary.self,
+        AppMemory.self,
     ]
 
     static var schema: Schema { Schema(models) }

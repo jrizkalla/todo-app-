@@ -24,7 +24,19 @@ struct SettingsView: View {
     #if os(macOS)
     /// Drives the Mac's About-me sheet; iOS pushes instead.
     @State private var isShowingAboutMe = false
+    /// The same split for the memory editor.
+    @State private var isShowingMemory = false
     #endif
+
+    /// The assistant's memory. A query rather than a fetch so the row count in
+    /// Settings tracks what the summary learns while the pane is open.
+    @Query private var memories: [AppMemory]
+    /// The single memory row, which is all `memories` can hold.
+    private var memory: AppMemory? { memories.first }
+
+    /// The memory text being edited, committed on the way out.
+    @State private var memoryDraft = ""
+    @State private var isConfirmingMemoryClear = false
 
     /// The photo being picked for the summary background, if any.
     @State private var pickedBackground: PhotosPickerItem?
@@ -168,6 +180,8 @@ struct SettingsView: View {
                 }
                 #endif
             }
+
+            memorySection
             Section("TODOs") {
                 Toggle("Show completed TODOs", isOn: $settings.showResolved)
 
@@ -330,6 +344,120 @@ struct SettingsView: View {
                 defaultCalendarIdentifier = calendarStore.defaultCalendarIdentifier
             }
         }
+    }
+
+    // MARK: Memory
+
+    /// The switch, a summary of what is held, and the way in to edit it.
+    @ViewBuilder
+    private var memorySection: some View {
+        @Bindable var settings = settings
+
+        Section {
+            Toggle("Remember things about me", isOn: $settings.memoryEnabled)
+
+            Text("The assistant keeps notes on what it learns about your routines and preferences, and uses them to write better summaries over time. Turning this off stops it from adding to or reading those notes; it does not delete them.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if let memory, !memory.lines.isEmpty {
+                #if os(macOS)
+                Button("Review Memory…") { isShowingMemory = true }
+                    .buttonStyle(.plain)
+                    .sheet(isPresented: $isShowingMemory) {
+                        NavigationStack {
+                            memoryEditor
+                                .navigationTitle("Memory")
+                                .toolbar {
+                                    ToolbarItem(placement: .confirmationAction) {
+                                        Button("Done") {
+                                            commitMemoryEdits()
+                                            isShowingMemory = false
+                                        }
+                                    }
+                                }
+                        }
+                        .frame(minWidth: 460, minHeight: 420)
+                    }
+                #else
+                NavigationLink("Review Memory") { memoryEditor }
+                #endif
+
+                LabeledContent("Remembered") {
+                    Text("^[\(memory.lines.count) note](inflect: true)")
+                }
+                LabeledContent("Last updated") {
+                    Text(memory.updatedAt, format: .relative(presentation: .named))
+                }
+            } else {
+                Text("Nothing remembered yet.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("Memory")
+        }
+    }
+
+    /// The memory itself, editable as the plain text it is stored as.
+    ///
+    /// A raw editor rather than a list with delete buttons: the file is prose
+    /// the model wrote, and the useful correction is usually rewording a line
+    /// rather than dropping it wholesale.
+    ///
+    /// Edits are held in `@State` and written on the way out rather than on
+    /// every keystroke — saving per character would race the summary's own
+    /// writes to the same row.
+    private var memoryEditor: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("One note per line. These are fed to the assistant with every summary.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            TextEditor(text: $memoryDraft)
+                .font(.body.monospaced())
+                .frame(minHeight: 220)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(.quaternary)
+                }
+
+            HStack {
+                Button("Clear Memory", role: .destructive) {
+                    isConfirmingMemoryClear = true
+                }
+                Spacer()
+            }
+        }
+        .padding()
+        .task { memoryDraft = memory?.text ?? "" }
+        // iOS pushes this rather than sheeting it, so there is no Done button
+        // to hang the save off — it commits as the view goes away.
+        .onDisappear { commitMemoryEdits() }
+        .confirmationDialog(
+            "Forget everything?",
+            isPresented: $isConfirmingMemoryClear,
+            titleVisibility: .visible
+        ) {
+            Button("Forget Everything", role: .destructive) {
+                MemoryStore(context: context).clear()
+                memoryDraft = ""
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The assistant will start over with no notes about you. This cannot be undone.")
+        }
+    }
+
+    /// Write the editor's text back, if it actually changed.
+    ///
+    /// The guard matters: `onDisappear` fires on a view that was only looked
+    /// at, and an unconditional write would move `updatedAt` — and so the
+    /// prompt fingerprint — every time Settings was opened.
+    private func commitMemoryEdits() {
+        let trimmed = memoryDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed != (memory?.text ?? "") else { return }
+        MemoryStore(context: context).replace(with: trimmed)
     }
 
     /// Steps offered for the two calendar nudge settings.

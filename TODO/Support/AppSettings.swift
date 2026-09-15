@@ -65,6 +65,7 @@ final class AppSettings {
         // otherwise. `object(forKey:)` rather than `bool(forKey:)` is what
         // makes that default hold — `bool` reads an absent key as false.
         self.showOverdue = resolved.object(forKey: Key.showOverdue) as? Bool ?? true
+        self.memoryEnabled = resolved.object(forKey: Key.memoryEnabled) as? Bool ?? true
 
         if let data = resolved.data(forKey: Key.userInfo),
            let decoded = try? JSONDecoder().decode(UserInfo.self, from: data) {
@@ -89,6 +90,7 @@ final class AppSettings {
         static let userInfo = "userInfo"
         static let summaryBackground = "summaryBackground"
         static let developerDebugMode = "developerDebugMode"
+        static let memoryEnabled = "memoryEnabled"
     }
 
     /// Backdrop behind the AI summary.
@@ -213,6 +215,18 @@ final class AppSettings {
         }
     }
     
+    /// Whether the assistant remembers anything between days.
+    ///
+    /// On by default: the memory is what makes the summary get better with use
+    /// rather than starting cold every morning. Turning it off stops both
+    /// halves at once — nothing new is written, and what is already there is
+    /// left out of the prompt — so the switch is honest about what it does.
+    /// The file itself is kept, not deleted, so turning it back on resumes
+    /// rather than starting over; Settings offers a separate Clear for that.
+    var memoryEnabled: Bool {
+        didSet { write(memoryEnabled, forKey: Key.memoryEnabled, was: oldValue) }
+    }
+
     var developerDebugMode: Bool = false {
         didSet {
             write(developerDebugMode, forKey: Key.developerDebugMode, was: oldValue)

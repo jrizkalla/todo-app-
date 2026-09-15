@@ -29,6 +29,7 @@ struct DatabaseExporter {
         let todos = (try? context.fetch(FetchDescriptor<Todo>())) ?? []
         let reminders = (try? context.fetch(FetchDescriptor<Reminder>())) ?? []
         let summaries = (try? context.fetch(FetchDescriptor<SavedAISummary>())) ?? []
+        let memories = (try? context.fetch(FetchDescriptor<AppMemory>())) ?? []
 
         var entries: [Zip.Entry] = [
             Zip.Entry(
@@ -38,7 +39,8 @@ struct DatabaseExporter {
                     spaces: spaces.count,
                     todos: todos.count,
                     reminders: reminders.count,
-                    summaries: summaries.count
+                    summaries: summaries.count,
+                    memories: memories.count
                 ).utf8)
             )
         ]
@@ -54,6 +56,9 @@ struct DatabaseExporter {
         }
         for summary in summaries {
             entries.append(entry(kind: .summary, uuid: summary.uuid, body: yaml(for: summary)))
+        }
+        for memory in memories {
+            entries.append(entry(kind: .memory, uuid: memory.uuid, body: yaml(for: memory)))
         }
 
         AppLog.data.info("Exporting \(entries.count - 1, privacy: .public) records")
@@ -84,7 +89,8 @@ struct DatabaseExporter {
         spaces: Int,
         todos: Int,
         reminders: Int,
-        summaries: Int
+        summaries: Int,
+        memories: Int
     ) -> String {
         YAMLWriter.document([
             ("formatVersion", .scalar(String(ArchiveFormat.currentVersion))),
@@ -95,6 +101,7 @@ struct DatabaseExporter {
                 "todos": .scalar(String(todos)),
                 "reminders": .scalar(String(reminders)),
                 "summaries": .scalar(String(summaries)),
+                "memories": .scalar(String(memories)),
             ])),
         ])
     }
@@ -278,6 +285,24 @@ struct DatabaseExporter {
             "events": .list(fingerprint.events.map { .scalar($0) }),
         ])))
 
+        return YAMLWriter.document(pairs)
+    }
+
+    /// The assistant's memory.
+    ///
+    /// The text goes out verbatim as a block scalar rather than a line list:
+    /// the memory is a document the user edits in Settings, and an archive they
+    /// can read is worth more than one whose shape matches the parser.
+    private func yaml(for memory: AppMemory) -> String {
+        var pairs: [(String, YAMLValue)] = [
+            ("uuid", .scalar(memory.uuid.uuidString)),
+            ("text", .scalar(memory.text)),
+            ("updatedAt", .scalar(YAMLDateFormats.string(from: memory.updatedAt))),
+            ("compactedLineCount", .scalar(String(memory.compactedLineCount))),
+        ]
+        if let compactedAt = memory.compactedAt {
+            pairs.append(("compactedAt", .scalar(YAMLDateFormats.string(from: compactedAt))))
+        }
         return YAMLWriter.document(pairs)
     }
 }

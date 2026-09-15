@@ -40,6 +40,18 @@ extension SummaryFingerprint {
         ]
     }
 
+    /// The remembered facts, which are part of every prompt once memory is on.
+    ///
+    /// Kept apart from `user` rather than folded into it: the memory lives in
+    /// the store and changes on its own — a fact learned this morning has to
+    /// invalidate this afternoon's cached summary — while `UserInfo` only
+    /// changes when the user edits Settings. Turning memory off yields the
+    /// empty list, so it reads as a real change to the prompt and re-runs.
+    static func memory(_ text: String?) -> [String] {
+        guard let text, !text.isEmpty else { return [] }
+        return ["memory:\(text)"]
+    }
+
     static func weather(_ forecast: WeatherForecast?) -> [String] {
         guard let forecast else { return [] }
         let daily = forecast.daily

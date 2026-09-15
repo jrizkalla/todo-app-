@@ -160,6 +160,10 @@ struct DatabaseImporter {
             upsertSummary(record.uuid, record.value, report: &report)
         }
 
+        for record in parsed[.memory] ?? [] {
+            upsertMemory(record.value, report: &report)
+        }
+
         // Placement drives which list a to-do appears in, and it is derived from
         // relationships that only exist as of pass 3 — so it is recomputed here
         // rather than trusting the bucket the archive carried.
@@ -584,6 +588,33 @@ struct DatabaseImporter {
         report.createdSummaries += 1
     }
 
+    /// The assistant's memory, merged rather than replaced.
+    ///
+    /// Merged because memory is the one record here the user has authored: an
+    /// archive from another device holds facts this one never learned, and
+    /// taking only the incoming copy would throw away whatever was remembered
+    /// locally. De-duplication is `MemoryStore.remember`'s, so an import and a
+    /// sync converge on the same file rather than doubling every line.
+    ///
+    /// The archive's uuid is deliberately ignored: `AppMemory` is a singleton
+    /// keyed by a fixed id, and honoring a foreign one would leave the store
+    /// with two memories and no rule about which is read.
+    private func upsertMemory(_ value: YAMLValue, report: inout ImportReport) {
+        guard let text = value.value(forAnyKey: Key.Memory.text)?.stringValue else { return }
+        let incoming = text.split(separator: "\n").map(String.init)
+        guard !incoming.isEmpty else { return }
+
+        let store = MemoryStore(context: context)
+        let existed = store.fetch() != nil
+        let added = store.remember(incoming)
+
+        if !existed {
+            report.createdMemories += 1
+        } else if added > 0 {
+            report.updatedMemories += 1
+        }
+    }
+
     // MARK: Integrity
 
     /// Break any parent chain that loops back on itself.
@@ -635,6 +666,9 @@ struct DatabaseImporter {
             }
             for summary in (try? context.fetch(FetchDescriptor<SavedAISummary>())) ?? [] {
                 context.delete(summary)
+            }
+            for memory in (try? context.fetch(FetchDescriptor<AppMemory>())) ?? [] {
+                context.delete(memory)
             }
             try context.save()
         } catch {
@@ -796,6 +830,15 @@ struct DatabaseImporter {
 
             static let all = [uuid, generatedOn, quickSummary, detailedSummary, fingerprint]
         }
+
+        enum Memory {
+            static let text = ["text", "memory", "contents", "body"]
+            static let updatedAt = ["updatedAt", "updated", "modifiedAt"]
+            static let compactedAt = ["compactedAt", "compacted"]
+            static let compactedLineCount = ["compactedLineCount", "compactedLines"]
+
+            static let all = [uuid, text, updatedAt, compactedAt, compactedLineCount]
+        }
     }
 
     /// Spellings that raise no "unrecognized field" warning, derived from the
@@ -809,6 +852,7 @@ struct DatabaseImporter {
             .todo: normalize(Key.Todo.all),
             .reminder: normalize(Key.Reminder.all),
             .summary: normalize(Key.Summary.all),
+            .memory: normalize(Key.Memory.all),
         ]
     }()
 

@@ -37,6 +37,7 @@ enum ArchiveFormat {
         case todo
         case reminder
         case summary
+        case memory
 
         var directory: String {
             switch self {
@@ -44,6 +45,7 @@ enum ArchiveFormat {
             case .todo: "todos"
             case .reminder: "reminders"
             case .summary: "summaries"
+            case .memory: "memory"
             }
         }
 
@@ -55,6 +57,7 @@ enum ArchiveFormat {
             case .todo: ["todos", "todo", "tasks", "items"]
             case .reminder: ["reminders", "reminder", "alerts"]
             case .summary: ["summaries", "summary", "aisummaries"]
+            case .memory: ["memory", "memories", "appmemory"]
             }
         }
 
@@ -91,6 +94,8 @@ struct ImportReport {
     var createdReminders = 0
     var updatedReminders = 0
     var createdSummaries = 0
+    var createdMemories = 0
+    var updatedMemories = 0
 
     /// Files that could not be read as a record at all.
     var skippedFiles: [String] = []
@@ -105,11 +110,11 @@ struct ImportReport {
     var archiveVersion: Int?
 
     var totalCreated: Int {
-        createdSpaces + createdTodos + createdReminders + createdSummaries
+        createdSpaces + createdTodos + createdReminders + createdSummaries + createdMemories
     }
 
     var totalUpdated: Int {
-        updatedSpaces + updatedTodos + updatedReminders
+        updatedSpaces + updatedTodos + updatedReminders + updatedMemories
     }
 
     var hasProblems: Bool {
@@ -142,6 +147,9 @@ struct ImportReport {
         }
         if createdSummaries > 0 {
             lines.append("Summaries: \(createdSummaries) added")
+        }
+        if createdMemories + updatedMemories > 0 {
+            lines.append("Memory: \(createdMemories) added, \(updatedMemories) updated")
         }
 
         if !skippedFiles.isEmpty {

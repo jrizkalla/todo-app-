@@ -18,6 +18,12 @@ struct AISummaryView : View {
     /// Shared with the calendar so both read the same loaded range.
     @State private var eventStore = CalendarEventStore.shared
     @State private var showAIDebugView = false
+    /// Bumped whenever a *newly generated* summary replaces the one on screen.
+    ///
+    /// What the chat clears its thread on. Deliberately not bumped when a saved
+    /// summary is restored unchanged: that is the same day being described by
+    /// the same text, so a conversation about it is still valid.
+    @State private var summaryGeneration = 0
     
     @Query private var savedSummaries: [SavedAISummary]
 
@@ -121,6 +127,15 @@ struct AISummaryView : View {
                     Text("Summarizing your day...")
                         .font(.subheadline)
                 }
+            }
+
+            // Directly under the text it asks about, sharing its session.
+            if summary != nil {
+                Divider().overlay(.white.opacity(0.25))
+                DayChatView(
+                    service: aiSummaryService,
+                    summaryGeneration: summaryGeneration
+                )
             }
         }
         .sheet(isPresented: $showAIDebugView) {
@@ -229,9 +244,15 @@ struct AISummaryView : View {
         let filterPast: (Todo) -> Bool = { todo in
             todo.endDate.map { now <= $0 } ?? true
         }
+        let memoryStore = MemoryStore(context: context)
+
         aiSummaryService.userInfo = settings.userInfo
         aiSummaryService.weather = weatherService.weather
         aiSummaryService.visibleCalendars = settings.visibleCalendars
+        // Read before generating, so the facts learned earlier today are in
+        // front of the model for the refinements that follow.
+        aiSummaryService.memory = settings.memoryEnabled ? memoryStore.promptText() : nil
+        aiSummaryService.isRemembering = settings.memoryEnabled
         aiSummaryService.reminders = .init(
             scheduled: TodoQueries.today(todos).filter(filterPast).map { $0.toStruct() },
             overdue: TodoQueries.overdue(todos).filter(filterPast).map { $0.toStruct() }
@@ -246,11 +267,63 @@ struct AISummaryView : View {
             return
         }
 
-        guard let (generated, fingerprint) = await aiSummaryService.generateSummary() else { return }
-        summary = generated
-        TodoStore(context: context).updateAISummary(
-            .init(summary: generated, fingerprint: fingerprint)
+        // The good model writes the day's first summary; the on-device one
+        // refines it as the day moves. `saved` is today's by construction, so a
+        // cloud pass yesterday does not count against today.
+        let model = SummaryModel.forSummary(
+            hasCloudSummaryToday: saved?.generatedBy == .cloud
         )
+
+        guard let result = await aiSummaryService.generateSummary(using: model) else { return }
+        summary = result.summary
+        summaryGeneration += 1
+
+        var fingerprint = result.fingerprint
+        if settings.memoryEnabled, !result.facts.isEmpty {
+            memoryStore.remember(result.facts)
+
+            // The saved fingerprint has to describe the memory as the *next*
+            // refresh will read it, not as this prompt saw it. Leaving it at
+            // the pre-learning value guarantees a mismatch on the very next
+            // pass, which regenerates a summary that would say the same thing —
+            // and can learn again, so the cycle does not settle.
+            //
+            // Safe because a fact the model just wrote down was, by
+            // construction, already in front of it when it wrote this summary.
+            aiSummaryService.memory = memoryStore.promptText()
+            fingerprint.user = SummaryFingerprint.user(settings.userInfo)
+                + SummaryFingerprint.memory(aiSummaryService.memory)
+        }
+
+        TodoStore(context: context).updateAISummary(
+            .init(
+                summary: result.summary,
+                fingerprint: fingerprint,
+                // What actually ran, not what was asked for: a cloud call that
+                // fell back on-device must not count as today's cloud pass, or
+                // a transient outage would cost the good summary for the day.
+                generatedByRaw: (aiSummaryService.lastUsedModel ?? model).rawValue
+            )
+        )
+
+        await compactMemoryIfNeeded(memoryStore)
+    }
+
+    /// Hand the memory file to the cloud model when it has grown enough.
+    ///
+    /// After the summary rather than before it: compaction is housekeeping, and
+    /// the user is waiting on the text at the top of the screen. It also runs
+    /// at most once per generation, which is already rate-limited by the
+    /// fingerprint.
+    @MainActor
+    private func compactMemoryIfNeeded(_ store: MemoryStore) async {
+        guard settings.memoryEnabled,
+              let memory = store.fetch(),
+              memory.needsCompaction
+        else { return }
+
+        guard let compacted = await aiSummaryService.compactMemory(memory.text) else { return }
+        store.recordCompaction(text: compacted)
     }
 }
 

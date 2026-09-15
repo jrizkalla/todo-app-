@@ -8,6 +8,7 @@
 import CoreLocation
 import FoundationModels
 import Combine
+import OSLog
 
 struct RelevantTodoList : PromptRepresentable {
     let scheduled: [TodoStruct]
@@ -85,22 +86,41 @@ final class AISummaryService: ObservableObject {
     var userInfo: UserInfo
     /// `nil` means every calendar, matching `CalendarEventStore.loadEvents`.
     var visibleCalendars: [String]?
-    
-    var session: LanguageModelSession!
-    /// The instructions `session` was built with.
+
+    /// What the assistant has learned about the user, or `nil` when memory is
+    /// off or empty. Fed to every model, cloud and local alike.
+    var memory: String?
+
+    /// Whether the model is asked to write new facts down.
     ///
-    /// A session is bound to its instructions, so it has to be rebuilt when
-    /// they change — otherwise crossing into a new time of day would keep
-    /// prompting with the previous period's instructions, and the summary
-    /// would never actually reflect the fingerprint that triggered it.
-    private var sessionInstructions: String?
+    /// Separate from `memory` being non-nil, because the two are genuinely
+    /// independent: the first day with memory on has nothing to recall but
+    /// everything to learn. Off means the instructions never mention memory at
+    /// all, rather than asking for facts the caller then throws away — which
+    /// spends tokens on every summary and invites a stray tag in the output.
+    var isRemembering = true
+
+    /// The session the most recent summary was written in.
+    ///
+    /// Rebuilt for every summary rather than carried forward — a session is
+    /// bound to its instructions and its model, and both change as the day
+    /// moves from the morning brief on the cloud to on-device refinements. It
+    /// is kept afterwards only so the chat can continue it: `ask` answers
+    /// follow-ups in the transcript that produced the text on screen.
+    var session: LanguageModelSession!
+
+    /// The model the last summary was generated with.
+    ///
+    /// The view saves this alongside the summary so tomorrow's first glance can
+    /// tell "already had its cloud pass today" from "has not run yet".
+    private(set) var lastUsedModel: SummaryModel?
 
     init(userInfo: UserInfo) {
         self.weather = nil
         self.reminders = nil
         self.userInfo = userInfo
     }
-    
+
     /// The upcoming events the prompt is built from.
     ///
     /// Loaded through here rather than inline so the fingerprint and the prompt
@@ -142,33 +162,35 @@ final class AISummaryService: ObservableObject {
     func fingerprint(now: Date = Date()) async -> SummaryFingerprint {
         let events = await upcomingEvents(now: now)
         return SummaryFingerprint(
-            instructions: Self.getInstructions(for: phase(now: now, events: events)),
-            user: SummaryFingerprint.user(userInfo),
+            instructions: Self.getInstructions(
+                for: phase(now: now, events: events),
+                remembering: isRemembering
+            ),
+            user: SummaryFingerprint.user(userInfo) + SummaryFingerprint.memory(memory),
             weather: SummaryFingerprint.weather(weather),
             todos: SummaryFingerprint.todos(reminders) + SummaryFingerprint.tomorrow(tomorrow),
             events: SummaryFingerprint.events(events)
         )
     }
 
-    /// The generated summary, paired with the fingerprint of the prompt that
-    /// produced it so the caller can save both together.
-    func generateSummary() async -> (summary: AISummary, fingerprint: SummaryFingerprint)? {
-        guard SystemLanguageModel.default.isAvailable else {
-            print("model isn't available")
-            return nil
-        }
-
-        let now = Date()
-        let events = await upcomingEvents(now: now)
-        let instructions = Self.getInstructions(for: phase(now: now, events: events))
-
-        let prompt = Prompt {
-
+    /// Everything the model is told about the day, short of the instructions.
+    ///
+    /// Built here rather than inline in `generateSummary` because the chat asks
+    /// the same question of the same day: a follow-up about what is left has to
+    /// be answered from the same facts the summary was written from, or the two
+    /// will contradict each other on screen.
+    func dayPrompt(now: Date, events: [CalendarEvent]) -> Prompt {
+        Prompt {
             "Current date/time: \(now.description(with: .current))"
 
             "Information about the user:"
             "name: \(userInfo.name ?? "none")"
             "User provided description: \(userInfo.generalInfomation ?? "none")"
+
+            if let memory, !memory.isEmpty {
+                "What you remember about this user from previous days:"
+                memory
+            }
 
             if let weather {
                 weather
@@ -185,32 +207,143 @@ final class AISummaryService: ObservableObject {
                 tomorrow
             }
         }
+    }
+
+    /// The generated summary, the fingerprint of the prompt that produced it,
+    /// and anything the model asked to remember.
+    ///
+    /// - Parameter model: which of Apple's models to run against. The caller
+    ///   decides, because only it knows whether today has had its cloud pass;
+    ///   an unavailable choice falls back rather than failing.
+    func generateSummary(
+        using model: SummaryModel
+    ) async -> (summary: AISummary, fingerprint: SummaryFingerprint, facts: [String])? {
+        guard let model = model.resolved else {
+            AppLog.data.warning("No language model is available")
+            return nil
+        }
+
+        let now = Date()
+        let events = await upcomingEvents(now: now)
+        let instructions = Self.getInstructions(
+            for: phase(now: now, events: events),
+            remembering: isRemembering
+        )
+        let prompt = dayPrompt(now: now, events: events)
 
         // Built from the same values the prompt just consumed rather than by
         // re-reading them, so the two can never describe different days.
         let fingerprint = SummaryFingerprint(
             instructions: instructions,
-            user: SummaryFingerprint.user(userInfo),
+            user: SummaryFingerprint.user(userInfo) + SummaryFingerprint.memory(memory),
             weather: SummaryFingerprint.weather(weather),
             todos: SummaryFingerprint.todos(reminders) + SummaryFingerprint.tomorrow(tomorrow),
             events: SummaryFingerprint.events(events)
         )
 
-        if session == nil || sessionInstructions != instructions {
-            session = LanguageModelSession(instructions: instructions)
-            sessionInstructions = instructions
+        // Cloud first when asked for, but on-device if that fails: availability
+        // is checked before the request and the request can still fail after
+        // it — the entitlement, the quota, or the network. A summary written
+        // on-device is worth far more than an empty panel.
+        var attempts = [model]
+        if model == .cloud, SummaryModel.local.isAvailable { attempts.append(.local) }
+
+        for attempt in attempts {
+            // A fresh session per summary, always — not reused when the model
+            // and instructions happen to match. The transcript by then holds
+            // the previous summary and every chat turn since, so reusing it
+            // would grow the context all day and let a passing question steer
+            // the next summary. The day's facts are in the prompt, so there is
+            // nothing in that history the new summary needs.
+            //
+            // The chat is the opposite case and deliberately does reuse this
+            // session: see `ask`.
+            session = attempt.makeSession(instructions: instructions)
+
+            do {
+                let response = try await session.respond(to: prompt)
+                // Memory is pulled out before the JSON is parsed: the model is
+                // asked to emit the facts outside the object, so leaving them
+                // in would make the whole response fail to decode.
+                let (facts, body) = MemoryStore.extract(from: response.content)
+                let responseData = String(body.trimmingPrefix(/\s*```json\s*/))
+                    .trimmingSuffix("```")
+                guard let summary = try? JSONDecoder().decode(
+                    AISummary.self,
+                    from: Data(responseData.utf8)
+                ) else { return nil }
+                lastUsedModel = attempt
+                return (summary, fingerprint, facts)
+            } catch {
+                AppLog.data.error(
+                    "Summary generation failed on \(attempt.rawValue, privacy: .public): \(error, privacy: .public)"
+                )
+                // The session is bound to the model that just failed. Cleared
+                // rather than left in place so that if every attempt fails the
+                // chat stays closed, instead of offering to continue a
+                // conversation about a summary that was never written.
+                session = nil
+            }
         }
+        return nil
+    }
+
+    /// Ask a follow-up question in the session the summary was written in.
+    ///
+    /// The same session, deliberately: it already holds the day's prompt and
+    /// the summary it produced, so "why is that urgent?" resolves against the
+    /// text on screen rather than against a cold model that would have to be
+    /// re-fed the whole day and might describe it differently.
+    ///
+    /// Returns the reply with any memory block stripped, plus the facts it
+    /// held, so the caller can save them the same way the summary's are saved.
+    ///
+    /// - Returns: `nil` when no summary has been generated yet, which is also
+    ///   when the chat is not offered.
+    func ask(_ question: String) async throws -> (reply: String, facts: [String])? {
+        guard let session else { return nil }
+        let response = try await session.respond(to: Prompt {
+            Self.chatInstructions
+            "The user asks: \(question)"
+        })
+        let (facts, cleaned) = MemoryStore.extract(from: response.content)
+        return (cleaned, facts)
+    }
+
+    /// Whether a follow-up can be asked right now.
+    ///
+    /// False until the first summary lands, since the chat's whole premise is
+    /// continuing that conversation.
+    var canChat: Bool { session != nil }
+
+    /// Reduce a grown memory file back to its durable facts.
+    ///
+    /// Always the cloud model when it can be reached: this is the one call that
+    /// reads the whole accumulated history at once and decides what is worth
+    /// keeping, and a bad call here is not a summary the user can ignore — it
+    /// permanently drops what the assistant knew.
+    ///
+    /// Returns `nil` on any failure, and the caller leaves the file alone. An
+    /// over-long memory is a much smaller problem than an emptied one.
+    func compactMemory(_ text: String) async -> String? {
+        guard let model = SummaryModel.cloud.resolved else { return nil }
+
+        let session = model.makeSession(instructions: Self.memoryCompactionInstructions)
         do {
-            let response = try await session.respond(to: prompt)
-            let responseData = String(response.content.trimmingPrefix(/\s*```json\s*/)).trimmingSuffix("```")
-            let decoder = JSONDecoder()
-            guard let summary = try? decoder.decode(
-                AISummary.self,
-                from: responseData.data(using: .utf8)!
-            ) else { return nil }
-            return (summary, fingerprint)
+            let response = try await session.respond(to: Prompt {
+                "Here is the current memory file, one fact per line:"
+                text
+            })
+            let compacted = String(response.content.trimmingPrefix(/\s*```(\w+)?\s*/))
+                .trimmingSuffix("```")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            // A compaction that returns nothing is a failure, not an
+            // instruction to forget everything.
+            guard !compacted.isEmpty else { return nil }
+            return compacted
         } catch {
-            print(error)
+            AppLog.data.error("Memory compaction failed: \(error, privacy: .public)")
             return nil
         }
     }
@@ -219,14 +352,15 @@ final class AISummaryService: ObservableObject {
 
 extension AISummaryService {
 
-    static func getInstructions(for phase: SummaryPhase) -> String {
+    static func getInstructions(for phase: SummaryPhase, remembering: Bool = true) -> String {
         let rest = switch phase {
         case .morning: morningInstructions
         case .midday: middayInstructions
         case .evening: eveningInstructions
         case .night: nightInstructions
         }
-        return commonInstructions.appending(rest)
+        let base = commonInstructions.appending(rest)
+        return remembering ? base.appending("\n\n").appending(memoryInstructions) : base
     }
 
     static let commonInstructions = """
@@ -288,6 +422,59 @@ extension AISummaryService {
     Acknowledge that the day is done, briefly and without overdoing the praise. Then talk about tomorrow: how busy it looks, the first thing on the calendar and when it starts, anything worth preparing tonight, and the weather if it will affect them.
 
     If tomorrow is clear as well, say so and leave it there rather than manufacturing things for them to think about.
+    """
+
+    /// Appended to every set of instructions when memory is on.
+    ///
+    /// The rule that matters is the last one: the point of a memory is to hold
+    /// what is still true next month, and a model left to its own judgment will
+    /// happily write down today's to-do list. Everything above it exists to
+    /// make "durable" concrete enough to act on.
+    static let memoryInstructions = """
+    You keep a memory of things worth knowing about this user across days. Anything you are given under "What you remember about this user" came from you on a previous day — treat it as established and do not write it down again.
+
+    After the JSON, if and only if you have learned something durable, add a memory block:
+
+    \(MemoryStore.openTag)
+    One fact per line, written as a short statement.
+    \(MemoryStore.closeTag)
+
+    Worth remembering: standing commitments and their rhythms, how they work and when they are productive, recurring people and places, stated preferences about how they want to be spoken to, constraints like a commute or a standing conflict.
+
+    Never remember: individual tasks or events, anything about today specifically, anything already in your memory, or anything you inferred from a single occurrence. If a day gives you nothing durable, write no memory block at all — that is the normal case, and an empty block is worse than none.
+    """
+
+    /// Prefixed to each chat turn.
+    ///
+    /// Sent with every question rather than once at the start because the
+    /// session's standing instructions are the summary's, and those demand
+    /// JSON. Without this the model answers "what should I do first?" with a
+    /// `quickSummary` object. Repeating it per turn is what keeps the answer
+    /// in prose no matter how long the conversation runs.
+    static let chatInstructions = """
+    The user is now asking a follow-up question about the day you just summarized. Answer it directly, in plain prose — not JSON, and not the bulleted summary format you used above.
+
+    Keep it conversational and short: a sentence or two unless they have asked for something that genuinely needs more. Answer only from the information you were given about their day. If they ask something you do not have the information for, say so plainly rather than guessing.
+
+    If the question reveals something durable about them, record it with a memory block exactly as described in your instructions, after your answer.
+    """
+
+    /// Instructions for the periodic cloud pass over the memory file.
+    ///
+    /// Framed as consolidation rather than summarization: the file is a set of
+    /// facts, and what it needs is the duplicates merged and the stale ones
+    /// dropped, not a paragraph describing what it used to say.
+    static let memoryCompactionInstructions = """
+    You are consolidating an assistant's memory file about one user. It has grown by accretion and needs tidying.
+
+    Return the cleaned file and nothing else: no preamble, no explanation, no code fences. One fact per line, in the same short declarative style as the input.
+
+    Rules:
+    - Merge facts that say the same thing into the single clearest statement.
+    - Where two lines conflict, keep the more specific one; if one is plainly an update of the other, keep the newer-sounding one.
+    - Drop anything that reads as a one-off task, a single day's event, or a detail that has no bearing on future days.
+    - Group related facts near each other so the file stays readable.
+    - Preserve every distinct durable fact. This is consolidation, not summarization — losing something the user told you is the one failure that matters. When in doubt, keep the line.
     """
 }
 
