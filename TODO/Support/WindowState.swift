@@ -109,3 +109,48 @@ extension FocusedValues {
         set { self[FocusedWindowID.self] = newValue }
     }
 }
+
+/// Whether the caret is in a text field.
+///
+/// Only Select All asks, and it exists because a menu item's `keyboardShortcut`
+/// outranks a focused `TextField`: with Cmd+A in the menu, typing a title and
+/// pressing it selected every *row* instead of the text the user was looking
+/// at. Declining the command once it arrives does not help — the menu has
+/// already taken the keystroke by then — so the item asks this first and
+/// forwards the key to the field when the answer is yes.
+///
+/// Asked of AppKit rather than published by the views, which is what makes it
+/// right for *every* field rather than the list's two. SwiftUI's own channels
+/// could not carry it: a `focusedSceneValue` propagates only while the view
+/// publishing it is the focused subtree, and the moment this has to be true —
+/// a text field holding the keyboard — is exactly the moment the list around it
+/// is not. The window's first responder is the same fact without the
+/// indirection, and the detail editor, the space editor and the settings sheet
+/// get the behaviour without each having to remember to report in.
+@MainActor
+enum TextEditingPresence {
+    /// True when the focused window's first responder takes text input.
+    ///
+    /// Asked as "does this responder accept typing" rather than "is it an
+    /// `NSTextView`", because a SwiftUI `TextField` on macOS is not one: it is
+    /// drawn by a hosting view, and which class ends up first responder while it
+    /// has the caret is a SwiftUI implementation detail that has changed between
+    /// releases. `NSTextInputClient` is the protocol anything editable must
+    /// conform to in order to receive keystrokes at all, so it identifies a
+    /// field the user is typing in without depending on how it was built — a row
+    /// title, the search box, the detail editor's notes, all the same.
+    ///
+    /// `mainWindow` backs up `keyWindow` because the latter is nil whenever the
+    /// app is not active — which is every time the menu is driven from outside
+    /// it, scripting and accessibility included — and answering "no field has
+    /// the caret" there would send Cmd+A to the rows behind a title the user was
+    /// editing.
+    static var isEditing: Bool {
+        #if os(macOS)
+        let window = NSApp.keyWindow ?? NSApp.mainWindow
+        return window?.firstResponder is NSTextInputClient
+        #else
+        return false
+        #endif
+    }
+}

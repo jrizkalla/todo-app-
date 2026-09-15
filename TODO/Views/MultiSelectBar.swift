@@ -241,11 +241,15 @@ extension View {
     /// to title themselves, and what they report back is a date or a
     /// destination — which is a value, not something bound to one row — so
     /// nothing about them needed a bulk variant.
+    /// - Parameter schedulingAcceptsTypedDate: whether the scheduling panel
+    ///   should offer its typed-date field, which it earns when the panel was
+    ///   raised from the keyboard. See `SchedulePickerView.acceptsTypedDate`.
     func multiSelectPanels(
         isScheduling: Binding<Bool>,
         isMoving: Binding<Bool>,
         isConfirmingDelete: Binding<Bool>,
         deletePrompt: String,
+        schedulingAcceptsTypedDate: Bool = false,
         onPickDate: @escaping (Date?, Bool) -> Void,
         onPickWeek: @escaping (WeekSchedule) -> Void,
         onPickDestination: @escaping (MoveDestinationView.Destination) -> Void,
@@ -257,6 +261,7 @@ extension View {
                 isMoving: isMoving,
                 isConfirmingDelete: isConfirmingDelete,
                 deletePrompt: deletePrompt,
+                schedulingAcceptsTypedDate: schedulingAcceptsTypedDate,
                 onPickDate: onPickDate,
                 onPickWeek: onPickWeek,
                 onPickDestination: onPickDestination,
@@ -271,6 +276,7 @@ private struct MultiSelectPanels: ViewModifier {
     @Binding var isMoving: Bool
     @Binding var isConfirmingDelete: Bool
     let deletePrompt: String
+    let schedulingAcceptsTypedDate: Bool
     let onPickDate: (Date?, Bool) -> Void
     let onPickWeek: (WeekSchedule) -> Void
     let onPickDestination: (MoveDestinationView.Destination) -> Void
@@ -288,7 +294,8 @@ private struct MultiSelectPanels: ViewModifier {
                         onPickWeek(week)
                         isScheduling = false
                     },
-                    onDismiss: { isScheduling = false }
+                    onDismiss: { isScheduling = false },
+                    acceptsTypedDate: schedulingAcceptsTypedDate
                 )
                 .presentationDetents([.medium, .large])
             }

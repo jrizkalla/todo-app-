@@ -1,6 +1,12 @@
 import SwiftUI
 import WidgetKit
 
+// The Lock Screen accessory families exist only where there is a Lock Screen.
+// macOS builds the same widget bundle and has no `accessoryInline`, so the
+// whole widget — not merely the family list — is absent there rather than
+// present and unplaceable.
+#if !os(macOS)
+
 /// The one-line slot above the lock screen clock: what's next.
 ///
 /// `accessoryInline` is the narrowest surface the system offers — a single
@@ -64,4 +70,6 @@ struct InlineNextWidgetView: View {
     GlanceEntry(date: .now, done: 4, total: 4, next: nil, isUnavailable: false)
     GlanceEntry(date: .now, done: 0, total: 0, next: nil, isUnavailable: false)
 }
+#endif
+
 #endif

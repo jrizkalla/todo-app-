@@ -100,6 +100,8 @@ enum KeyboardCommand: String, CaseIterable {
     case duplicate
     /// Cmd+Delete — delete the selected to-do.
     case delete
+    /// Cmd+A — select every row in the list.
+    case selectAll
 
     var notificationName: Notification.Name {
         Notification.Name("keyboardCommand.\(rawValue)")
@@ -109,14 +111,15 @@ enum KeyboardCommand: String, CaseIterable {
     /// to-do.
     ///
     /// Everything else here needs something to act *on*, so it is delivered
-    /// only to the surface holding the selection. These two need only a screen
-    /// to act *in*: Cmd+N means "new to-do in this list" and Cmd+F means
-    /// "search this list", and both are pressed most often on a list just
-    /// opened, where nothing is selected yet. Gating them on a selection sent
-    /// them nowhere at exactly that moment.
+    /// only to the surface holding the selection. These need only a screen to
+    /// act *in*: Cmd+N means "new to-do in this list", Cmd+F means "search this
+    /// list", and Cmd+A means "all the rows in this list" — none of them are
+    /// about a row that is already picked, and all are pressed most often on a
+    /// list just opened, where nothing is selected yet. Gating them on a
+    /// selection sent them nowhere at exactly that moment.
     var actsOnView: Bool {
         switch self {
-        case .create, .search: true
+        case .create, .search, .selectAll: true
         case .schedule, .toggleDone, .showDetail, .move, .duplicate, .delete: false
         }
     }
@@ -132,6 +135,7 @@ enum KeyboardCommand: String, CaseIterable {
         case .move: "Move to…"
         case .duplicate: "Duplicate"
         case .delete: "Delete"
+        case .selectAll: "Select All"
         }
     }
 }

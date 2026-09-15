@@ -7,8 +7,11 @@ struct TodayWidgetBundle: WidgetBundle {
         // The home screen list, and the same day measured rather than listed.
         TodayWidget()
         ProgressWidget()
-        // The lock screen's one-line slot, above the clock.
+        // The lock screen's one-line slot, above the clock. Absent on macOS,
+        // which has no Lock Screen to put it on — see `InlineNextWidget`.
+        #if !os(macOS)
         InlineNextWidget()
+        #endif
         // Control Center, the Lock Screen corners, and the Action button — all
         // three come from one `ControlWidget`.
         AddTodoControl()

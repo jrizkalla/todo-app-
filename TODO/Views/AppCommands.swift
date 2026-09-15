@@ -82,6 +82,53 @@ struct AppCommands: Commands {
             command(.search, key: "f")
         }
 
+        // Select All *replaces* AppKit's, rather than being added beside it.
+        //
+        // The Edit menu already has a Select All — AppKit puts one in the
+        // pasteboard group, bound to Cmd+A and aimed at the responder chain.
+        // Adding a second item with the same key left the menu with two
+        // identically named rows and the system's one winning the keystroke, so
+        // Cmd+A went to a responder that knows nothing about the app's rows and
+        // appeared to do nothing at all. Only by replacing the group can this
+        // one have the key.
+        //
+        // Replacing costs re-declaring the group's other items, which are
+        // AppKit's own Cut/Copy/Paste/Delete. They are re-sent here as the plain
+        // selectors the responder chain already implements, so text fields keep
+        // the editing menu they had.
+        //
+        // macOS only, as the whole group is: there is no menu bar on iOS, and
+        // no `NSText` to send these to either.
+        #if os(macOS)
+        CommandGroup(replacing: .pasteboard) {
+            Button("Cut") { sendToResponder(#selector(NSText.cut(_:))) }
+                .keyboardShortcut("x", modifiers: .command)
+            Button("Copy") { sendToResponder(#selector(NSText.copy(_:))) }
+                .keyboardShortcut("c", modifiers: .command)
+            Button("Paste") { sendToResponder(#selector(NSText.paste(_:))) }
+                .keyboardShortcut("v", modifiers: .command)
+            Button("Delete") { sendToResponder(#selector(NSText.delete(_:))) }
+
+            Divider()
+
+            // Hands the key straight back to the caret when it is in a title or
+            // the search field, so Cmd+A there still selects the text rather
+            // than the rows behind it. A menu shortcut outranks a focused
+            // field, so this item is the only thing that can make that choice —
+            // and it forwards rather than disabling itself, which would grey
+            // out a Select All that the field can perfectly well do. See
+            // `TextEditingPresence`.
+            Button(KeyboardCommand.selectAll.title) {
+                if TextEditingPresence.isEditing {
+                    sendToResponder(#selector(NSText.selectAll(_:)))
+                } else {
+                    post(KeyboardCommand.selectAll.notificationName)
+                }
+            }
+            .keyboardShortcut("a", modifiers: .command)
+        }
+        #endif
+
         CommandGroup(after: .toolbar) {
             Button("Toggle Calendar View") {
                 post(.toggleCalendarRequested)
@@ -96,6 +143,19 @@ struct AppCommands: Commands {
         }
         .keyboardShortcut(key, modifiers: .command)
     }
+
+    #if os(macOS)
+    /// Hand an action to whatever holds the keyboard, the way a stock menu item
+    /// does.
+    ///
+    /// The re-declared Cut/Copy/Paste above are menu items and so have to send
+    /// their own selectors; AppKit was doing this for them before the group was
+    /// replaced. A nil target means "start at the first responder and walk",
+    /// which is exactly the dispatch the originals used.
+    private func sendToResponder(_ selector: Selector) {
+        NSApp.sendAction(selector, to: nil, from: nil)
+    }
+    #endif
 
     /// Send a command to the window the user is in.
     ///

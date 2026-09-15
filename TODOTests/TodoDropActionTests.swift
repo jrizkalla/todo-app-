@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import SwiftUI
 import SwiftData
 @testable import TODO
 
@@ -487,5 +488,146 @@ struct TodoDropActionTests {
     @Test func aTransferForAMissingTodoResolvesToNothing() throws {
         let context = try makeContext()
         #expect(TodoQueries.todo(uuid: UUID(), in: context) == nil)
+    }
+}
+
+/// How large the preview under the cursor draws while a to-do is in flight.
+///
+/// The preview used to shrink to fit its own title, so a row appeared to
+/// collapse the instant it lifted. It now matches the row it came from on both
+/// axes, and these pin down the edges of that rule.
+struct DragPreviewSizeTests {
+
+    /// The ordinary case: the preview is a fixed fraction of the row on each
+    /// axis, so the lift reads as that row rising — shrunk just enough to look
+    /// picked up rather than as a slab sitting on top of the list.
+    @Test func aMeasuredRowLendsItsSizeToThePreview() {
+        let size = DragPreviewSize.forRow(measuring: CGSize(width: 320, height: 50))
+        #expect(size.width == 320 * 0.9)
+        #expect(size.height == 50 * 0.8)
+    }
+
+    /// The shrink is the point of those fractions: the preview is smaller than
+    /// the row on both axes, and never larger.
+    @Test func thePreviewShrinksRatherThanMatchingExactly() throws {
+        let row = CGSize(width: 320, height: 50)
+        let size = DragPreviewSize.forRow(measuring: row)
+
+        #expect(try #require(size.width) < row.width)
+        #expect(try #require(size.height) < row.height)
+    }
+
+    /// Before the row has been measured the preview sizes to its own content,
+    /// which is what it always did. Returning a size here would be guessing.
+    @Test func anUnmeasuredRowLeavesThePreviewToItsOwnContent() {
+        let size = DragPreviewSize.forRow(measuring: nil)
+        #expect(size.width == nil)
+        #expect(size.height == nil)
+    }
+
+    /// The first layout pass reports zero before the geometry arrives. Matching
+    /// it would draw a preview nobody can see, so each axis falls back to
+    /// wrapping its content instead.
+    @Test func aRowMeasuredAtZeroDoesNotCollapseThePreview() {
+        let zero = DragPreviewSize.forRow(measuring: .zero)
+        #expect(zero.width == nil)
+        #expect(zero.height == nil)
+
+        let negative = DragPreviewSize.forRow(measuring: CGSize(width: -10, height: -4))
+        #expect(negative.width == nil)
+        #expect(negative.height == nil)
+    }
+
+    /// The axes are resolved independently, so a pass that reports a real width
+    /// alongside a zero height still gets to use the width it does have.
+    @Test func oneUsableAxisSurvivesTheOtherBeingUnmeasured() {
+        let noHeight = DragPreviewSize.forRow(measuring: CGSize(width: 320, height: 0))
+        #expect(noHeight.width == 320 * 0.9)
+        #expect(noHeight.height == nil)
+
+        let noWidth = DragPreviewSize.forRow(measuring: CGSize(width: 0, height: 50))
+        #expect(noWidth.width == nil)
+        #expect(noWidth.height == 50 * 0.8)
+    }
+
+    /// A tall row — a to-do whose title wraps onto a second line — scales from
+    /// its real height rather than from a single line's worth.
+    @Test func aTallRowLendsItsFullHeight() {
+        let size = DragPreviewSize.forRow(measuring: CGSize(width: 320, height: 100))
+        #expect(size.height == 80)
+    }
+}
+
+/// What the drag preview actually lays out to.
+///
+/// The rules above decide what to *ask* for; these lay the real view out and
+/// measure what comes back, which is what catches the preview's own padding or
+/// background quietly pushing it past the row it is meant to match.
+@MainActor
+struct TodoDragPreviewLayoutTests {
+
+    /// Lay the preview out for a row of `rowSize` and report the size it takes.
+    private func measure(_ rowSize: CGSize?, title: String = "Buy milk") -> CGSize {
+        let todo = Todo(title: title)
+        let renderer = ImageRenderer(
+            content: TodoDragPreview(todo: todo, rowSize: rowSize)
+        )
+        // `ImageRenderer` lays the content out at its ideal size, which is
+        // exactly the question being asked here.
+        #if os(macOS)
+        return renderer.nsImage?.size ?? .zero
+        #else
+        return renderer.uiImage?.size ?? .zero
+        #endif
+    }
+
+    /// The whole point: the preview is sized from the row it lifted from,
+    /// shrunk by the standard fractions, so it reads as that row picked up.
+    @Test func thePreviewIsSizedFromTheRowItLiftedFrom() {
+        let row = CGSize(width: 320, height: 50)
+        let rendered = measure(row)
+
+        #expect(abs(rendered.width - row.width * DragPreviewSize.widthFraction) < 1)
+        #expect(abs(rendered.height - row.height * DragPreviewSize.heightFraction) < 1)
+    }
+
+    /// A two-line row is taller, and the preview grows with it rather than
+    /// staying at one line's worth.
+    @Test func aTallRowProducesATallPreview() {
+        let short = measure(CGSize(width: 320, height: 50))
+        let tall = measure(CGSize(width: 320, height: 100))
+
+        #expect(abs(tall.height - 100 * DragPreviewSize.heightFraction) < 1)
+        #expect(tall.height > short.height)
+    }
+
+    /// The preview's own vertical padding gives way to the measured height:
+    /// a short row must not be padded into something taller than itself.
+    @Test func thePreviewDoesNotOutgrowAShortRow() {
+        let row = CGSize(width: 320, height: 30)
+        let rendered = measure(row)
+
+        #expect(rendered.height < row.height)
+        #expect(abs(rendered.height - row.height * DragPreviewSize.heightFraction) < 1)
+    }
+
+    /// Unmeasured, the preview falls back to wrapping its own content — it
+    /// still draws something, rather than collapsing to nothing.
+    @Test func anUnmeasuredPreviewStillDrawsItself() {
+        let rendered = measure(nil)
+        #expect(rendered.width > 0)
+        #expect(rendered.height > 0)
+    }
+
+    /// A long title does not stretch the preview past the row: the width is
+    /// set by the row, and the title truncates inside it.
+    @Test func aLongTitleDoesNotStretchThePreviewPastTheRow() {
+        let row = CGSize(width: 320, height: 50)
+        let rendered = measure(
+            row,
+            title: "A fairly long to-do title that should wrap onto more than one line"
+        )
+
+        #expect(abs(rendered.width - row.width * DragPreviewSize.widthFraction) < 1)
     }
 }

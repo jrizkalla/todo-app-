@@ -591,6 +591,9 @@ private struct DestinationTodoList: View {
                 isMoving: $isMovingSelection,
                 isConfirmingDelete: $isConfirmingBulkDelete,
                 deletePrompt: bulkDeletePrompt,
+                // Cmd+S over a selection earns the typed-date field for the same
+                // reason it does over one row: typing is why the panel opened.
+                schedulingAcceptsTypedDate: schedulingFromKeyboard,
                 onPickDate: { date, hasTime in
                     withAnimation(Theme.Animation.listChange) {
                         store.schedule(selectedTodos, to: date, hasTime: hasTime)
@@ -669,10 +672,21 @@ private struct DestinationTodoList: View {
     /// only covered the rows would leave the empty space below them dead.
     private func droppableList(_ rows: [Todo]) -> some View {
         searchableList(rows)
-            .todoDropTarget(
-                destination,
-                store: store
-            )
+            // No drop indicator line, and so no hover tracking to feed one.
+            //
+            // Drawing it needed a second `DropDelegate` layered over this
+            // pane's `dropDestination`, purely to follow the pointer. On macOS
+            // that delegate competes for the drag: whichever way it answered
+            // `validateDrop`, a drag that crossed this list stopped reaching
+            // the sidebar, so a to-do could no longer be dragged from a list
+            // onto a project or space — the app's main way of filing work.
+            // Reordering by dragging is a convenience; moving a to-do between
+            // projects is not, and one cost the other.
+            //
+            // `TodoDropIndicator` and its tests are left in place: the
+            // arithmetic is correct and worth keeping for a future attempt
+            // that can track the pointer without a competing drop target.
+            .todoDropTarget(destination, store: store)
             // The bar goes over the whole pane, so it stays put while the list
             // scrolls underneath it.
             .multiSelectBar(isPresented: multiSelection.isActive) { multiSelectBar(rows: rows) }
@@ -861,15 +875,15 @@ private struct DestinationTodoList: View {
                         .tint(.blue)
                     }
                 }
-                // Dragging is disabled while searching: results are ranked by
-                // relevance and are a subset of several lists, so a drop
-                // position there does not describe an order worth saving.
-                .onMove { indices, newOffset in
-                    guard !isSearching else { return }
-                    var reordered = visibleTodos
-                    reordered.move(fromOffsets: indices, toOffset: newOffset)
-                    store.reorder(reordered)
-                }
+                // No `onMove`. It is SwiftUI's own reordering gesture, and on
+                // macOS it claims the drag as soon as the pointer moves inside
+                // the list — drawing the insertion line and keeping the session
+                // for itself. A drag that started in the list could then never
+                // reach the sidebar, so a to-do could not be filed into a
+                // project or space, which is the more valuable of the two.
+                //
+                // The rows stay draggable through `todoDraggable`, and every
+                // destination accepts them through `todoDropTarget`.
                 
                 Spacer()
                     .frame(width: 50, height: 400)
@@ -894,6 +908,9 @@ private struct DestinationTodoList: View {
             // inline title editing.
             .scrollDismissesKeyboard(.interactively)
             .animation(Theme.Animation.listChange, value: visibleTodos.map(\.uuid))
+            // The coordinate space these are measured against is declared in
+            // `droppableList`, alongside the drop target that reports the
+            // pointer, so both sides share an origin.
         }
     }
 
@@ -1182,6 +1199,9 @@ private struct DestinationTodoList: View {
             },
             onSchedule: {
                 focusedTodoID = nil
+                // A tap on When is not the keyboard route in, so the panel opens
+                // without the typed-date field even if Cmd+S opened it earlier.
+                schedulingFromKeyboard = false
                 isSchedulingSelection = true
             },
             onMove: {
@@ -1191,14 +1211,7 @@ private struct DestinationTodoList: View {
             onMoveToSpace: { space in
                 withAnimation(Theme.Animation.listChange) { store.move(selected, toSpace: space) }
             },
-            onDuplicate: {
-                let copies = store.duplicate(selected)
-                // The copies are what the user is about to edit, the same rule
-                // the single-row duplicate follows with the cursor.
-                withAnimation(Theme.Animation.listChange) {
-                    multiSelection.selectAll(in: copies.map(\.uuid))
-                }
-            },
+            onDuplicate: duplicateSelection,
             onSetIsProject: { promoted in
                 withAnimation(Theme.Animation.listChange) {
                     store.setIsProject(selected, promoted)
@@ -1298,7 +1311,10 @@ private struct DestinationTodoList: View {
         // `selectedTodo` with this list, so the list stands down while it is on
         // top rather than both acting on one keystroke.
         guard isShowingList else { return false }
-        return cursor.selection != nil || focusedTodoID != nil || selectedTodo != nil
+        // A multi-selection counts on its own: rows picked with Cmd+A or a
+        // shift-click leave the cursor where it was — possibly nowhere — and
+        // without this a list showing "21 selected" answered no shortcut at all.
+        return hasSelection || cursor.selection != nil || focusedTodoID != nil || selectedTodo != nil
     }
 
     /// Whether this list is the surface the user is on.
@@ -1327,7 +1343,16 @@ private struct DestinationTodoList: View {
         return .handled
     }
 
-    /// Run a keyboard command against whatever the cursor is on.
+    /// Run a keyboard command against the selection, or the cursor's row.
+    ///
+    /// Every verb that can mean "all of these" takes the bulk path whenever a
+    /// multi-selection is up: a shortcut that acted on one row while the bar
+    /// along the bottom reported nine selected would be acting on a row the user
+    /// had stopped thinking about, and silently — nothing on screen says which
+    /// of the nine it picked. The bulk paths are the same ones that bar's own
+    /// buttons use, so Cmd+S and When do the same thing to the same rows.
+    ///
+    /// Cmd+Return is the exception, below: a detail view shows one to-do.
     private func perform(_ command: KeyboardCommand) {
         switch command {
         case .create:
@@ -1340,32 +1365,101 @@ private struct DestinationTodoList: View {
             isSearchFocused = true
 
         case .schedule:
+            if hasSelection {
+                focusedTodoID = nil
+                schedulingFromKeyboard = true
+                isSchedulingSelection = true
+                return
+            }
             guard let todo = commandTarget else { return }
             focusedTodoID = nil
             schedulingFromKeyboard = true
             schedulingTodo = todo
 
         case .toggleDone:
+            if hasSelection {
+                let selected = selectedTodos
+                withAnimation(Theme.Animation.listChange) { store.toggleAll(selected) }
+                return
+            }
             guard let todo = commandTarget else { return }
             handleToggle(todo)
 
+        // Alone among these in having no bulk form: the detail view shows one
+        // to-do, so with a selection up this keeps acting on the cursor's row
+        // rather than picking one of many to open.
         case .showDetail:
             guard let todo = commandTarget else { return }
             showDetail(for: todo)
 
         case .move:
+            if hasSelection {
+                focusedTodoID = nil
+                isMovingSelection = true
+                return
+            }
             guard let todo = commandTarget else { return }
             focusedTodoID = nil
             movingTodo = todo
 
         case .duplicate:
+            if hasSelection {
+                duplicateSelection()
+                return
+            }
             guard let todo = commandTarget else { return }
             duplicate(todo)
 
         case .delete:
+            if hasSelection {
+                focusedTodoID = nil
+                requestBulkDelete()
+                return
+            }
             guard let todo = commandTarget else { return }
             focusedTodoID = nil
             requestDelete(todo)
+
+        case .selectAll:
+            selectAllRows()
+        }
+    }
+
+    /// Whether a keyboard command should act on the selection rather than a row.
+    ///
+    /// Asks for actual rows rather than `multiSelection.isActive`, which is also
+    /// true in iOS's explicit mode with nothing picked yet. That state means
+    /// "I am about to choose", and a Cmd+S there should still reach the cursor's
+    /// row rather than opening a picker over an empty batch.
+    private var hasSelection: Bool { multiSelection.count > 0 }
+
+    /// Copy every selected row, leaving the copies selected.
+    ///
+    /// The same rule the single-row duplicate follows with the cursor, and the
+    /// one the action bar's own Duplicate uses: the copies are what the user is
+    /// about to edit.
+    private func duplicateSelection() {
+        let copies = store.duplicate(selectedTodos)
+        withAnimation(Theme.Animation.listChange) {
+            multiSelection.selectAll(in: copies.map(\.uuid))
+        }
+    }
+
+    /// Put every row on screen into the selection.
+    ///
+    /// "On screen" is the whole of it: the rows the current filter and search
+    /// leave showing, subtasks included, which is the same order a shift-click
+    /// ranges over. Selecting rows a filter is hiding would hand the action bar
+    /// a count the user cannot account for.
+    private func selectAllRows() {
+        let order = visibleRowOrder
+        guard !order.isEmpty else { return }
+        // The caret has to leave the row it is in: the selection is about whole
+        // to-dos, and a title still taking keystrokes underneath a bar offering
+        // to delete nine of them is the wrong thing to leave on screen.
+        focusedTodoID = nil
+        withAnimation(Theme.Animation.quick) {
+            multiSelection.selectAll(in: order)
         }
     }
 

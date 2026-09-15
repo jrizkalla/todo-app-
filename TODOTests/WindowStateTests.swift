@@ -113,15 +113,17 @@ struct WindowStateTests {
 
     // MARK: What a command needs before it can fire
 
-    /// Cmd+N and Cmd+F act on the open screen, not on a selected row.
+    /// Cmd+N, Cmd+F and Cmd+A act on the open screen, not on a selected row.
     ///
     /// This is what lets Cmd+N create into the list being looked at: the
     /// shortcut is pressed most often on a list just opened, where nothing is
     /// selected yet, and a selection-gated command would reach nobody at
-    /// exactly that moment.
-    @Test func creatingAndSearchingActOnTheOpenScreen() {
+    /// exactly that moment. Select All is the same case put more sharply — it
+    /// is *about* a list with nothing picked in it yet.
+    @Test func creatingSearchingAndSelectingAllActOnTheOpenScreen() {
         #expect(KeyboardCommand.create.actsOnView)
         #expect(KeyboardCommand.search.actsOnView)
+        #expect(KeyboardCommand.selectAll.actsOnView)
     }
 
     /// Everything else needs a to-do to act on, so it goes to whichever

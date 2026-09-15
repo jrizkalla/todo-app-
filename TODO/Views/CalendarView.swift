@@ -635,8 +635,10 @@ private struct RangedCalendarView: View {
             guard let todo = cursorTodo ?? selectedTodo else { return }
             store.delete(todo)
 
-        // The calendar has no search field of its own; the lists own that.
-        case .search:
+        // The calendar has no search field of its own; the lists own that. Nor
+        // has it a multi-selection: a block is picked one at a time here, so
+        // "all of them" names nothing this screen can act on.
+        case .search, .selectAll:
             break
         }
     }
@@ -811,7 +813,8 @@ private struct RangedCalendarView: View {
                 }
                 .buttonStyle(.plain)
 
-                Button("Today") { withAnimation(Theme.Animation.panel) { anchor = Date() } }
+                // Unanimated for the same reason as `shift(by:)`.
+                Button("Today") { anchor = Date() }
                     .buttonStyle(.plain)
                     .font(.callout)
                     .foregroundStyle(Color.accentColor)
@@ -2391,10 +2394,18 @@ private struct RangedCalendarView: View {
         days(forPage: page(for: anchor))
     }
 
+    /// Move the grid a day or a week, depending on the scale.
+    ///
+    /// Deliberately unanimated. Moving the anchor moves the fetch range, which
+    /// is what `CalendarView` builds the inner view's `id` from — so this is an
+    /// identity change, not a property change, and there is nothing for a
+    /// spring to interpolate. Animating it made SwiftUI cross-fade the outgoing
+    /// grid against the incoming one, two unrelated views dissolving into each
+    /// other rather than the page turning.
     private func shift(by amount: Int) {
         let component: Calendar.Component = scale == .day ? .day : .weekOfYear
         if let next = calendar.date(byAdding: component, value: amount, to: anchor) {
-            withAnimation(Theme.Animation.panel) { anchor = next }
+            anchor = next
         }
     }
 
