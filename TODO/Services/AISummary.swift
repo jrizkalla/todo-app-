@@ -88,7 +88,7 @@ final class AISummaryService: ObservableObject {
     var visibleCalendars: [String]?
 
     /// What the assistant has learned about the user, or `nil` when memory is
-    /// off or empty. Fed to every model, cloud and local alike.
+    /// off or empty. Part of every prompt.
     var memory: String?
 
     /// Whether the model is asked to write new facts down.
@@ -102,18 +102,11 @@ final class AISummaryService: ObservableObject {
 
     /// The session the most recent summary was written in.
     ///
-    /// Rebuilt for every summary rather than carried forward — a session is
-    /// bound to its instructions and its model, and both change as the day
-    /// moves from the morning brief on the cloud to on-device refinements. It
-    /// is kept afterwards only so the chat can continue it: `ask` answers
-    /// follow-ups in the transcript that produced the text on screen.
+    /// Rebuilt for every summary rather than carried forward: a session is
+    /// bound to its instructions, and those change as the day moves between
+    /// phases. It is kept afterwards only so the chat can continue it — `ask`
+    /// answers follow-ups in the transcript that produced the text on screen.
     var session: LanguageModelSession!
-
-    /// The model the last summary was generated with.
-    ///
-    /// The view saves this alongside the summary so tomorrow's first glance can
-    /// tell "already had its cloud pass today" from "has not run yet".
-    private(set) var lastUsedModel: SummaryModel?
 
     init(userInfo: UserInfo) {
         self.weather = nil
@@ -211,15 +204,10 @@ final class AISummaryService: ObservableObject {
 
     /// The generated summary, the fingerprint of the prompt that produced it,
     /// and anything the model asked to remember.
-    ///
-    /// - Parameter model: which of Apple's models to run against. The caller
-    ///   decides, because only it knows whether today has had its cloud pass;
-    ///   an unavailable choice falls back rather than failing.
-    func generateSummary(
-        using model: SummaryModel
-    ) async -> (summary: AISummary, fingerprint: SummaryFingerprint, facts: [String])? {
-        guard let model = model.resolved else {
-            AppLog.data.warning("No language model is available")
+    func generateSummary()
+    async -> (summary: AISummary, fingerprint: SummaryFingerprint, facts: [String])? {
+        guard SystemLanguageModel.default.isAvailable else {
+            AppLog.data.warning("The system language model is not available")
             return nil
         }
 
@@ -241,51 +229,38 @@ final class AISummaryService: ObservableObject {
             events: SummaryFingerprint.events(events)
         )
 
-        // Cloud first when asked for, but on-device if that fails: availability
-        // is checked before the request and the request can still fail after
-        // it — the entitlement, the quota, or the network. A summary written
-        // on-device is worth far more than an empty panel.
-        var attempts = [model]
-        if model == .cloud, SummaryModel.local.isAvailable { attempts.append(.local) }
+        // A fresh session per summary, always — not reused when the
+        // instructions happen to match. The transcript by then holds the
+        // previous summary and every chat turn since, so reusing it would grow
+        // the context all day and let a passing question steer the next
+        // summary. The day's facts are in the prompt, so there is nothing in
+        // that history the new summary needs.
+        //
+        // The chat is the opposite case and deliberately does reuse this
+        // session: see `ask`.
+        session = LanguageModelSession(instructions: instructions)
 
-        for attempt in attempts {
-            // A fresh session per summary, always — not reused when the model
-            // and instructions happen to match. The transcript by then holds
-            // the previous summary and every chat turn since, so reusing it
-            // would grow the context all day and let a passing question steer
-            // the next summary. The day's facts are in the prompt, so there is
-            // nothing in that history the new summary needs.
-            //
-            // The chat is the opposite case and deliberately does reuse this
-            // session: see `ask`.
-            session = attempt.makeSession(instructions: instructions)
-
-            do {
-                let response = try await session.respond(to: prompt)
-                // Memory is pulled out before the JSON is parsed: the model is
-                // asked to emit the facts outside the object, so leaving them
-                // in would make the whole response fail to decode.
-                let (facts, body) = MemoryStore.extract(from: response.content)
-                let responseData = String(body.trimmingPrefix(/\s*```json\s*/))
-                    .trimmingSuffix("```")
-                guard let summary = try? JSONDecoder().decode(
-                    AISummary.self,
-                    from: Data(responseData.utf8)
-                ) else { return nil }
-                lastUsedModel = attempt
-                return (summary, fingerprint, facts)
-            } catch {
-                AppLog.data.error(
-                    "Summary generation failed on \(attempt.rawValue, privacy: .public): \(error, privacy: .public)"
-                )
-                // The session is bound to the model that just failed. Cleared
-                // rather than left in place so that if every attempt fails the
-                // chat stays closed, instead of offering to continue a
-                // conversation about a summary that was never written.
-                session = nil
-            }
+        do {
+            let response = try await session.respond(to: prompt)
+            // Memory is pulled out before the JSON is parsed: the model is
+            // asked to emit the facts outside the object, so leaving them in
+            // would make the whole response fail to decode.
+            let (facts, body) = MemoryStore.extract(from: response.content)
+            let responseData = String(body.trimmingPrefix(/\s*```json\s*/))
+                .trimmingSuffix("```")
+            guard let summary = try? JSONDecoder().decode(
+                AISummary.self,
+                from: Data(responseData.utf8)
+            ) else { return nil }
+            return (summary, fingerprint, facts)
+        } catch {
+            AppLog.data.error("Summary generation failed: \(error, privacy: .public)")
+            // Cleared rather than left in place so the chat stays closed,
+            // instead of offering to continue a conversation about a summary
+            // that was never written.
+            session = nil
+            return nil
         }
-        return nil
     }
 
     /// Ask a follow-up question in the session the summary was written in.
@@ -318,17 +293,18 @@ final class AISummaryService: ObservableObject {
 
     /// Reduce a grown memory file back to its durable facts.
     ///
-    /// Always the cloud model when it can be reached: this is the one call that
-    /// reads the whole accumulated history at once and decides what is worth
-    /// keeping, and a bad call here is not a summary the user can ignore — it
-    /// permanently drops what the assistant knew.
-    ///
     /// Returns `nil` on any failure, and the caller leaves the file alone. An
-    /// over-long memory is a much smaller problem than an emptied one.
+    /// over-long memory is a much smaller problem than an emptied one, so every
+    /// doubt resolves towards keeping what is already there.
+    ///
+    /// This is the one call that can *lose* what the assistant knows, and it
+    /// runs on the same small on-device model as everything else — which is
+    /// exactly why the result is checked rather than trusted. See
+    /// `isPlausibleCompaction`.
     func compactMemory(_ text: String) async -> String? {
-        guard let model = SummaryModel.cloud.resolved else { return nil }
+        guard SystemLanguageModel.default.isAvailable else { return nil }
 
-        let session = model.makeSession(instructions: Self.memoryCompactionInstructions)
+        let session = LanguageModelSession(instructions: Self.memoryCompactionInstructions)
         do {
             let response = try await session.respond(to: Prompt {
                 "Here is the current memory file, one fact per line:"
@@ -338,15 +314,45 @@ final class AISummaryService: ObservableObject {
                 .trimmingSuffix("```")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
 
-            // A compaction that returns nothing is a failure, not an
-            // instruction to forget everything.
-            guard !compacted.isEmpty else { return nil }
+            guard Self.isPlausibleCompaction(of: text, into: compacted) else {
+                AppLog.data.warning("Discarded an implausible memory compaction")
+                return nil
+            }
             return compacted
         } catch {
             AppLog.data.error("Memory compaction failed: \(error, privacy: .public)")
             return nil
         }
     }
+
+    /// The floor a compaction has to clear to be written back.
+    ///
+    /// Consolidation should merge duplicates and drop one-off noise, so the
+    /// file legitimately shrinks — but a small model asked to rewrite a long
+    /// list can instead summarize it into a sentence, or answer with a
+    /// preamble, and the result would silently destroy everything the
+    /// assistant had learned. Half the original line count is well below any
+    /// honest consolidation of a file that only compacts once it has grown past
+    /// the threshold, and well above a collapse.
+    static func isPlausibleCompaction(of original: String, into compacted: String) -> Bool {
+        let lines = { (text: String) in
+            text.split(separator: "\n")
+                .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+                .count
+        }
+        let before = lines(original)
+        let after = lines(compacted)
+
+        // An empty result is a failure, not an instruction to forget.
+        guard after > 0 else { return false }
+        // Nothing to judge against; let it through rather than wedging the file.
+        guard before > 0 else { return true }
+
+        return Double(after) >= Double(before) * minimumCompactionRatio
+    }
+
+    /// See `isPlausibleCompaction`.
+    static let minimumCompactionRatio = 0.5
 }
 
 
@@ -459,7 +465,7 @@ extension AISummaryService {
     If the question reveals something durable about them, record it with a memory block exactly as described in your instructions, after your answer.
     """
 
-    /// Instructions for the periodic cloud pass over the memory file.
+    /// Instructions for the periodic consolidation pass over the memory file.
     ///
     /// Framed as consolidation rather than summarization: the file is a set of
     /// facts, and what it needs is the duplicates merged and the stale ones

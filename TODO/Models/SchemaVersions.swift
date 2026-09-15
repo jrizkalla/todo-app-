@@ -392,15 +392,13 @@ enum AppMigrationPlan: SchemaMigrationPlan {
         toVersion: SchemaV4.self
     )
 
-    /// Adding `AppMemory`, and `generatedByRaw` to `SavedAISummary`.
+    /// Adding `AppMemory`.
     ///
-    /// Lightweight on both counts. The new entity is a *table*, with no rows to
-    /// backfill — a store that predates the assistant's memory has nothing
-    /// remembered, and the first fact it learns creates the row. The new column
-    /// carries a default, which is what V1→V2 lacked and why that one had to be
-    /// custom: CoreData can write `local` into every existing row unaided, and
-    /// reading an older summary as not-yet-cloud-generated is the right
-    /// reading — it costs one cloud call rather than withholding one all day.
+    /// Lightweight because this adds a *table*, not columns to an existing one:
+    /// there are no rows to backfill, since a store that predates the
+    /// assistant's memory has nothing remembered, and the first fact it learns
+    /// creates the row. Contrast V1→V2, which had to be custom precisely
+    /// because it added mandatory columns to rows that already existed.
     static let v4ToV5 = MigrationStage.lightweight(
         fromVersion: SchemaV4.self,
         toVersion: SchemaV5.self

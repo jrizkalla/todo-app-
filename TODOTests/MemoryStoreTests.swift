@@ -220,7 +220,7 @@ struct MemoryStoreTests {
     }
 
     /// Having just been compacted, it must not immediately want compacting
-    /// again — otherwise every generation would spend a cloud call on it.
+    /// again — otherwise every generation would spend a model call on it.
     @Test func compactingClearsTheNeed() throws {
         let store = try store()
         store.remember((1...(AppMemory.compactionThreshold + 1)).map { "Fact \($0)." })
@@ -261,39 +261,58 @@ struct MemoryStoreTests {
     }
 }
 
-/// Choosing between the cloud and on-device models.
+/// The check that stands between a bad consolidation and a lost memory.
+///
+/// Compaction runs on the same small on-device model as everything else, and it
+/// is the one call that can destroy what the assistant knows. These pin the
+/// cases where its output must be thrown away rather than written back.
 @MainActor
-struct SummaryModelTests {
+struct MemoryCompactionGuardTests {
 
-    /// The day's first summary is the one worth the good model.
-    @Test func theFirstSummaryOfTheDayGoesToTheCloud() {
-        #expect(SummaryModel.forSummary(hasCloudSummaryToday: false) == .cloud)
+    private func lines(_ count: Int) -> String {
+        (1...count).map { "Fact \($0)." }.joined(separator: "\n")
     }
 
-    /// And every refinement after it stays on-device.
-    @Test func laterSummariesStayLocal() {
-        #expect(SummaryModel.forSummary(hasCloudSummaryToday: true) == .local)
+    /// The point of the exercise: a genuine consolidation is accepted.
+    @Test func aModestConsolidationIsAccepted() {
+        #expect(AISummaryService.isPlausibleCompaction(of: lines(40), into: lines(30)))
     }
 
-    /// The raw value is persisted in `SavedAISummary`, so it is a stored format
-    /// and cannot be renamed freely.
-    @Test func rawValuesAreStable() {
-        #expect(SummaryModel.cloud.rawValue == "cloud")
-        #expect(SummaryModel.local.rawValue == "local")
+    /// Nothing removed at all is fine — the file was already tidy.
+    @Test func anUnchangedFileIsAccepted() {
+        let text = lines(40)
+        #expect(AISummaryService.isPlausibleCompaction(of: text, into: text))
     }
 
-    /// A summary saved before the model was recorded reads as local, which is
-    /// what makes the next launch spend a cloud call rather than withhold one.
-    @Test func anOlderSummaryReadsAsLocal() {
-        let saved = SavedAISummary(summary: .init())
-        #expect(saved.generatedBy == .local)
+    /// The failure that matters: the model summarizes instead of consolidating,
+    /// and forty facts become one sentence.
+    @Test func aCollapseIntoASentenceIsRejected() {
+        #expect(!AISummaryService.isPlausibleCompaction(
+            of: lines(40),
+            into: "The user has a busy and varied schedule."
+        ))
     }
 
-    @Test func aCloudSummaryRoundTripsThroughItsRawValue() {
-        let saved = SavedAISummary(
-            summary: .init(),
-            generatedByRaw: SummaryModel.cloud.rawValue
-        )
-        #expect(saved.generatedBy == .cloud)
+    /// An empty result is a failure, never an instruction to forget everything.
+    @Test func anEmptyResultIsRejected() {
+        #expect(!AISummaryService.isPlausibleCompaction(of: lines(40), into: ""))
+        #expect(!AISummaryService.isPlausibleCompaction(of: lines(40), into: "   \n  "))
+    }
+
+    /// Blank lines must not pad a collapse into looking acceptable.
+    @Test func blankLinesDoNotCountTowardsTheFloor() {
+        let padded = "One surviving fact.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n"
+        #expect(!AISummaryService.isPlausibleCompaction(of: lines(40), into: padded))
+    }
+
+    /// Exactly at the floor is allowed; a line below it is not.
+    @Test func theFloorIsInclusive() {
+        #expect(AISummaryService.isPlausibleCompaction(of: lines(40), into: lines(20)))
+        #expect(!AISummaryService.isPlausibleCompaction(of: lines(40), into: lines(19)))
+    }
+
+    /// Nothing to judge against must not wedge the file permanently.
+    @Test func anEmptyOriginalDoesNotBlockAResult() {
+        #expect(AISummaryService.isPlausibleCompaction(of: "", into: "A fact."))
     }
 }

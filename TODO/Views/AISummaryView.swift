@@ -267,14 +267,7 @@ struct AISummaryView : View {
             return
         }
 
-        // The good model writes the day's first summary; the on-device one
-        // refines it as the day moves. `saved` is today's by construction, so a
-        // cloud pass yesterday does not count against today.
-        let model = SummaryModel.forSummary(
-            hasCloudSummaryToday: saved?.generatedBy == .cloud
-        )
-
-        guard let result = await aiSummaryService.generateSummary(using: model) else { return }
+        guard let result = await aiSummaryService.generateSummary() else { return }
         summary = result.summary
         summaryGeneration += 1
 
@@ -296,20 +289,13 @@ struct AISummaryView : View {
         }
 
         TodoStore(context: context).updateAISummary(
-            .init(
-                summary: result.summary,
-                fingerprint: fingerprint,
-                // What actually ran, not what was asked for: a cloud call that
-                // fell back on-device must not count as today's cloud pass, or
-                // a transient outage would cost the good summary for the day.
-                generatedByRaw: (aiSummaryService.lastUsedModel ?? model).rawValue
-            )
+            .init(summary: result.summary, fingerprint: fingerprint)
         )
 
         await compactMemoryIfNeeded(memoryStore)
     }
 
-    /// Hand the memory file to the cloud model when it has grown enough.
+    /// Consolidate the memory file once it has grown enough.
     ///
     /// After the summary rather than before it: compaction is housekeeping, and
     /// the user is waiting on the text at the top of the screen. It also runs

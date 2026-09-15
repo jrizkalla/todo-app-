@@ -33,7 +33,7 @@ final class AppMemory {
     /// When a fact was last added or compacted, shown in Settings.
     var updatedAt: Date = Date()
 
-    /// When the cloud model last compacted this, which paces the next pass.
+    /// When this was last compacted, which paces the next pass.
     ///
     /// Distinct from `updatedAt`: adding a fact moves that one and must not
     /// look like a compaction, or the file would never be compacted again.
@@ -79,7 +79,7 @@ extension AppMemory {
     /// 60 lines is not re-compacted every single day for no gain.
     static let regrowthFactor = 1.5
 
-    /// Whether the file has grown enough to be worth another cloud pass.
+    /// Whether the file has grown enough to be worth another pass.
     var needsCompaction: Bool {
         let count = lineCount
         guard count > Self.compactionThreshold else { return false }
