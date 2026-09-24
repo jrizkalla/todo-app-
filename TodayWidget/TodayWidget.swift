@@ -22,7 +22,6 @@ struct TodayWidget: Widget {
         StaticConfiguration(kind: Self.kind, provider: TodayTimelineProvider()) { entry in
             TodayWidgetView(entry: entry)
                 .containerBackground(.fill.tertiary, for: .widget)
-                .modelContainer(.appContainerWithFallback())
         }
         .configurationDisplayName("Today")
         .description("Everything on today's list, including timed work.")
@@ -106,7 +105,7 @@ struct TodayTimelineProvider: TimelineProvider {
     /// with nothing timed schedules no extra wake-ups at all.
     @MainActor
     private func nextRankBoundary(after now: Date) -> Date? {
-        let container = ModelContainer.appContainerWithFallback()
+        guard let container = try? ModelContainer.widgetContainer() else { return nil }
         let today = TodoQueries.todos(for: .today, in: container.mainContext)
 
         return today
@@ -133,7 +132,9 @@ struct TodayTimelineProvider: TimelineProvider {
     /// work, with already-passed slots last. See `TodoQueries.widgetOrdered`.
     @MainActor
     private func loadEntry(now: Date = Date()) -> TodayEntry {
-        let container = ModelContainer.appContainerWithFallback()
+        guard let container = try? ModelContainer.widgetContainer() else {
+            return TodayEntry(date: now, items: [], overflow: 0, isUnavailable: true)
+        }
 
         // Filtered by SQLite rather than by pulling the whole store across and
         // narrowing it here — a widget has a hard memory budget, and faulting in

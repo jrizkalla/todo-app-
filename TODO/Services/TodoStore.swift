@@ -719,13 +719,17 @@ struct TodoStore {
         let dirtyTodos = (context.insertedModelsArray + context.changedModelsArray + context.deletedModelsArray).compactMap {
             $0 as? Todo
         }
-        if TodoQueries.today(dirtyTodos, includeResolved: true).count > 0 {
-            WidgetCenter.shared.reloadAllTimelines()
-        }
+        let touchesToday = TodoQueries.today(dirtyTodos, includeResolved: true).count > 0
         do {
             try context.save()
         } catch {
             AppLog.data.error("Save failed: \(error, privacy: .public)")
+            return
+        }
+        // After the save, not before: the widget reads the file, and a reload
+        // that wins the race would redraw the day as it was.
+        if touchesToday {
+            WidgetCenter.shared.reloadAllTimelines()
         }
     }
 }

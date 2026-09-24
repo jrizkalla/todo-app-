@@ -19,6 +19,13 @@ struct TODOApp: App {
 
     @State private var settings = AppSettings.shared
 
+    init() {
+        // Here rather than in a view: a silent push launches the app in the
+        // background with no scene, and that import is exactly the one the
+        // widgets most need to hear about.
+        CloudImportWidgetReloader.start()
+    }
+
     var body: some Scene {
         // Keyed on `WindowState`, which is what makes windows independent and
         // addressable at once: SwiftUI hands each open window its own binding,
