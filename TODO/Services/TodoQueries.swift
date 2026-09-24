@@ -600,8 +600,13 @@ enum TodoQueries {
     ///
     /// Deliberately not restricted to top-level items: work finished inside a
     /// project is still finished work, and filtering by `parent == nil` hid
-    /// every completed subtask from the history. Projects themselves are still
-    /// excluded — the sidebar is where those live.
+    /// every completed subtask from the history.
+    ///
+    /// Finished projects are included for the same reason. The sidebar drops a
+    /// project once it resolves — it is no longer a place to put work — and
+    /// left it reachable only here, so excluding projects from the Logbook too
+    /// meant a completed project vanished from the app entirely. Searching the
+    /// Logbook already returned them; browsing it now agrees.
     ///
     /// Note this one has no Focus rule, matching the array version: the Logbook
     /// is history, and a Focus that hides a space should not rewrite the past.
@@ -610,7 +615,7 @@ enum TodoQueries {
 
         var descriptor = FetchDescriptor<Todo>(
             predicate: #Predicate<Todo> { todo in
-                resolved.contains(todo.stateRaw) && !todo.isProject
+                resolved.contains(todo.stateRaw)
             }
         )
 
@@ -1553,10 +1558,11 @@ enum TodoQueries {
     static func logbook(_ todos: [Todo]) -> [Todo] {
         // Deliberately not restricted to top-level items: work finished inside
         // a project is still finished work, and filtering by `parent == nil`
-        // hid every completed subtask from the history. Projects themselves are
-        // still excluded — the sidebar is where those live.
+        // hid every completed subtask from the history. Finished projects are
+        // included too — the sidebar drops them on resolve and pointed here,
+        // so excluding them lost them altogether. See `logbookDescriptor`.
         todos
-            .filter { $0.state.isResolved && !$0.isProject }
+            .filter { $0.state.isResolved }
             .sorted { ($0.resolvedAt ?? .distantPast) > ($1.resolvedAt ?? .distantPast) }
     }
 

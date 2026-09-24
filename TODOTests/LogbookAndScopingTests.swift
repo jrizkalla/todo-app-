@@ -58,14 +58,42 @@ struct LogbookTests {
         #expect(TodoQueries.logbook([open, done]).map(\.title) == ["Finished"])
     }
 
-    /// A completed project is a sidebar concern, not a history row.
-    @Test func projectsAreExcluded() throws {
+    /// A finished project is finished work, so it belongs in the history.
+    ///
+    /// The sidebar drops a project once it resolves and points here, so
+    /// excluding projects from the Logbook made a completed one unreachable.
+    @Test func completedProjectsAppear() throws {
         let context = try makeContext()
         let project = Todo(title: "Old project", isProject: true)
         context.insert(project)
         project.setState(.completed)
 
+        #expect(TodoQueries.logbook([project]).map(\.title) == ["Old project"])
+    }
+
+    /// An unfinished project is still a place to put work, not history.
+    @Test func openProjectsAreExcluded() throws {
+        let context = try makeContext()
+        let project = Todo(title: "Live project", isProject: true)
+        context.insert(project)
+
         #expect(TodoQueries.logbook([project]).isEmpty)
+    }
+
+    /// A project and the work finished inside it both show, newest first.
+    @Test func completedProjectAppearsAlongsideItsSubtasks() throws {
+        let context = try makeContext()
+        let project = Todo(title: "Q3 Launch", isProject: true)
+        let child = Todo(title: "Draft notes")
+        [project, child].forEach(context.insert)
+        project.addSubtask(child)
+
+        child.setState(.completed)
+        child.resolvedAt = Date().addingTimeInterval(-3600)
+        project.setState(.completed)
+        project.resolvedAt = Date()
+
+        #expect(TodoQueries.logbook([project, child]).map(\.title) == ["Q3 Launch", "Draft notes"])
     }
 
     /// Newest first, so the most recent work is at the top.

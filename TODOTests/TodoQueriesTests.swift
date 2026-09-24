@@ -894,6 +894,23 @@ struct TodoQueryDescriptorTests {
     }
 
     /// A subtask does not draw its own row beside the parent it is nested under.
+    /// The fetch the Logbook screen actually runs returns finished projects.
+    ///
+    /// The sidebar drops a project once it resolves, so if this predicate
+    /// excluded projects a completed one would be unreachable in the app.
+    @Test func fetchedLogbookIncludesCompletedProjects() throws {
+        let context = try makeContext()
+        let finished = Todo(title: "Shipped project", isProject: true)
+        let live = Todo(title: "Live project", isProject: true)
+        [finished, live].forEach(context.insert)
+        finished.setState(.completed)
+
+        let logbook = TodoQueries.todos(for: .logbook, in: context)
+
+        #expect(logbook.contains { $0.title == "Shipped project" })
+        #expect(logbook.contains { $0.title == "Live project" } == false)
+    }
+
     @Test func fetchedListsStillDropNestedSubtasks() throws {
         let context = try makeContext()
         let parent = Todo(title: "Parent")
