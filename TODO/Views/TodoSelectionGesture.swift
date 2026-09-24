@@ -64,12 +64,21 @@ struct TodoSelectionGesture: ViewModifier {
     func body(content: Content) -> some View {
         #if os(macOS)
         content
+            // `simultaneousGesture`, not `gesture`: a plain `.gesture` claims
+            // the mouse-down exclusively, and wins that claim before a drag
+            // has moved far enough to be recognized — so `.draggable` on the
+            // same row (attached in `TodoDraggableModifier`) never saw enough
+            // movement to start, and a row could not be lifted at all. Letting
+            // both recognizers see the same press lets whichever one the
+            // gesture actually matches — a stationary click or a drag past the
+            // threshold — win instead of the tap winning by default.
+            //
             // Ordered most specific first: a Shift-Cmd-click reaches the shift
             // recognizer, and `RowClickIntent` agrees with that ordering rather
             // than restating it.
-            .gesture(TapGesture().modifiers(.shift).onEnded { perform(.shift) })
-            .gesture(TapGesture().modifiers(.command).onEnded { perform(.command) })
-            .onTapGesture { perform([]) }
+            .simultaneousGesture(TapGesture().modifiers(.shift).onEnded { perform(.shift) })
+            .simultaneousGesture(TapGesture().modifiers(.command).onEnded { perform(.command) })
+            .simultaneousGesture(TapGesture().onEnded { perform([]) })
         #else
         // There are no modifiers on iOS, so the mode is the whole decision.
         content.onTapGesture { perform([]) }

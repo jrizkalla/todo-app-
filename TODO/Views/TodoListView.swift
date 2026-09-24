@@ -1513,6 +1513,11 @@ private struct DestinationTodoList: View {
             StatusPicker(current: todo.state, tint: todo.color) { state in
                 handleSetState(todo, to: state)
             }
+        } label: {
+            HStack {
+                Image(systemName: "square.dotted")
+                Text("State")
+            }
         }.controlGroupStyle(.menu)
         
         Divider()
